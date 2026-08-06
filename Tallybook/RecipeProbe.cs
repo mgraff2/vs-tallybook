@@ -22,6 +22,10 @@ namespace Tallybook
         public int Quantity;
         public bool IsTool;
 
+        /// <summary>Tool rows only: present anywhere in carried inventory. Updated on recount.
+        /// Presence-checked, never counted against quantity (spec §4).</summary>
+        public bool Present;
+
         /// <summary>First ingredient seen for this row, used for naming.</summary>
         public CraftingRecipeIngredient Sample;
 
@@ -39,6 +43,76 @@ namespace Tallybook
         public List<CraftingRecipeIngredient> OtherMatchers = new List<CraftingRecipeIngredient>();
 
         public int VariantCount => ExactCodes.Count + OtherMatchers.Count;
+
+        string key;
+
+        /// <summary>
+        /// Stable identity across sessions and recompute passes: sorted accepted codes plus
+        /// non-exact matcher descriptors. Used to merge HUD rows across pins and to re-attach
+        /// persisted expansion state after recipes are re-resolved.
+        /// </summary>
+        public string Key
+        {
+            get
+            {
+                if (key != null) return key;
+                var codes = string.Join(",", ExactCodes.OrderBy(c => c, StringComparer.Ordinal));
+                var others = string.Join(",", OtherMatchers
+                    .Select(m => $"{m.Type}:{m.MatchingType}:{m.Code}")
+                    .OrderBy(s => s, StringComparer.Ordinal));
+                key = $"{(IsTool ? "T" : "I")}|{codes}|{others}";
+                return key;
+            }
+        }
+    }
+
+    /// <summary>
+    /// One pass over carried inventory, answering "how many of X am I holding" for any number
+    /// of requirements without rescanning slots. Rebuild per recount, throw away after.
+    ///
+    /// Slots collapse to one entry per collectible code (sample stack + summed size); matcher
+    /// evaluation then runs per distinct code rather than per slot, which is what keeps a
+    /// full-list recount cheap on a 40-slot inventory with a long pin list.
+    /// </summary>
+    public class InventorySnapshot
+    {
+        readonly Dictionary<string, (ItemStack Sample, int Total)> byCode
+            = new Dictionary<string, (ItemStack, int)>();
+
+        public InventorySnapshot(IEnumerable<IInventory> inventories)
+        {
+            foreach (var inv in inventories)
+            {
+                foreach (var slot in inv)
+                {
+                    var stack = slot?.Itemstack;
+                    var code = stack?.Collectible?.Code?.ToShortString();
+                    if (code == null) continue;
+
+                    byCode[code] = byCode.TryGetValue(code, out var cur)
+                        ? (cur.Sample, cur.Total + stack.StackSize)
+                        : (stack, stack.StackSize);
+                }
+            }
+        }
+
+        public int Count(Requirement req)
+        {
+            int total = 0;
+            foreach (var entry in byCode)
+            {
+                if (req.ExactCodes.Contains(entry.Key))
+                {
+                    total += entry.Value.Total;
+                    continue;
+                }
+                foreach (var m in req.OtherMatchers)
+                {
+                    if (m.SatisfiesAsIngredient(entry.Value.Sample, false)) { total += entry.Value.Total; break; }
+                }
+            }
+            return total;
+        }
     }
 
     /// <summary>
@@ -61,6 +135,13 @@ namespace Tallybook
         public int LayoutCount;
 
         public List<GridRecipe> Recipes = new List<GridRecipe>();
+
+        /// <summary>Stable identity for persistence: which recipe choice the player made.</summary>
+        public string Signature => $"{OutputCode}|{Pattern}|{Width}x{Height}";
+
+        /// <summary>Short label for the recipe-choice cycler.</summary>
+        public string ChoiceLabel(int perCraftTotal)
+            => $"{OutputName} x{OutputQuantity} ({perCraftTotal} items/craft)";
     }
 
     /// <summary>
@@ -120,33 +201,40 @@ namespace Tallybook
         }
 
         /// <summary>
-        /// Recipes for one specific item. This is the lookup the product actually needs: the
-        /// handbook hands over the exact stack the player was looking at, so there is nothing
-        /// to search for. Returns null when nothing crafts it — a valid state, not an error
+        /// Recipe choices for one specific item. This is the lookup the product actually needs:
+        /// the handbook hands over the exact stack the player was looking at, so there is
+        /// nothing to search for. Empty when nothing crafts it — a valid state, not an error
         /// (loot-only and trader-only items are still worth pinning, spec §11).
         /// </summary>
-        public RecipeVariantGroup FindGroupFor(ItemStack stack)
+        public List<RecipeVariantGroup> FindGroupsFor(string shortCode)
         {
             EnsureIndex();
 
-            var code = stack?.Collectible?.Code?.ToShortString();
-            if (code == null || !byOutput.TryGetValue(code, out var recipes)) return null;
+            if (shortCode == null || !byOutput.TryGetValue(shortCode, out var recipes))
+                return new List<RecipeVariantGroup>();
 
-            return BuildGroups(recipes).FirstOrDefault();
+            return BuildGroups(recipes);
         }
 
         /// <summary>
-        /// Substring search over output codes. Kept for the diagnostic command only — the
-        /// player-facing path is FindGroupFor, driven by a handbook click.
+        /// Recipe choices for expanding an ingredient row (spec §2a). The row may accept many
+        /// variants ("Board, any wood"), each with its own registry recipes; here those are
+        /// re-collapsed across outputs so the choice reads "Log (any wood) → Board" rather than
+        /// one choice per tree. Recipes only merge when their shape and quantities line up, so
+        /// a mod wood with a different plank ratio stays a separate, honest choice.
         /// </summary>
-        public List<RecipeVariantGroup> FindVariantGroups(string codePart)
+        public List<RecipeVariantGroup> FindExpansionGroups(Requirement req)
         {
             EnsureIndex();
 
-            return BuildGroups(byOutput.Where(kv => kv.Key.Contains(codePart)).SelectMany(kv => kv.Value));
+            var recipes = req.ExactCodes
+                .Where(code => byOutput.ContainsKey(code))
+                .SelectMany(code => byOutput[code]);
+
+            return BuildGroups(recipes, collapseOutputs: true);
         }
 
-        List<RecipeVariantGroup> BuildGroups(IEnumerable<GridRecipe> recipes)
+        List<RecipeVariantGroup> BuildGroups(IEnumerable<GridRecipe> recipes, bool collapseOutputs = false)
         {
             return recipes
                 // One group per item, matching how a player thinks about it — and how the
@@ -157,7 +245,14 @@ namespace Tallybook
                 // RecipeGroup stays in the key because the game documents it as the author's
                 // way to split handbook previews apart; two recipes an author deliberately
                 // separated should not be silently recombined here.
-                .GroupBy(r => $"{OutputCode(r)}|{r.RecipeGroup}")
+                //
+                // collapseOutputs (expansion lookups): the outputs themselves are variants of
+                // the same ingredient row ("Board" in every wood), so grouping by output would
+                // recreate the per-wood explosion one level down. Shape+quantity gates in
+                // BuildRequirements keep genuinely different recipes from merging.
+                .GroupBy(r => collapseOutputs
+                    ? $"{r.RecipeGroup}|{r.IngredientPattern}|{r.Width}x{r.Height}|{OutputQuantity(r)}"
+                    : $"{OutputCode(r)}|{r.RecipeGroup}")
                 .Select(g =>
                 {
                     // Represent the group by its cheapest layout. Layouts can want very
@@ -371,37 +466,9 @@ namespace Tallybook
         public string OutputCode(GridRecipe recipe)
             => recipe?.Output?.ResolvedItemStack?.Collectible?.Code?.ToShortString() ?? "?";
 
-        /// <summary>
-        /// How many of an ingredient are needed to end up with <paramref name="wanted"/> of the
-        /// output. Crafts are whole: wanting 3 planks from a recipe that yields 4 still costs a
-        /// full craft's ingredients (spec §2a).
-        /// </summary>
-        public static int NeededFor(Requirement req, int wanted, int outputQuantity)
-        {
-            if (outputQuantity < 1) outputQuantity = 1;
-            int crafts = (wanted + outputQuantity - 1) / outputQuantity;
-            return req.Quantity * Math.Max(1, crafts);
-        }
-
         /// <summary>Total items consumed by a recipe, used to pick a group's cheapest layout.</summary>
         int TotalIngredientCount(GridRecipe recipe)
             => ConsumedIngredients(recipe).Sum(c => c.Quantity);
-
-        /// <summary>
-        /// A clickable handbook link for chat, e.g. "handbook://block-bookshelf". The game's own
-        /// assets use a bare path for the default domain and "domain:path" otherwise. Returns
-        /// null when there is nothing to link to, so callers can omit the link rather than
-        /// print a dead one.
-        /// </summary>
-        public string HandbookLink(ItemStack stack)
-        {
-            var code = stack?.Collectible?.Code;
-            if (code == null) return null;
-
-            string kind = stack.Class == EnumItemClass.Block ? "block" : "item";
-            string path = code.Domain == "game" ? code.Path : $"{code.Domain}:{code.Path}";
-            return $"handbook://{kind}-{path}";
-        }
 
         /// <summary>Output count per craft — the divisor in the §2a deficit math.</summary>
         public int OutputQuantity(GridRecipe recipe)

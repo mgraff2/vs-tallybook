@@ -9,12 +9,24 @@ Tallybook answers "what do I still need, and am I done?"
 [tallybook-mod-spec.md](tallybook-mod-spec.md); implementation follows the build order in
 §10 of that document. Nothing is released yet.
 
-Working today: open the handbook, find something, and click **"Add to Tallybook"** at the
-bottom of its page. Then `.tallybook` shows your list with live ingredient counts — satisfied,
-partial or missing — updating as your inventory changes. `.tallybook unpin <name>` and
-`.tallybook clear` manage the list, which is saved per world.
+### How it works
 
-The HUD overlay, the management dialog and the manual expansion tree are not built yet.
+1. **Pin** — open the handbook (H), find the thing you want to build, click
+   **"Add to Tallybook"** at the bottom of its page. Pinning again raises the count.
+2. **Manage** — press **L** (rebindable): every pinned item with − / + steppers and direct
+   count entry, colour-coded ingredient rows (`have/needed`), tool checks, unpin and
+   clear-all behind confirms.
+3. **Expand** — any craftable ingredient row has an **Expand** button that unfolds its own
+   recipe beneath it, sized to what you still *lack*: need 4 spiles, carry 1 → the children
+   ask for materials for 3. Crafting shrinks them live. Nested to any depth, one deliberate
+   click per level, with a recipe switcher where an ingredient has several recipes and a
+   cycle guard so recipe loops can't unfold forever. Never automatic (see "Design notes").
+4. **Gather** — the corner HUD (toggle **K**) shows merged totals across all pins: one
+   `Boards 12/48` line even when three pinned items want boards. Expanded intermediates move
+   out of the gather list — they're craft-steps now, not shopping items.
+
+Everything updates the instant your inventory changes, and the list (counts, recipe choices,
+expansion state) is saved per world.
 
 ## Why it works with every content mod, for free
 
@@ -23,20 +35,17 @@ already present in the client's recipe registries. Tallybook reads those registr
 That means every content mod's recipes are supported with zero compatibility patches — not
 as a maintenance promise, but as a property of where the data lives.
 
-## Planned features
+### Configuration (`VintagestoryData/ModConfig/tallybook.json`)
 
-- **Pin from the handbook** — any craftable item, with a recipe picker when an item has
-  several recipes.
-- **Live ingredient tracking** — `have/needed` per ingredient, recomputed on inventory
-  change, colour-coded satisfied / partial / none.
-- **Manual expansion tree** — expand any craftable ingredient into its own recipe, scaled to
-  what you still *lack*, nested to any depth. Never automatic (see "Design notes" below).
-- **HUD overlay** — always-on corner readout merging totals across all pins: one
-  `Boards 12/48` line even when three pinned items want boards.
-- **Management dialog** — counts, steppers, direct numeric entry, recipe swaps, unpin,
-  clear-all.
-- **Per-world persistence** — your list is still there tomorrow.
-- **Client-side only** — installable per player, works on any server, no server component.
+| Key | Default | Meaning |
+|---|---|---|
+| `HudPosition` | `"topright"` | `topleft` / `topright` / `bottomleft` / `bottomright` |
+| `HudMaxRows` | `12` | gather rows before `+N more…` |
+| `HudVisible` | `true` | HUD default; K toggles at runtime |
+| `ConfirmOnUnpin` | `true` | ask before unpinning |
+| `ColorSatisfied` / `ColorPartial` / `ColorNone` | `#80FF80` / `#FFCC66` / `#909090` | status colours |
+
+Hotkeys (L, K) are rebindable in Settings → Controls like any other key.
 
 ## Install
 
@@ -80,18 +89,21 @@ Headless boots validate zip packaging, modinfo/dependency declarations, assembly
 across game versions, and the client-only gate — **not** client behaviour, which for this mod
 is most of it. Manual pre-release checklist for what the server can't see:
 
-1. **Recipe resolution** — pin items from several crafting systems (grid, smithing, clay
-   forming, barrel, cooking) and confirm ingredients and quantities match the handbook.
-2. **Live counting** — pick up and drop ingredients; rows must flip state immediately, not
-   on a timer. Check wildcard ingredients ("any plank") count matching items collectively.
-3. **Expansion math** — expand a node while partially stocked; children must size to the
+1. **Pin flow** — handbook page shows "Add to Tallybook"; clicking pins, re-clicking
+   increments, and the L dialog and K HUD both reflect it.
+2. **Counting** — pick up and drop ingredients; dialog rows and HUD lines must flip state
+   immediately, not on a timer. "Any wood" rows must count all woods collectively.
+3. **Counts** — steppers and direct numeric entry; typing must not lose focus mid-number;
+   stepping to 0 asks before unpinning.
+4. **Expansion math** — expand a node while partially stocked; children must size to the
    deficit, shrink as you craft, and scale with the root pin count. Confirm the cycle guard
-   refuses to expand an item into its own ancestor.
-4. **HUD leaves rule** — expanding a node must remove it from the HUD's merged gather totals
-   and replace it with its children.
-5. **With Pin Matrix active** — open both mods' dialogs and HUDs together: no hotkey
-   collision, no overlapping/hidden GUI, both HUD elements readable.
-6. **Persistence** — relog and confirm pins, counts, chosen recipes, and expansion state
+   refuses with a visible reason, and the recipe switcher recomputes children.
+5. **HUD leaves rule** — expanding a node must remove it from the HUD's merged gather totals
+   and replace it with its children; collapsing restores it.
+6. **With Pin Matrix active** — open both mods' dialogs and HUDs together: no hotkey
+   collision, no overlapping/hidden GUI, both HUD elements readable, and the Tallybook HUD
+   must not fight the vanilla coordinate overlay for its corner.
+7. **Persistence** — relog and confirm pins, counts, chosen recipes, and expansion state
    survive; corrupt the JSON by hand and confirm it degrades to an empty list, never a crash.
 
 ## Design notes

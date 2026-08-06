@@ -187,3 +187,7 @@ if ($failed.Count -gt 0) {
     exit 1
 }
 Write-Host "COMPAT TEST PASSED: all $($results.Count) combos boot clean" -ForegroundColor Green
+# Explicit success exit: the caller (version-sweep.ps1) reads $LASTEXITCODE, which only
+# native commands and `exit` set. Without this, a -SkipBuild run that never invokes dotnet
+# leaves a stale code behind and a fully passing matrix can be reported as FAIL.
+exit 0

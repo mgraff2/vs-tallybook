@@ -59,6 +59,11 @@ being tested. `-Versions 1.22.0,1.22.6` checks just the endpoints when iterating
 When a new patch ships, append it to the `-Versions` default. The CDN 404s on versions that
 don't exist, which is how you find the current latest.
 
+`compat-test.ps1` ends with an explicit `exit 0` — do not remove it. The sweep reads
+`$LASTEXITCODE`, which only native commands and `exit` set; without it, a `-SkipBuild` run
+that never invokes dotnet leaves a stale code behind and a fully passing matrix gets reported
+as seven FAILs (this happened — the per-version log said PASSED while the summary said FAIL).
+
 Read the summary carefully: it reports `PASS` / `FAIL` / `SETUP`, and `SETUP` is **not** a mod
 failure — it means that version could not be tested at all (download or extraction problem).
 The distinction exists because a half-extracted server package boots without its worldgen and
@@ -154,6 +159,38 @@ Observed on a real modded client (~30,300 grid recipes), not theorised:
   quantity. When checking quantities, read the recipe JSON under
   `tools/server-cache/<ver>/assets/survival/recipes/grid/` rather than trusting the mod's own
   output.
+
+## Architecture (who talks to whom)
+
+`TallybookModSystem` wires everything; gameplay code never touches the registry or save file
+directly. One-way flow:
+
+- `RecipeProbe` — registry index (built per world), variant-group collapsing, expansion
+  lookups, `InventorySnapshot` (one pass over carried slots per recount).
+- `TallyTree` — pure math: deficit scaling, factor propagation, cycle guard, leaf
+  enumeration, expansion (de)serialization. No API types beyond the data model.
+- `PinStore` — the list + per-world JSON persistence + recipe preference memory.
+- `TallyService` — the only mutation funnel. Every store change triggers exactly one
+  `RecountAll()`, which fires `OnCountsChanged` only when a **signature of all visible facts**
+  (numbers AND structure: recipe choice, expansion shape) actually changed. The dialog and
+  HUD subscribe to that single event — they can never observe a structural change with stale
+  numbers, and they never redraw for a no-op.
+- `GuiDialogTallybook` (L) / `HudTallybook` (K) — surfaces. The dialog uses the Pin Matrix
+  recompose-everything pattern plus a **typing grace period**: recomposes steal focus, so
+  live recounts defer up to ~2s while a count field is being typed
+  (`restoringInputs` guards the SetValue→callback feedback loop — without it every recompose
+  looks like typing and defers the next update forever).
+
+GUI lessons inherited from Pin Matrix — do not relearn these:
+
+- **Never align a HUD dialog with EnumDialogArea corner alignments.** Vanilla's coordinate
+  overlay re-stacks itself below the first other RightTop-aligned composer every 250ms and
+  the two chase each other forever. Position absolutely (`EnumDialogArea.None` +
+  `WithFixedPosition`) and re-anchor on frame/scale change (1s tick).
+- Dispose a replaced `SingleComposer` via `RegisterCallback(..., 250)` — the old composer may
+  still be mid-iteration in the event loop that triggered the recompose.
+- Set `ignoreNextKeyPress = true` in `OnGuiOpened` — the opening hotkey's own char event
+  otherwise lands in the first text input.
 
 ## Handbook integration (the entry point)
 
