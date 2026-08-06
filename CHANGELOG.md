@@ -10,7 +10,14 @@ Project scaffolding and the build-order step 1 API probe. Not yet a usable mod.
   is spec §10 step 1 — it exists to validate registry access and inventory events against the
   real 1.22 API before anything is built on top of them.
 - Inventory counting is driven by `IInventory.SlotModified`, not polling, and reports only
-  values that actually changed.
+  values that actually changed. **Confirmed working in game.**
+- Wildcard recipes are collapsed back into a single requirement row. The registry expands
+  `plank-*` into one recipe per wood, so variants are counted collectively — "Board (any wood)
+  20/5" rather than naming one arbitrary wood and reporting 0/5.
+- One entry per item, with a clickable `[handbook]` link for the grid layouts. Where layouts
+  disagree on quantity, the cheapest is shown and labelled as such.
+- Recipes are indexed once per world instead of rescanning ~30,000 entries per lookup, and
+  inventory events are coalesced into a single recount.
 - Design spec finalised (`tallybook-mod-spec.md`).
 - Client-only mod skeleton: `modinfo.json` (`"side": "Client"`, requires game 1.22.0) and a
   `ModSystem` gated to `EnumAppSide.Client`.

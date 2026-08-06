@@ -50,9 +50,15 @@ namespace Tallybook
         public string OutputCode;
         public string OutputName;
         public int OutputQuantity;
+        public ItemStack OutputStack;
         public string Pattern;
         public int Width;
         public int Height;
+
+        /// <summary>How many distinct grid arrangements make this item. Shown as a count only —
+        /// the handbook is where the arrangements themselves belong.</summary>
+        public int LayoutCount;
+
         public List<GridRecipe> Recipes = new List<GridRecipe>();
     }
 
@@ -70,9 +76,46 @@ namespace Tallybook
     {
         readonly ICoreClientAPI capi;
 
+        /// <summary>
+        /// Output code -> recipes producing it. A modded client carries ~30,000 grid recipes
+        /// and rescanning all of them per lookup is the kind of cost that is invisible in a
+        /// chat command and ruinous in a HUD that refreshes on every inventory change. Built
+        /// once, then reused.
+        /// </summary>
+        Dictionary<string, List<GridRecipe>> byOutput;
+
         public RecipeProbe(ICoreClientAPI capi)
         {
             this.capi = capi;
+        }
+
+        /// <summary>
+        /// Drop the index. Recipes arrive from the server on join, so a different server or
+        /// world means a different recipe set.
+        /// </summary>
+        public void InvalidateIndex() => byOutput = null;
+
+        public int IndexedRecipeCount => capi.World?.GridRecipes?.Count ?? 0;
+
+        void EnsureIndex()
+        {
+            if (byOutput != null) return;
+
+            byOutput = new Dictionary<string, List<GridRecipe>>();
+            var all = capi.World?.GridRecipes;
+            if (all == null) return;
+
+            foreach (var r in all)
+            {
+                string code = OutputCode(r);
+                if (code == "?") continue;
+                if (!byOutput.TryGetValue(code, out var list))
+                {
+                    list = new List<GridRecipe>();
+                    byOutput[code] = list;
+                }
+                list.Add(r);
+            }
         }
 
         /// <summary>
@@ -82,32 +125,41 @@ namespace Tallybook
         /// </summary>
         public List<RecipeVariantGroup> FindVariantGroups(string codePart)
         {
-            var all = capi.World?.GridRecipes;
-            if (all == null) return new List<RecipeVariantGroup>();
+            EnsureIndex();
 
-            return all
-                .Where(r =>
-                {
-                    var code = r?.Output?.ResolvedItemStack?.Collectible?.Code;
-                    return code != null && code.ToShortString().Contains(codePart);
-                })
-                // Same output and same grid pattern means the same recipe wearing different
-                // wood. Different patterns are genuinely different recipes and must stay apart:
-                // the four bookshelf layouts need 7, 8, 8 and 5 planks respectively, and merging
-                // them would invent a quantity that matches none of them.
-                .GroupBy(r => $"{OutputCode(r)}|{r.IngredientPattern}|{r.Width}x{r.Height}")
+            return byOutput
+                .Where(kv => kv.Key.Contains(codePart))
+                .SelectMany(kv => kv.Value)
+                // One group per item, matching how a player thinks about it — and how the
+                // handbook presents it. Grid layout is deliberately NOT part of the key: an
+                // item craftable in four arrangements is still one thing to go shopping for,
+                // and the handbook is the right place to see the arrangements.
+                //
+                // RecipeGroup stays in the key because the game documents it as the author's
+                // way to split handbook previews apart; two recipes an author deliberately
+                // separated should not be silently recombined here.
+                .GroupBy(r => $"{OutputCode(r)}|{r.RecipeGroup}")
                 .Select(g =>
                 {
-                    var first = g.First();
+                    // Represent the group by its cheapest layout. Layouts can want very
+                    // different amounts (the bookshelf ones need 7, 8, 8 and 5 planks), and a
+                    // shopping list has to commit to one number. The smallest is the honest
+                    // floor: gather this much and you can definitely build one. Anything larger
+                    // would send the player after materials they may not need.
+                    var representative = g.OrderBy(TotalIngredientCount).First();
                     return new RecipeVariantGroup
                     {
-                        OutputCode = OutputCode(first),
-                        OutputName = first.Output?.ResolvedItemStack?.GetName() ?? "?",
-                        OutputQuantity = OutputQuantity(first),
-                        Pattern = first.IngredientPattern,
-                        Width = first.Width,
-                        Height = first.Height,
-                        Recipes = g.ToList()
+                        OutputCode = OutputCode(representative),
+                        OutputName = representative.Output?.ResolvedItemStack?.GetName() ?? "?",
+                        OutputQuantity = OutputQuantity(representative),
+                        OutputStack = representative.Output?.ResolvedItemStack,
+                        Pattern = representative.IngredientPattern,
+                        Width = representative.Width,
+                        Height = representative.Height,
+                        LayoutCount = g.Select(r => r.IngredientPattern).Distinct().Count(),
+                        // Representative first: BuildRequirements takes its shape as the row
+                        // template and merges only same-shaped variants into it.
+                        Recipes = g.OrderBy(TotalIngredientCount).ToList()
                     };
                 })
                 .OrderByDescending(g => g.Recipes.Count)
@@ -299,6 +351,26 @@ namespace Tallybook
 
         public string OutputCode(GridRecipe recipe)
             => recipe?.Output?.ResolvedItemStack?.Collectible?.Code?.ToShortString() ?? "?";
+
+        /// <summary>Total items consumed by a recipe, used to pick a group's cheapest layout.</summary>
+        int TotalIngredientCount(GridRecipe recipe)
+            => ConsumedIngredients(recipe).Sum(c => c.Quantity);
+
+        /// <summary>
+        /// A clickable handbook link for chat, e.g. "handbook://block-bookshelf". The game's own
+        /// assets use a bare path for the default domain and "domain:path" otherwise. Returns
+        /// null when there is nothing to link to, so callers can omit the link rather than
+        /// print a dead one.
+        /// </summary>
+        public string HandbookLink(ItemStack stack)
+        {
+            var code = stack?.Collectible?.Code;
+            if (code == null) return null;
+
+            string kind = stack.Class == EnumItemClass.Block ? "block" : "item";
+            string path = code.Domain == "game" ? code.Path : $"{code.Domain}:{code.Path}";
+            return $"handbook://{kind}-{path}";
+        }
 
         /// <summary>Output count per craft — the divisor in the §2a deficit math.</summary>
         public int OutputQuantity(GridRecipe recipe)

@@ -105,9 +105,14 @@ $results = @()
 foreach ($combo in $combos) {
     $name = $combo.name
     Write-Host "== combo '$name' ..." -NoNewline
-    # no "tallybook" in the dir name: the server logs the Mods search path into
-    # server-main.log, which would trip the exactly-one-mention silence check below
-    $dp = "$env:TEMP\tbk-compat-$name"
+    # No "tallybook" in the dir name: the server logs the Mods search path into
+    # server-main.log, which would trip the exactly-one-mention silence check below.
+    #
+    # The PID keeps concurrent runs apart. version-sweep.ps1 invokes this script repeatedly,
+    # and a second run started by hand while a sweep is going would otherwise delete the
+    # sweep's data directory mid-boot — producing a phantom "server did not start" failure
+    # against a mod that is perfectly fine.
+    $dp = "$env:TEMP\tbk-compat-$PID-$name"
     if (Test-Path $dp) { Remove-Item -Recurse -Force $dp }
     New-Item -ItemType Directory -Force "$dp\Mods" | Out-Null
     Copy-Item $ourZip "$dp\Mods"

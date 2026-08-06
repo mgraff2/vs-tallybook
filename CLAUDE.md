@@ -31,7 +31,9 @@ Builds the zip into `dist/`, then boots a headless dedicated server
 +each companion mod, all together — and fails on any `[Error]`/`[Warning]`, a wrong mod
 count/load order, or a violated marker (invariants below). `-SkipBuild` reuses the packaged
 zip. Companion zips are cached in `tools/compat-cache/` (gitignored; sourced live-Mods-
-folder-first, else mod DB API) — delete the cache to re-source.
+folder-first, else mod DB API) — delete the cache to re-source. Server data paths are keyed by
+PID, so a hand-run test and a running sweep no longer delete each other's directory mid-boot
+(that collision reports as "server did not start" and looks like a mod failure).
 
 **Companion set: `pinmatrix` (Pin Matrix — Waypoint Manager).** Our own other client-side
 mod: same author, same client, competing for hotkeys, HUD corners, and GUI dialog space, and
@@ -108,15 +110,50 @@ testing"). Run it before any release that touches GUI, recipe resolution, or cou
 
 Observed on a real modded client (~30,300 grid recipes), not theorised:
 
-- **Recipe counts per conceptual item are large.** A substring query for "bookshelf" matched
-  enough recipes to produce ~231 chat lines — material and orientation variants each carry
-  their own registry entry. Spec §3 and §2a assume a recipe picker that "defaults to the first
-  and lists the alternatives"; a flat list of hundreds is unusable. The picker will need to
-  group by output code (and probably collapse variant suffixes), not enumerate raw registry
-  hits. Any list surfaced to the player needs a cap **and** an explicit "N more not shown" —
-  silently truncating turns a partial answer into a confident wrong one.
-- **Registry access is confirmed live**, so the §1 "every content mod's recipes for free"
-  claim holds in practice, not just in principle.
+- **Wildcard recipes do NOT stay one recipe — this contradicts spec §2a.** The spec says
+  "one recipe accepting 'any log' stays one recipe." The registry says otherwise: the game
+  expands a wildcard ingredient into one concrete recipe per variant at resolve time.
+  `bookshelf.json` declares `"P": { code: "plank-*", name: "wood" }`, and the registry holds
+  a separate resolved recipe for every wood. That is why a modded client carries ~30,300 grid
+  recipes and why one query matched enough to write ~231 chat lines.
+
+  Consequence: **never present a raw registry recipe to the player.** Group by output code
+  (plus `RecipeGroup`), then collapse the variants inside a group into one requirement that
+  accepts them all and counts them collectively. Watching a single raw recipe reports
+  "Board (Aged oak) 0/7" while the player carries twenty birch boards — accurate about that
+  registry entry, and a lie about the question being asked.
+
+  **Grid layout is deliberately not part of the grouping key** (product decision, Mark): an
+  item craftable four ways is still one thing to shop for, and the handbook is where layouts
+  belong — link to it with `handbook://block-<path>` / `handbook://item-<path>` (chat renders
+  `<a href="...">`). Because layouts want different amounts, a group is represented by its
+  **cheapest** layout, and the row says so. Cheapest is the honest floor: gather that much and
+  you can definitely build one, whereas showing a larger layout's numbers sends the player
+  after materials they may not need. `BuildRequirements` only merges variants whose shape and
+  quantities match the representative, so a 5-plank layout never absorbs an 8-plank one.
+- **Registry access and live inventory events are both confirmed working** on a real modded
+  client, so §1's "every content mod's recipes for free" holds in practice, not just in
+  principle, and §4's event-driven counting needs no polling fallback.
+- **Ingredient `Name` survives expansion** ("wood"), which is what lets a collapsed row read
+  "Board (any wood)" rather than an anonymous "any".
+- **The handbook groups more coarsely than we do, deliberately.** It shows one cycling preview
+  per item (`SlideshowGridRecipeTextComponent`, "flips through given array of grid recipes
+  every second"), splittable by `GridRecipe.RecipeGroup` — documented as "info used by the
+  handbook". Our grouping includes `RecipeGroup` to respect that authoring intent, and
+  otherwise matches the handbook's granularity — one entry per item, layouts left to the
+  handbook. There is **no reusable public recipe index** — the handbook builds its own, so we
+  build our own (`RecipeProbe.EnsureIndex`, output code -> recipes, invalidated on join/leave
+  since recipes arrive from the server). Rescanning ~30,000 recipes per lookup is invisible in
+  a chat command and ruinous in a HUD that refreshes on every inventory change.
+- **Coalesce inventory events.** Moving one stack raises `SlotModified` for the source and
+  destination separately; recounting per event both wastes work and briefly displays a number
+  that was never true. Defer to one recount via `capi.Event.RegisterCallback(..., 0)`. This
+  also avoids mutating event subscriptions from inside an event handler.
+- **Verified independently:** a bookshelf's 7 planks match `bookshelf.json`'s
+  `P_P,PPP,P_P` pattern, confirming that merging duplicate grid cells produces the right
+  quantity. When checking quantities, read the recipe JSON under
+  `tools/server-cache/<ver>/assets/survival/recipes/grid/` rather than trusting the mod's own
+  output.
 
 ## Design invariants — do not "fix" these
 

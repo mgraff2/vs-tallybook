@@ -20,10 +20,6 @@ namespace Tallybook
     /// </summary>
     public class TallybookModSystem : ModSystem
     {
-        // Chat is a terrible place to dump a long list, and a probe that floods it buries the
-        // one recipe you actually asked about.
-        const int MaxListedOutputs = 8;
-
         ICoreClientAPI capi;
         RecipeProbe probe;
 
@@ -33,6 +29,11 @@ namespace Tallybook
         // SlotModified fires far more often than displayed values change.
         RecipeVariantGroup watched;
         List<Requirement> watchedRequirements = new List<Requirement>();
+        List<Requirement> watchedTools = new List<Requirement>();
+
+        // Picking up one stack modifies several slots, and each modification raises its own
+        // event. Without coalescing, a single pickup triggers a full recount per slot touched.
+        bool recountQueued;
         readonly Dictionary<string, int> lastCounts = new Dictionary<string, int>();
         readonly HashSet<IInventory> subscribed = new HashSet<IInventory>();
 
@@ -59,7 +60,12 @@ namespace Tallybook
 
         void OnPlayerJoin(IClientPlayer player)
         {
-            if (player?.PlayerUID == capi.World?.Player?.PlayerUID) SubscribeToCarriedInventories();
+            if (player?.PlayerUID != capi.World?.Player?.PlayerUID) return;
+
+            // Recipes are pushed by the server on join, so any index built against a previous
+            // world is stale.
+            probe.InvalidateIndex();
+            SubscribeToCarriedInventories();
         }
 
         TextCommandResult OnProbeCommand(TextCommandCallingArgs args)
@@ -91,6 +97,7 @@ namespace Tallybook
 
             watched = groups[0];
             watchedRequirements = probe.BuildRequirements(watched);
+            watchedTools = probe.BuildRequirements(watched, tools: true);
             lastCounts.Clear();
             SubscribeToCarriedInventories();
             SeedBaseline();
@@ -99,18 +106,11 @@ namespace Tallybook
             sb.AppendLine($"Tallybook: {groups.Count} recipe(s) matching '{query}'. Watching:");
             sb.Append(DescribeWatched());
 
+            // Groups are now one-per-item, so anything extra here is a genuinely different
+            // item that also matched the query — worth a count, not a listing.
             if (groups.Count > 1)
             {
-                sb.AppendLine($"Other recipes ({groups.Count - 1}):");
-                foreach (var g in groups.Skip(1).Take(MaxListedOutputs))
-                {
-                    sb.AppendLine($"  {g.OutputName} x{g.OutputQuantity} [{g.Pattern}] " +
-                                  $"({g.Recipes.Count} variant(s))");
-                }
-                // Never truncate silently — a shortened list that doesn't say so reads as
-                // "that's all of them".
-                int withheld = (groups.Count - 1) - MaxListedOutputs;
-                if (withheld > 0) sb.AppendLine($"  ...and {withheld} more not shown — narrow the query.");
+                sb.AppendLine($"  ({groups.Count - 1} other item(s) also matched '{query}'.)");
             }
             return TextCommandResult.Success(sb.ToString().TrimEnd());
         }
@@ -118,9 +118,17 @@ namespace Tallybook
         string DescribeWatched()
         {
             var sb = new StringBuilder();
-            sb.AppendLine($"  Output: {watched.OutputName} x{watched.OutputQuantity} " +
-                          $"(code {watched.OutputCode}, {watched.Width}x{watched.Height}, " +
-                          $"pattern {watched.Pattern}, {watched.Recipes.Count} variant recipe(s))");
+            string link = probe.HandbookLink(watched.OutputStack);
+            string handbook = link == null ? "" : $" <a href=\"{link}\">[handbook]</a>";
+
+            sb.AppendLine($"  {watched.OutputName} x{watched.OutputQuantity}{handbook}");
+
+            // Say plainly that the numbers below describe the cheapest arrangement, so a player
+            // comparing against a different layout in the handbook knows why they differ.
+            if (watched.LayoutCount > 1)
+            {
+                sb.AppendLine($"  (cheapest of {watched.LayoutCount} grid layouts — see handbook for the others)");
+            }
 
             foreach (var req in watchedRequirements)
             {
@@ -128,7 +136,7 @@ namespace Tallybook
                 sb.AppendLine($"    {StatusMark(have, req.Quantity)} {req.DisplayName}  {have}/{req.Quantity}");
             }
 
-            foreach (var tool in probe.BuildRequirements(watched, tools: true))
+            foreach (var tool in watchedTools)
             {
                 bool present = probe.CountCarried(tool) > 0;
                 sb.AppendLine($"    {(present ? "[x]" : "[ ]")} requires: {tool.DisplayName} (not consumed)");
@@ -164,6 +172,7 @@ namespace Tallybook
         {
             watched = null;
             watchedRequirements = new List<Requirement>();
+            watchedTools = new List<Requirement>();
             lastCounts.Clear();
         }
 
@@ -171,10 +180,27 @@ namespace Tallybook
         {
             foreach (var inv in subscribed) inv.SlotModified -= OnSlotModified;
             subscribed.Clear();
+            probe?.InvalidateIndex();
             StopWatching();
         }
 
         void OnSlotModified(int slotId)
+        {
+            if (watched == null || recountQueued) return;
+
+            // Coalesce to one recount on the next tick. Moving a stack fires SlotModified for
+            // the source and destination slots separately, and mid-move the counts are briefly
+            // wrong — recounting per event would both waste work and flash a number that was
+            // never true.
+            recountQueued = true;
+            capi.Event.RegisterCallback(_ =>
+            {
+                recountQueued = false;
+                Recount();
+            }, 0);
+        }
+
+        void Recount()
         {
             if (watched == null) return;
 
@@ -183,7 +209,7 @@ namespace Tallybook
             SubscribeToCarriedInventories();
 
             // Re-counting per requirement walks every carried slot again, so this is
-            // O(requirements x slots) per event. Fine for one watched recipe; the HUD's merged
+            // O(requirements x slots) per change. Fine for one watched recipe; the HUD's merged
             // totals across every pin will need a single inventory pass building a code->count
             // map instead. Event-driven is the requirement (spec §4) — this shape is not.
             foreach (var req in watchedRequirements)
