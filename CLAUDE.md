@@ -166,6 +166,10 @@ types), and a throwaway net10.0 console app referencing `VintagestoryAPI.dll` /
   `client-debug.log` for `[tallybook] Loaded assembly` and `Starting system:
   TallybookModSystem`; if both are present, registration worked and the prefix is the problem.
   Document commands with the dot in README, CHANGELOG and `WithExamples`.
+  Read parsed values as `args[0]`, and **never gate on `args.ArgCount`** — parsers consume the
+  raw arguments while parsing, so `ArgCount` reads 0 inside a handler even when `args[0]`
+  holds the value. Gating on it silently drops every argument and the command behaves as if
+  it were called bare.
 - **Lifecycle:** `capi.Event.PlayerJoin` (compare `PlayerUID` against
   `capi.World.Player.PlayerUID` — it fires for other players too) and `capi.Event.LeaveWorld`.
 

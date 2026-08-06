@@ -58,7 +58,11 @@ namespace Tallybook
 
         TextCommandResult OnProbeCommand(TextCommandCallingArgs args)
         {
-            var query = (args.ArgCount > 0 ? args[0] as string : null)?.Trim();
+            // Read the parsed value directly, never gated on args.ArgCount: parsers consume
+            // the raw arguments while parsing, so by the time a handler runs ArgCount reads 0
+            // even though args[0] holds the value. Gating on it silently discards every
+            // argument and makes the command look like it was called bare.
+            var query = (args.Parsers.Count > 0 ? args[0] as string : null)?.Trim();
 
             if (string.IsNullOrEmpty(query))
             {
