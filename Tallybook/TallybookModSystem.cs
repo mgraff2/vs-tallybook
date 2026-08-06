@@ -15,27 +15,25 @@ namespace Tallybook
     /// loads this assembly, but must never see a single line of Tallybook output — that
     /// silence is pinned as a regression invariant in tools/compat-test.ps1.
     ///
-    /// Currently at build-order step 1 (spec §10): a read-only probe validating recipe
-    /// registry access and live inventory events. No pinning, HUD, or persistence yet.
+    /// Pinning happens from the handbook (see HandbookPin), which is where the player already
+    /// is when they decide they want something. The chat command reports the list; it is not
+    /// the way things get onto it.
+    ///
+    /// Still missing from the spec: the HUD overlay (§5), the management dialog (§6), and the
+    /// manual expansion tree (§2a).
     /// </summary>
     public class TallybookModSystem : ModSystem
     {
         ICoreClientAPI capi;
         RecipeProbe probe;
+        PinStore store;
 
-        // The probe target is what makes the inventory-event wiring observable: with a target
-        // set, any carried-inventory change re-counts and reports only when a number actually
-        // moved. That "only on real change" filter is the same discipline the HUD will need —
-        // SlotModified fires far more often than displayed values change.
-        RecipeVariantGroup watched;
-        List<Requirement> watchedRequirements = new List<Requirement>();
-        List<Requirement> watchedTools = new List<Requirement>();
+        readonly Dictionary<string, int> lastCounts = new Dictionary<string, int>();
+        readonly HashSet<IInventory> subscribed = new HashSet<IInventory>();
 
         // Picking up one stack modifies several slots, and each modification raises its own
         // event. Without coalescing, a single pickup triggers a full recount per slot touched.
         bool recountQueued;
-        readonly Dictionary<string, int> lastCounts = new Dictionary<string, int>();
-        readonly HashSet<IInventory> subscribed = new HashSet<IInventory>();
 
         public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Client;
 
@@ -43,19 +41,23 @@ namespace Tallybook
         {
             capi = api;
             probe = new RecipeProbe(api);
+            store = new PinStore(api);
+            store.OnChanged += OnPinsChanged;
+
+            HandbookPin.Apply(api, OnPinRequested);
 
             // Registered on capi.ChatCommands, so this is a CLIENT command and players invoke
             // it as ".tallybook". A leading "/" is routed to the server, which has never heard
             // of us (and must not — see the server-side silence invariant) and answers "No
             // such command exists".
             api.ChatCommands.Create("tallybook")
-                .WithDescription("Probe grid recipes for an item and show carried-inventory counts")
-                .WithExamples(".tallybook bookshelf", ".tallybook off")
-                .WithArgs(api.ChatCommands.Parsers.OptionalAll("itemcode"))
-                .HandleWith(OnProbeCommand);
+                .WithDescription("Show your Tallybook shopping list")
+                .WithExamples(".tallybook", ".tallybook clear")
+                .WithArgs(api.ChatCommands.Parsers.OptionalAll("subcommand"))
+                .HandleWith(OnCommand);
 
             api.Event.PlayerJoin += OnPlayerJoin;
-            api.Event.LeaveWorld += Unsubscribe;
+            api.Event.LeaveWorld += OnLeaveWorld;
         }
 
         void OnPlayerJoin(IClientPlayer player)
@@ -66,77 +68,131 @@ namespace Tallybook
             // world is stale.
             probe.InvalidateIndex();
             SubscribeToCarriedInventories();
+            store.Load(Resolve);
         }
 
-        TextCommandResult OnProbeCommand(TextCommandCallingArgs args)
+        void OnLeaveWorld()
+        {
+            store.Save();
+            Unsubscribe();
+        }
+
+        // ---- pinning -----------------------------------------------------------------
+
+        void OnPinRequested(ItemStack stack)
+        {
+            var pin = store.Add(stack);
+            if (pin == null) return;
+
+            capi.ShowChatMessage(pin.HasRecipe
+                ? $"Tallybook: pinned {pin.DisplayName} x{pin.Count}. Type .tallybook to see your list."
+                : $"Tallybook: pinned {pin.DisplayName} x{pin.Count} — no crafting recipe known, kept as a reminder.");
+        }
+
+        /// <summary>
+        /// Re-resolve a pin's itemstack and recipe. Returns false when the item itself no longer
+        /// exists in this world's content.
+        /// </summary>
+        bool Resolve(Pin pin)
+        {
+            if (pin.Stack == null)
+            {
+                var loc = new AssetLocation(pin.Code);
+                var block = pin.IsBlock ? capi.World.GetBlock(loc) : null;
+                var item = pin.IsBlock ? null : capi.World.GetItem(loc);
+
+                if (block != null) pin.Stack = new ItemStack(block);
+                else if (item != null) pin.Stack = new ItemStack(item);
+                else return false;
+            }
+
+            // Recipes are re-resolved every time rather than persisted: a recipe mod added or
+            // removed between sessions must change the answer, not restore a stale one
+            // (spec §11).
+            pin.Group = probe.FindGroupFor(pin.Stack);
+            pin.Requirements = pin.Group == null
+                ? new List<Requirement>()
+                : probe.BuildRequirements(pin.Group);
+            pin.Tools = pin.Group == null
+                ? new List<Requirement>()
+                : probe.BuildRequirements(pin.Group, tools: true);
+            return true;
+        }
+
+        void OnPinsChanged()
+        {
+            foreach (var pin in store.Pins) Resolve(pin);
+            SubscribeToCarriedInventories();
+            SeedBaseline();
+        }
+
+        // ---- command -----------------------------------------------------------------
+
+        TextCommandResult OnCommand(TextCommandCallingArgs args)
         {
             // Read the parsed value directly, never gated on args.ArgCount: parsers consume
             // the raw arguments while parsing, so by the time a handler runs ArgCount reads 0
-            // even though args[0] holds the value. Gating on it silently discards every
-            // argument and makes the command look like it was called bare.
-            var query = (args.Parsers.Count > 0 ? args[0] as string : null)?.Trim();
+            // even though args[0] holds the value.
+            var sub = (args.Parsers.Count > 0 ? args[0] as string : null)?.Trim();
 
-            if (string.IsNullOrEmpty(query))
+            if (sub == "clear")
             {
-                return TextCommandResult.Success(
-                    $"Tallybook probe. Recipe registry holds {capi.World?.GridRecipes?.Count ?? 0} grid recipes. " +
-                    "Usage: .tallybook <part of an item code>, or .tallybook off to stop watching.");
+                store.Clear();
+                return TextCommandResult.Success("Tallybook: list cleared.");
             }
 
-            if (query == "off")
+            if (!string.IsNullOrEmpty(sub) && sub.StartsWith("unpin "))
             {
-                StopWatching();
-                return TextCommandResult.Success("Tallybook: stopped watching.");
+                string name = sub.Substring(6).Trim();
+                var match = store.Pins.FirstOrDefault(p =>
+                    p.Code.Contains(name) || p.DisplayName.ToLowerInvariant().Contains(name.ToLowerInvariant()));
+                if (match == null) return TextCommandResult.Success($"Tallybook: nothing pinned matching '{name}'.");
+                store.Remove(match.Code);
+                return TextCommandResult.Success($"Tallybook: unpinned {match.DisplayName}.");
             }
 
-            var groups = probe.FindVariantGroups(query);
-            if (groups.Count == 0)
+            if (store.Pins.Count == 0)
             {
-                return TextCommandResult.Success($"Tallybook: no grid recipe produces anything matching '{query}'.");
+                string how = HandbookPin.Active
+                    ? "Open the handbook, find something, and click \"Add to Tallybook\"."
+                    : "The handbook button could not be installed — see client-main.log.";
+                return TextCommandResult.Success($"Tallybook: your list is empty. {how}");
             }
-
-            watched = groups[0];
-            watchedRequirements = probe.BuildRequirements(watched);
-            watchedTools = probe.BuildRequirements(watched, tools: true);
-            lastCounts.Clear();
-            SubscribeToCarriedInventories();
-            SeedBaseline();
 
             var sb = new StringBuilder();
-            sb.AppendLine($"Tallybook: {groups.Count} recipe(s) matching '{query}'. Watching:");
-            sb.Append(DescribeWatched());
-
-            // Groups are now one-per-item, so anything extra here is a genuinely different
-            // item that also matched the query — worth a count, not a listing.
-            if (groups.Count > 1)
-            {
-                sb.AppendLine($"  ({groups.Count - 1} other item(s) also matched '{query}'.)");
-            }
-            return TextCommandResult.Success(sb.ToString().TrimEnd());
+            sb.AppendLine($"Tallybook — {store.Pins.Count} pinned:");
+            foreach (var pin in store.Pins) sb.Append(DescribePin(pin));
+            sb.Append("(.tallybook unpin <name> to remove, .tallybook clear to empty)");
+            return TextCommandResult.Success(sb.ToString());
         }
 
-        string DescribeWatched()
+        string DescribePin(Pin pin)
         {
             var sb = new StringBuilder();
-            string link = probe.HandbookLink(watched.OutputStack);
+            string link = probe.HandbookLink(pin.Stack);
             string handbook = link == null ? "" : $" <a href=\"{link}\">[handbook]</a>";
 
-            sb.AppendLine($"  {watched.OutputName} x{watched.OutputQuantity}{handbook}");
+            sb.AppendLine($"  {pin.DisplayName} x{pin.Count}{handbook}");
 
-            // Say plainly that the numbers below describe the cheapest arrangement, so a player
-            // comparing against a different layout in the handbook knows why they differ.
-            if (watched.LayoutCount > 1)
+            if (!pin.HasRecipe)
             {
-                sb.AppendLine($"  (cheapest of {watched.LayoutCount} grid layouts — see handbook for the others)");
+                sb.AppendLine("    (no crafting recipe known)");
+                return sb.ToString();
             }
 
-            foreach (var req in watchedRequirements)
+            if (pin.Group.LayoutCount > 1)
             {
+                sb.AppendLine($"    (cheapest of {pin.Group.LayoutCount} grid layouts — see handbook for the others)");
+            }
+
+            foreach (var req in pin.Requirements)
+            {
+                int needed = RecipeProbe.NeededFor(req, pin.Count, pin.Group.OutputQuantity);
                 int have = probe.CountCarried(req);
-                sb.AppendLine($"    {StatusMark(have, req.Quantity)} {req.DisplayName}  {have}/{req.Quantity}");
+                sb.AppendLine($"    {StatusMark(have, needed)} {req.DisplayName}  {have}/{needed}");
             }
 
-            foreach (var tool in watchedTools)
+            foreach (var tool in pin.Tools)
             {
                 bool present = probe.CountCarried(tool) > 0;
                 sb.AppendLine($"    {(present ? "[x]" : "[ ]")} requires: {tool.DisplayName} (not consumed)");
@@ -151,14 +207,22 @@ namespace Tallybook
             return "[ ]";                       // none
         }
 
+        // ---- live inventory tracking -------------------------------------------------
+
         /// <summary>
         /// Record current counts without reporting them, so the next inventory change reports
-        /// only what actually moved rather than replaying the whole ingredient list.
+        /// only what actually moved rather than replaying the whole list.
         /// </summary>
         void SeedBaseline()
         {
-            foreach (var req in watchedRequirements) lastCounts[req.DisplayName] = probe.CountCarried(req);
+            lastCounts.Clear();
+            foreach (var pin in store.Pins)
+            {
+                foreach (var req in pin.Requirements) lastCounts[CountKey(pin, req)] = probe.CountCarried(req);
+            }
         }
+
+        static string CountKey(Pin pin, Requirement req) => $"{pin.Code}|{req.DisplayName}";
 
         void SubscribeToCarriedInventories()
         {
@@ -168,30 +232,22 @@ namespace Tallybook
             }
         }
 
-        void StopWatching()
-        {
-            watched = null;
-            watchedRequirements = new List<Requirement>();
-            watchedTools = new List<Requirement>();
-            lastCounts.Clear();
-        }
-
         void Unsubscribe()
         {
             foreach (var inv in subscribed) inv.SlotModified -= OnSlotModified;
             subscribed.Clear();
             probe?.InvalidateIndex();
-            StopWatching();
+            lastCounts.Clear();
         }
 
         void OnSlotModified(int slotId)
         {
-            if (watched == null || recountQueued) return;
+            if (store.Pins.Count == 0 || recountQueued) return;
 
             // Coalesce to one recount on the next tick. Moving a stack fires SlotModified for
             // the source and destination slots separately, and mid-move the counts are briefly
             // wrong — recounting per event would both waste work and flash a number that was
-            // never true.
+            // never true. Deferring also avoids mutating event subscriptions inside a handler.
             recountQueued = true;
             capi.Event.RegisterCallback(_ =>
             {
@@ -202,36 +258,39 @@ namespace Tallybook
 
         void Recount()
         {
-            if (watched == null) return;
-
             // Backpack slots can appear after login (equipping a bag adds an inventory), so
             // re-scan rather than assuming the login-time set is final.
             SubscribeToCarriedInventories();
 
             // Re-counting per requirement walks every carried slot again, so this is
-            // O(requirements x slots) per change. Fine for one watched recipe; the HUD's merged
-            // totals across every pin will need a single inventory pass building a code->count
-            // map instead. Event-driven is the requirement (spec §4) — this shape is not.
-            foreach (var req in watchedRequirements)
+            // O(requirements x slots) per change. Acceptable for a chat list; the HUD's merged
+            // totals (spec §5) will need a single inventory pass building a code->count map.
+            foreach (var pin in store.Pins)
             {
-                string key = req.DisplayName;
-                int have = probe.CountCarried(req);
+                foreach (var req in pin.Requirements)
+                {
+                    string key = CountKey(pin, req);
+                    int needed = RecipeProbe.NeededFor(req, pin.Count, pin.Group.OutputQuantity);
+                    int have = probe.CountCarried(req);
 
-                bool known = lastCounts.TryGetValue(key, out int previous);
-                if (known && previous == have) continue;
-                lastCounts[key] = have;
+                    bool known = lastCounts.TryGetValue(key, out int previous);
+                    if (known && previous == have) continue;
+                    lastCounts[key] = have;
 
-                // An ingredient we have never counted before is a baseline being recorded,
-                // not a change the player caused — recording it silently keeps the first
-                // pickup after a probe from reporting every ingredient at once.
-                if (!known) continue;
+                    // An ingredient never counted before is a baseline being recorded, not a
+                    // change the player caused.
+                    if (!known) continue;
 
-                capi.ShowChatMessage($"Tallybook: {req.DisplayName} {have}/{req.Quantity} {StatusMark(have, req.Quantity)}");
+                    capi.ShowChatMessage(
+                        $"Tallybook: {req.DisplayName} {have}/{needed} {StatusMark(have, needed)} " +
+                        $"(for {pin.DisplayName})");
+                }
             }
         }
 
         public override void Dispose()
         {
+            HandbookPin.Remove();
             if (capi != null) Unsubscribe();
             base.Dispose();
         }

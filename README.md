@@ -9,21 +9,12 @@ Tallybook answers "what do I still need, and am I done?"
 [tallybook-mod-spec.md](tallybook-mod-spec.md); implementation follows the build order in
 §10 of that document. Nothing is released yet.
 
-Currently at step 1 of that build order: a read-only probe that proves the underlying data is
-reachable before any UI is built on it. In game, `.tallybook <part of an item code>` lists the
-grid recipes producing a matching item along with what you are carrying. The output format,
-schematically — actual items and numbers depend on the recipe and your inventory:
+Working today: open the handbook, find something, and click **"Add to Tallybook"** at the
+bottom of its page. Then `.tallybook` shows your list with live ingredient counts — satisfied,
+partial or missing — updating as your inventory changes. `.tallybook unpin <name>` and
+`.tallybook clear` manage the list, which is saved per world.
 
-```
-Tallybook: N recipe(s) matching '<query>'. Watching the first:
-  Output: <item name> xN (code <domain:code>, shapeless=<bool>, <W>x<H>)
-    [x] <ingredient>   have/needed     satisfied
-    [~] <ingredient>   have/needed     partial
-    [ ] <ingredient>   have/needed     none
-    [ ] requires: <tool> (not consumed) presence-checked, never counted
-```
-
-Counts update live as your inventory changes. `.tallybook off` stops watching.
+The HUD overlay, the management dialog and the manual expansion tree are not built yet.
 
 ## Why it works with every content mod, for free
 

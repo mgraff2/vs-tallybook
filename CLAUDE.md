@@ -155,6 +155,26 @@ Observed on a real modded client (~30,300 grid recipes), not theorised:
   `tools/server-cache/<ver>/assets/survival/recipes/grid/` rather than trusting the mod's own
   output.
 
+## Handbook integration (the entry point)
+
+Pinning is a click on the item's handbook page, not a typed item code. The player is already
+looking at the thing they want, and the handbook hands over a real `ItemStack` — so there is
+nothing to search for and nothing to guess. `RecipeProbe.FindGroupFor(stack)` is the product
+lookup; `FindVariantGroups(substring)` survives only for the diagnostic command.
+
+There is **no registration hook** for adding to a handbook page, so `HandbookPin` uses a
+Harmony postfix on `CollectibleBehaviorHandbookTextAndExtraInfo.GetHandbookInfo` (Harmony
+ships with the game *and* the dedicated server, verified across 1.22.0–1.22.6). The patch only
+appends a `LinkTextComponent` to the returned array — it reads nothing and alters nothing the
+game produced, and a failure to apply is caught and logged so the handbook keeps working
+without the button. Patching happens in `StartClientSide`, so `ShouldLoad` keeps it off
+servers entirely.
+
+Note this is the first `IsModEnabled`-adjacent machinery in the mod. It is not conditional on
+another mod, so the "no conditional compat registration" invariant above still holds — but if
+a handbook integration ever *does* branch on another mod, add the counted log marker described
+there.
+
 ## Design invariants — do not "fix" these
 
 These are deliberate and each one has a failure mode behind it (spec §2, §2a, §4):

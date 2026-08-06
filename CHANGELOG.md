@@ -2,7 +2,23 @@
 
 ## Unreleased — 0.1.0
 
-Project scaffolding and the build-order step 1 API probe. Not yet a usable mod.
+First working slice: pin items from the handbook and see what you still need.
+
+- **Pin from the handbook.** Every item's handbook page gains an "Add to Tallybook" link.
+  Clicking it pins that item; pinning again increments the count rather than duplicating the
+  row. Implemented as a Harmony postfix on
+  `CollectibleBehaviorHandbookTextAndExtraInfo.GetHandbookInfo`, which only appends to the
+  returned components — if the patch ever fails to apply, the handbook is unaffected and the
+  mod says so.
+- **`.tallybook`** lists your pins with live ingredient counts; `.tallybook unpin <name>` and
+  `.tallybook clear` manage it. The chat command reports the list, it is not how things get
+  onto it.
+- **Per-world persistence** (`ModData/tallybook/<savegameid>.json`). Only item code and count
+  are stored; itemstacks and recipes are re-resolved on load, so a world with different mods
+  degrades honestly instead of restoring something that no longer exists. A corrupt or missing
+  file yields an empty list, never a crash.
+- Items with no crafting recipe can still be pinned, and say so (spec §11).
+- Quantities scale with pin count, rounding up to whole crafts.
 
 - **Read-only recipe probe** (`.tallybook <item code>`): finds grid recipes producing a
   matching item and prints ingredients with live carried-inventory counts and satisfied /

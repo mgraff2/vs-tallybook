@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Vintagestory.API.Client;
@@ -119,17 +120,35 @@ namespace Tallybook
         }
 
         /// <summary>
-        /// Recipes producing something whose code contains <paramref name="codePart"/>, grouped
-        /// into variant groups. Substring rather than exact match so the command is usable by
-        /// hand ("spile" finding "game:spile-steel").
+        /// Recipes for one specific item. This is the lookup the product actually needs: the
+        /// handbook hands over the exact stack the player was looking at, so there is nothing
+        /// to search for. Returns null when nothing crafts it — a valid state, not an error
+        /// (loot-only and trader-only items are still worth pinning, spec §11).
+        /// </summary>
+        public RecipeVariantGroup FindGroupFor(ItemStack stack)
+        {
+            EnsureIndex();
+
+            var code = stack?.Collectible?.Code?.ToShortString();
+            if (code == null || !byOutput.TryGetValue(code, out var recipes)) return null;
+
+            return BuildGroups(recipes).FirstOrDefault();
+        }
+
+        /// <summary>
+        /// Substring search over output codes. Kept for the diagnostic command only — the
+        /// player-facing path is FindGroupFor, driven by a handbook click.
         /// </summary>
         public List<RecipeVariantGroup> FindVariantGroups(string codePart)
         {
             EnsureIndex();
 
-            return byOutput
-                .Where(kv => kv.Key.Contains(codePart))
-                .SelectMany(kv => kv.Value)
+            return BuildGroups(byOutput.Where(kv => kv.Key.Contains(codePart)).SelectMany(kv => kv.Value));
+        }
+
+        List<RecipeVariantGroup> BuildGroups(IEnumerable<GridRecipe> recipes)
+        {
+            return recipes
                 // One group per item, matching how a player thinks about it — and how the
                 // handbook presents it. Grid layout is deliberately NOT part of the key: an
                 // item craftable in four arrangements is still one thing to go shopping for,
@@ -351,6 +370,18 @@ namespace Tallybook
 
         public string OutputCode(GridRecipe recipe)
             => recipe?.Output?.ResolvedItemStack?.Collectible?.Code?.ToShortString() ?? "?";
+
+        /// <summary>
+        /// How many of an ingredient are needed to end up with <paramref name="wanted"/> of the
+        /// output. Crafts are whole: wanting 3 planks from a recipe that yields 4 still costs a
+        /// full craft's ingredients (spec §2a).
+        /// </summary>
+        public static int NeededFor(Requirement req, int wanted, int outputQuantity)
+        {
+            if (outputQuantity < 1) outputQuantity = 1;
+            int crafts = (wanted + outputQuantity - 1) / outputQuantity;
+            return req.Quantity * Math.Max(1, crafts);
+        }
 
         /// <summary>Total items consumed by a recipe, used to pick a group's cheapest layout.</summary>
         int TotalIngredientCount(GridRecipe recipe)
