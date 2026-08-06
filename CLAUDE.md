@@ -159,6 +159,13 @@ types), and a throwaway net10.0 console app referencing `VintagestoryAPI.dll` /
   Re-scan for new inventories on change; equipping a bag adds one after login.
 - **Commands:** `capi.ChatCommands.Create(name).WithDescription/.WithArgs/.HandleWith(...)`,
   parsers from `capi.ChatCommands.Parsers`, results via `TextCommandResult.Success/Error`.
+  **Client commands are invoked with a leading `.`, not `/`.** Register the name without any
+  prefix; the player types `.tallybook`. A `/` prefix routes to the server, which for a
+  client-only mod has never heard of the command and replies "No such command exists" — a
+  message that looks exactly like the mod failing to load. Before chasing that, check
+  `client-debug.log` for `[tallybook] Loaded assembly` and `Starting system:
+  TallybookModSystem`; if both are present, registration worked and the prefix is the problem.
+  Document commands with the dot in README, CHANGELOG and `WithExamples`.
 - **Lifecycle:** `capi.Event.PlayerJoin` (compare `PlayerUID` against
   `capi.World.Player.PlayerUID` — it fires for other players too) and `capi.Event.LeaveWorld`.
 

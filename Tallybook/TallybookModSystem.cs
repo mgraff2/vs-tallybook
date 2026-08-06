@@ -37,9 +37,13 @@ namespace Tallybook
             capi = api;
             probe = new RecipeProbe(api);
 
+            // Registered on capi.ChatCommands, so this is a CLIENT command and players invoke
+            // it as ".tallybook". A leading "/" is routed to the server, which has never heard
+            // of us (and must not — see the server-side silence invariant) and answers "No
+            // such command exists".
             api.ChatCommands.Create("tallybook")
                 .WithDescription("Probe grid recipes for an item and show carried-inventory counts")
-                .WithExamples("/tallybook spile", "/tallybook off")
+                .WithExamples(".tallybook spile", ".tallybook off")
                 .WithArgs(api.ChatCommands.Parsers.OptionalAll("itemcode"))
                 .HandleWith(OnProbeCommand);
 
@@ -60,7 +64,7 @@ namespace Tallybook
             {
                 return TextCommandResult.Success(
                     $"Tallybook probe. Recipe registry holds {capi.World?.GridRecipes?.Count ?? 0} grid recipes. " +
-                    "Usage: /tallybook <part of an item code>, or /tallybook off to stop watching.");
+                    "Usage: .tallybook <part of an item code>, or .tallybook off to stop watching.");
             }
 
             if (query == "off")
