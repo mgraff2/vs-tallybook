@@ -20,6 +20,10 @@ namespace Tallybook
     /// </summary>
     public class TallybookModSystem : ModSystem
     {
+        // Chat is a terrible place to dump a long list, and a probe that floods it buries the
+        // one recipe you actually asked about.
+        const int MaxListedOutputs = 8;
+
         ICoreClientAPI capi;
         RecipeProbe probe;
 
@@ -27,12 +31,9 @@ namespace Tallybook
         // set, any carried-inventory change re-counts and reports only when a number actually
         // moved. That "only on real change" filter is the same discipline the HUD will need —
         // SlotModified fires far more often than displayed values change.
-        // Chat is a terrible place to dump a long list, and a probe that floods it buries the
-        // one recipe you actually asked about.
-        const int MaxListedOutputs = 8;
-
-        GridRecipe watchedRecipe;
-        Dictionary<string, int> lastCounts = new Dictionary<string, int>();
+        RecipeVariantGroup watched;
+        List<Requirement> watchedRequirements = new List<Requirement>();
+        readonly Dictionary<string, int> lastCounts = new Dictionary<string, int>();
         readonly HashSet<IInventory> subscribed = new HashSet<IInventory>();
 
         public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Client;
@@ -48,7 +49,7 @@ namespace Tallybook
             // such command exists".
             api.ChatCommands.Create("tallybook")
                 .WithDescription("Probe grid recipes for an item and show carried-inventory counts")
-                .WithExamples(".tallybook spile", ".tallybook off")
+                .WithExamples(".tallybook bookshelf", ".tallybook off")
                 .WithArgs(api.ChatCommands.Parsers.OptionalAll("itemcode"))
                 .HandleWith(OnProbeCommand);
 
@@ -78,71 +79,59 @@ namespace Tallybook
 
             if (query == "off")
             {
-                watchedRecipe = null;
-                lastCounts.Clear();
+                StopWatching();
                 return TextCommandResult.Success("Tallybook: stopped watching.");
             }
 
-            var recipes = probe.FindRecipesProducing(query);
-            if (recipes.Count == 0)
+            var groups = probe.FindVariantGroups(query);
+            if (groups.Count == 0)
             {
                 return TextCommandResult.Success($"Tallybook: no grid recipe produces anything matching '{query}'.");
             }
 
-            // Group by output code before reporting. A substring query like "bookshelf" matches
-            // every wood and orientation variant, and listing each one floods the chat with
-            // hundreds of near-identical lines that answer nothing. Group, cap, and say plainly
-            // how many were withheld — a truncated list that doesn't admit it is a lie.
-            var groups = recipes
-                .GroupBy(r => probe.OutputCode(r))
-                .OrderBy(g => g.Key)
-                .ToList();
-
-            watchedRecipe = recipes[0];
+            watched = groups[0];
+            watchedRequirements = probe.BuildRequirements(watched);
             lastCounts.Clear();
             SubscribeToCarriedInventories();
-            SeedBaseline(watchedRecipe);
+            SeedBaseline();
 
             var sb = new StringBuilder();
-            sb.AppendLine($"Tallybook: {recipes.Count} recipe(s) producing {groups.Count} distinct " +
-                          $"item(s) matching '{query}'. Watching:");
-            sb.Append(DescribeRecipe(watchedRecipe));
+            sb.AppendLine($"Tallybook: {groups.Count} recipe(s) matching '{query}'. Watching:");
+            sb.Append(DescribeWatched());
 
-            string watchedCode = probe.OutputCode(watchedRecipe);
-            var others = groups.Where(g => g.Key != watchedCode).ToList();
-            if (others.Count > 0)
+            if (groups.Count > 1)
             {
-                sb.AppendLine($"Other matching outputs ({others.Count}):");
-                foreach (var g in others.Take(MaxListedOutputs))
+                sb.AppendLine($"Other recipes ({groups.Count - 1}):");
+                foreach (var g in groups.Skip(1).Take(MaxListedOutputs))
                 {
-                    sb.AppendLine($"  {g.Key} ({g.Count()} recipe(s))");
+                    sb.AppendLine($"  {g.OutputName} x{g.OutputQuantity} [{g.Pattern}] " +
+                                  $"({g.Recipes.Count} variant(s))");
                 }
-                int withheld = others.Count - MaxListedOutputs;
-                if (withheld > 0)
-                {
-                    sb.AppendLine($"  ...and {withheld} more not shown — narrow the query to reach them.");
-                }
+                // Never truncate silently — a shortened list that doesn't say so reads as
+                // "that's all of them".
+                int withheld = (groups.Count - 1) - MaxListedOutputs;
+                if (withheld > 0) sb.AppendLine($"  ...and {withheld} more not shown — narrow the query.");
             }
             return TextCommandResult.Success(sb.ToString().TrimEnd());
         }
 
-        string DescribeRecipe(GridRecipe recipe)
+        string DescribeWatched()
         {
             var sb = new StringBuilder();
-            var outStack = recipe.Output?.ResolvedItemStack;
-            sb.AppendLine($"  Output: {outStack?.GetName() ?? "?"} x{probe.OutputQuantity(recipe)} " +
-                          $"(code {outStack?.Collectible?.Code}, shapeless={recipe.Shapeless}, {recipe.Width}x{recipe.Height})");
+            sb.AppendLine($"  Output: {watched.OutputName} x{watched.OutputQuantity} " +
+                          $"(code {watched.OutputCode}, {watched.Width}x{watched.Height}, " +
+                          $"pattern {watched.Pattern}, {watched.Recipes.Count} variant recipe(s))");
 
-            foreach (var (ing, qty) in probe.ConsumedIngredients(recipe))
+            foreach (var req in watchedRequirements)
             {
-                int have = probe.CountCarried(ing);
-                sb.AppendLine($"    {StatusMark(have, qty)} {probe.DisplayName(ing)}  {have}/{qty}");
+                int have = probe.CountCarried(req);
+                sb.AppendLine($"    {StatusMark(have, req.Quantity)} {req.DisplayName}  {have}/{req.Quantity}");
             }
 
-            foreach (var tool in probe.Tools(recipe))
+            foreach (var tool in probe.BuildRequirements(watched, tools: true))
             {
                 bool present = probe.CountCarried(tool) > 0;
-                sb.AppendLine($"    {(present ? "[x]" : "[ ]")} requires: {probe.DisplayName(tool)} (not consumed)");
+                sb.AppendLine($"    {(present ? "[x]" : "[ ]")} requires: {tool.DisplayName} (not consumed)");
             }
             return sb.ToString();
         }
@@ -158,12 +147,9 @@ namespace Tallybook
         /// Record current counts without reporting them, so the next inventory change reports
         /// only what actually moved rather than replaying the whole ingredient list.
         /// </summary>
-        void SeedBaseline(GridRecipe recipe)
+        void SeedBaseline()
         {
-            foreach (var (ing, _) in probe.ConsumedIngredients(recipe))
-            {
-                lastCounts[probe.DisplayName(ing)] = probe.CountCarried(ing);
-            }
+            foreach (var req in watchedRequirements) lastCounts[req.DisplayName] = probe.CountCarried(req);
         }
 
         void SubscribeToCarriedInventories()
@@ -174,31 +160,36 @@ namespace Tallybook
             }
         }
 
+        void StopWatching()
+        {
+            watched = null;
+            watchedRequirements = new List<Requirement>();
+            lastCounts.Clear();
+        }
+
         void Unsubscribe()
         {
             foreach (var inv in subscribed) inv.SlotModified -= OnSlotModified;
             subscribed.Clear();
-            watchedRecipe = null;
-            lastCounts.Clear();
+            StopWatching();
         }
 
         void OnSlotModified(int slotId)
         {
-            if (watchedRecipe == null) return;
+            if (watched == null) return;
 
             // Backpack slots can appear after login (equipping a bag adds an inventory), so
             // re-scan rather than assuming the login-time set is final.
             SubscribeToCarriedInventories();
 
-            // Re-counting per ingredient walks every carried slot again, so this is
-            // O(ingredients x slots) per event. Fine for one watched recipe; the HUD's merged
+            // Re-counting per requirement walks every carried slot again, so this is
+            // O(requirements x slots) per event. Fine for one watched recipe; the HUD's merged
             // totals across every pin will need a single inventory pass building a code->count
             // map instead. Event-driven is the requirement (spec §4) — this shape is not.
-
-            foreach (var (ing, qty) in probe.ConsumedIngredients(watchedRecipe))
+            foreach (var req in watchedRequirements)
             {
-                string key = probe.DisplayName(ing);
-                int have = probe.CountCarried(ing);
+                string key = req.DisplayName;
+                int have = probe.CountCarried(req);
 
                 bool known = lastCounts.TryGetValue(key, out int previous);
                 if (known && previous == have) continue;
@@ -209,7 +200,7 @@ namespace Tallybook
                 // pickup after a probe from reporting every ingredient at once.
                 if (!known) continue;
 
-                capi.ShowChatMessage($"Tallybook: {probe.DisplayName(ing)} {have}/{qty} {StatusMark(have, qty)}");
+                capi.ShowChatMessage($"Tallybook: {req.DisplayName} {have}/{req.Quantity} {StatusMark(have, req.Quantity)}");
             }
         }
 
