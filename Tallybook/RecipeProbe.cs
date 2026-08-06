@@ -150,6 +150,9 @@ namespace Tallybook
             return ing.Code?.ToString() ?? "?";
         }
 
+        public string OutputCode(GridRecipe recipe)
+            => recipe?.Output?.ResolvedItemStack?.Collectible?.Code?.ToShortString() ?? "?";
+
         /// <summary>Output count per craft — the divisor in the §2a deficit math.</summary>
         public int OutputQuantity(GridRecipe recipe)
         {

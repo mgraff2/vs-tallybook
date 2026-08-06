@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
@@ -26,6 +27,10 @@ namespace Tallybook
         // set, any carried-inventory change re-counts and reports only when a number actually
         // moved. That "only on real change" filter is the same discipline the HUD will need —
         // SlotModified fires far more often than displayed values change.
+        // Chat is a terrible place to dump a long list, and a probe that floods it buries the
+        // one recipe you actually asked about.
+        const int MaxListedOutputs = 8;
+
         GridRecipe watchedRecipe;
         Dictionary<string, int> lastCounts = new Dictionary<string, int>();
         readonly HashSet<IInventory> subscribed = new HashSet<IInventory>();
@@ -84,24 +89,38 @@ namespace Tallybook
                 return TextCommandResult.Success($"Tallybook: no grid recipe produces anything matching '{query}'.");
             }
 
-            // Watch the first match; the rest are listed so multi-recipe items (the §3 recipe
-            // picker case) are visible from the start rather than a later surprise.
+            // Group by output code before reporting. A substring query like "bookshelf" matches
+            // every wood and orientation variant, and listing each one floods the chat with
+            // hundreds of near-identical lines that answer nothing. Group, cap, and say plainly
+            // how many were withheld — a truncated list that doesn't admit it is a lie.
+            var groups = recipes
+                .GroupBy(r => probe.OutputCode(r))
+                .OrderBy(g => g.Key)
+                .ToList();
+
             watchedRecipe = recipes[0];
             lastCounts.Clear();
             SubscribeToCarriedInventories();
             SeedBaseline(watchedRecipe);
 
             var sb = new StringBuilder();
-            sb.AppendLine($"Tallybook: {recipes.Count} recipe(s) matching '{query}'. Watching the first:");
+            sb.AppendLine($"Tallybook: {recipes.Count} recipe(s) producing {groups.Count} distinct " +
+                          $"item(s) matching '{query}'. Watching:");
             sb.Append(DescribeRecipe(watchedRecipe));
 
-            if (recipes.Count > 1)
+            string watchedCode = probe.OutputCode(watchedRecipe);
+            var others = groups.Where(g => g.Key != watchedCode).ToList();
+            if (others.Count > 0)
             {
-                sb.AppendLine("Other recipes producing a match:");
-                for (int i = 1; i < recipes.Count; i++)
+                sb.AppendLine($"Other matching outputs ({others.Count}):");
+                foreach (var g in others.Take(MaxListedOutputs))
                 {
-                    var code = recipes[i].Output?.ResolvedItemStack?.Collectible?.Code;
-                    sb.AppendLine($"  [{i}] {code} x{probe.OutputQuantity(recipes[i])}");
+                    sb.AppendLine($"  {g.Key} ({g.Count()} recipe(s))");
+                }
+                int withheld = others.Count - MaxListedOutputs;
+                if (withheld > 0)
+                {
+                    sb.AppendLine($"  ...and {withheld} more not shown — narrow the query to reach them.");
                 }
             }
             return TextCommandResult.Success(sb.ToString().TrimEnd());

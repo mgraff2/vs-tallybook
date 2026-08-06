@@ -104,6 +104,20 @@ inventory-change events, the HUD overlay, the management dialog, handbook pin in
 expansion-tree math. The manual checklist for those lives in README.md ("Compat regression
 testing"). Run it before any release that touches GUI, recipe resolution, or counting.
 
+## Findings from the step-1 probe that the spec did not anticipate
+
+Observed on a real modded client (~30,300 grid recipes), not theorised:
+
+- **Recipe counts per conceptual item are large.** A substring query for "bookshelf" matched
+  enough recipes to produce ~231 chat lines — material and orientation variants each carry
+  their own registry entry. Spec §3 and §2a assume a recipe picker that "defaults to the first
+  and lists the alternatives"; a flat list of hundreds is unusable. The picker will need to
+  group by output code (and probably collapse variant suffixes), not enumerate raw registry
+  hits. Any list surfaced to the player needs a cap **and** an explicit "N more not shown" —
+  silently truncating turns a partial answer into a confident wrong one.
+- **Registry access is confirmed live**, so the §1 "every content mod's recipes for free"
+  claim holds in practice, not just in principle.
+
 ## Design invariants — do not "fix" these
 
 These are deliberate and each one has a failure mode behind it (spec §2, §2a, §4):
