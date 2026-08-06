@@ -1,0 +1,14 @@
+{
+  "type": "code",
+  "name": "Tallybook",
+  "modid": "tallybook",
+  "version": "0.1.0",
+  "description": "Satisfactory-style crafting shopping list: pin any item, see live inventory-tracked ingredient requirements with at-a-glance status. Fully client-side, works on any server, supports every content mod's recipes with zero compat patches.",
+  "authors": [ "Kaminion" ],
+  "side": "Client",
+  "requiredOnClient": false,
+  "requiredOnServer": false,
+  "dependencies": {
+    "game": "1.22.0"
+  }
+}
