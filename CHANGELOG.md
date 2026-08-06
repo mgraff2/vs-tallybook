@@ -2,7 +2,15 @@
 
 ## Unreleased — 0.1.0
 
-Project scaffolding. No player-facing functionality yet.
+Project scaffolding and the build-order step 1 API probe. Not yet a usable mod.
+
+- **Read-only recipe probe** (`/tallybook <item code>`): finds grid recipes producing a
+  matching item and prints ingredients with live carried-inventory counts and satisfied /
+  partial / none status, plus non-consumed tool rows. `/tallybook off` stops watching. This
+  is spec §10 step 1 — it exists to validate registry access and inventory events against the
+  real 1.22 API before anything is built on top of them.
+- Inventory counting is driven by `IInventory.SlotModified`, not polling, and reports only
+  values that actually changed.
 
 - Design spec finalised (`tallybook-mod-spec.md`).
 - Client-only mod skeleton: `modinfo.json` (`"side": "Client"`, requires game 1.22.0) and a

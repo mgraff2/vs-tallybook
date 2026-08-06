@@ -128,6 +128,40 @@ verified against 1.22 docs/source at implementation time — **not trusted from 
 spec's step-1 read-only prototype exists to surface exactly these unknowns before anything
 is built on top of them.
 
+To verify: reflect over the real assemblies rather than guessing or trusting these notes.
+`VintagestoryAPI.xml` next to the game DLLs carries the doc comments (member *names* only, no
+types), and a throwaway net10.0 console app referencing `VintagestoryAPI.dll` /
+`VSSurvivalMod.dll` and calling `Assembly.LoadFrom` + `GetMembers` gives full signatures.
+`Assembly.Load` by simple name does not work, and PowerShell cannot do this — it lacks
+`MetadataLoadContext` and cannot load the net10.0 assemblies directly.
+
+### Verified surface (checked against 1.22 assemblies, step-1 probe)
+
+- **Recipes:** `capi.World.GridRecipes` is a `List<GridRecipe>`, client-resident.
+  `GridRecipe.ResolvedIngredients` is a `CraftingRecipeIngredient[]` shaped like the crafting
+  grid and **sparse — empty cells are null**. The same ingredient appears once per grid cell,
+  so quantities must be merged by matcher, not read off a single entry.
+- **Output count:** `Output.Quantity` and `Output.StackSize` are documented aliases of each
+  other; either is correct. This is the divisor in the §2a deficit math.
+- **Ingredient matching:** `IsWildCard` is **obsolete** — 1.22 has
+  `MatchingType` (`EnumRecipeMatchType`: `Exact`, `Wildcard`, `NamedWildcard`,
+  `AdvancedWildcard`, `Regex`, `TagsOnly`) plus a tag system on `Tags`
+  (`ComplexTagCondition<TagSet>`, a **struct** — `?.` does not compile on it).
+  **Do not reimplement matching.** `CraftingRecipeIngredient.SatisfiesAsIngredient(stack,
+  checkStackSize)` is the game's own matcher and covers every mode including tags. Pass
+  `checkStackSize: false` — we sum across slots ourselves, and asking whether one slot alone
+  satisfies the whole requirement undercounts every split stack. Delegating also guarantees
+  we can never claim a player has materials the crafting grid would refuse.
+- **Inventory:** `capi.World.Player.InventoryManager.Inventories` is a
+  `Dictionary<string, IInventory>`; filter by `inv.ClassName` against
+  `GlobalConstants.hotBarInvClassName` and `backpackInvClassName` for carried-only counting.
+  `IInventory.SlotModified` is an `Action<int>` — this is the event-driven hook §4 requires.
+  Re-scan for new inventories on change; equipping a bag adds one after login.
+- **Commands:** `capi.ChatCommands.Create(name).WithDescription/.WithArgs/.HandleWith(...)`,
+  parsers from `capi.ChatCommands.Parsers`, results via `TextCommandResult.Success/Error`.
+- **Lifecycle:** `capi.Event.PlayerJoin` (compare `PlayerUID` against
+  `capi.World.Player.PlayerUID` — it fires for other players too) and `capi.Event.LeaveWorld`.
+
 ## Release flow
 
 Stage `dist/tallybook_X.Y.Z.zip` into `%APPDATA%\VintagestoryData\Mods\` (remove older
