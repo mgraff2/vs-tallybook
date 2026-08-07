@@ -84,6 +84,20 @@ namespace Tallybook
                 var offer = scanner.Scan(npc);
                 if (offer == null) return;
 
+                // Talking to them again is also the chance to fill in words we never captured
+                // — an errand tracked before we kept them, or one whose dialogue file the
+                // name-based lookup could not find.
+                if (offer.Briefing.Count > 0)
+                {
+                    foreach (var pin in svc.Store.Pins)
+                    {
+                        if (pin.QuestGiver == offer.NpcName && (pin.QuestText == null || pin.QuestText.Count == 0))
+                        {
+                            pin.QuestText = offer.Briefing.ToList();
+                        }
+                    }
+                }
+
                 var fresh = new QuestOffer { Npc = offer.Npc, NpcName = offer.NpcName, Pos = offer.Pos };
                 foreach (var req in offer.Requirements)
                 {
@@ -102,7 +116,7 @@ namespace Tallybook
 
         /// <summary>Identity of a request already offered in this conversation. Includes the
         /// quantity so a villager asking for more of the same thing later still registers.</summary>
-        static string OfferKey(string giver, QuestRequirement req)
+        public static string OfferKey(string giver, QuestRequirement req)
             => $"{giver}|{req.Stack?.Collectible?.Code}|{req.Quantity}";
     }
 }

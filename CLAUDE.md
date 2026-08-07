@@ -258,9 +258,46 @@ asset, and collect `player.inventory` conditions.
   for, which is why the auto path calls `Store.Add(..., activate: false)` — it must never
   re-check a parked pin.
 
-- **The other conditions on the same answer are the quest's gates** (`player.gerhardtqueststarted`
-  = true, `…completed` ≠ true), evaluated against `VariablesModSystem.GetPlayerVariable`
-  (client-side; the server syncs `VariableData`). Strip the `player.` scope prefix.
+- **The other conditions on the same answer are the quest's gates**, and **two scopes matter**:
+  - `player.*` — village quest state (`gerhardtqueststarted`), via
+    `VariablesModSystem.GetPlayerVariable` (client-side; the server syncs `VariableData`).
+  - `entity.*` — state belonging to the NPC in front of you, via
+    `GetVariable(EnumActivityVariableScope.Entity, name, npcEntity)`. **This is how traders
+    hold a task**: the treasure hunter sets `entity.requestbronze` when he asks for a pickaxe
+    and `entity.bronzereceived` when you hand it over. Reading only player scope made every
+    trader errand invisible — the gate could never be met, so it was silently skipped.
+
+  Strip the scope prefix. Anything else stays unmet.
+- **Vanilla 1.22.6 fetch quests, for reference** (all four, found by scanning
+  `config/dialogue/*.json` for answers carrying both a `*queststarted` gate and a
+  `player.inventory` requirement): Agnieszka 8×`ingot-iron`; Gerhardt 10×`hide-raw-small`;
+  Gerhardt 1×`flower-wilddaisy-free` (gated on **`wallqueststarted`**); Kat
+  1×`bread-rye-perfect` (gated on **`beataqueststarted`**). Note the last two: **the NPC you
+  hand items to is not always the one who asked.** Quest chains are agnieszka / gerhardt /
+  beata / wall. Everything else that sets a variable is bookkeeping (`hasmet*`, `heard*`).
+- **Requirements sharing a gate set are alternatives, not a list.** Better Ruins' salt trader
+  accepts an andesite *or* basalt *or* peridotite quern for one errand, each written as its
+  own answer line with identical gates. Adding them all demands three querns for a task that
+  wants one. `QuestScanner.Scan` groups by gate signature, tracks the first, and records the
+  rest as an "any of these will do" note. Content mods use exactly the vanilla trader
+  mechanism (`entity.<name>_request<thing>` + `player.inventory`), so reading entity scope
+  covers them with no per-mod work — which is the §1 promise holding up.
+- **Retroactive village pickup:** `LiveVillageQuests` scans every `config/dialogue/*.json`,
+  keeps requirements whose gates are **all player-scope and satisfied**, and skips anything
+  gated on entity scope (that state lives on an NPC that may not be loaded — traders are
+  conversation-only by nature, not by choice). Offered **once ever** per errand
+  (`SaveFile.OfferedQuests`), because it runs at every login and an unpinned errand returning
+  each time would be its own bug; talking to the NPC still re-adds, that being deliberate.
+  Locations come from `SaveFile.NpcPlaces`, a directory built by noting conversable NPCs you
+  walk past — at load we know who wants what, never where they live.
+- **The player's journal is readable client-side** (not yet used): `ModJournal` keeps a
+  private `ownJournal` (`Journal.Entries` → `JournalEntry{ EntryId, LoreCode, Title, Chapters }`)
+  and `DidDiscoverLore(playerUid, code, chapterId)` is public. So showing collected lore
+  beside a quest is possible; *relating* the two is the open problem — nothing links a lore
+  code to a quest chain, so any connection is a heuristic over codes and titles.
+- **Not yet handled:** `player.inventorywildcard` (a wildcard-coded inventory condition, e.g.
+  `hoovedwearables-middleback-saddle*` in treasurehunter.json) and `triggerdata` hand-over
+  quantities. Both are real requirement sources this scanner ignores.
 - **A bare `player.inventory` condition is NOT an errand — require ≥1 satisfied gate**
   (found by Mark, 0.1.0 testing). The game uses the identical condition for **prices** and
   for "do you have the thing" checks: Tad's healing costs one gear, expressed exactly like
@@ -292,20 +329,51 @@ asset, and collect `player.inventory` conditions.
 - **Never render a raw wildcard as a name.** Tag-matched ingredients (`tags: ["tool-chisel"]`)
   have no `ResolvedItemStack` and a `Code` that reads `*:*` — which is exactly what one row
   displayed. `IngredientName` falls back to the author's `Name` field ("any metal").
-- **Waypoints are reconciled, never toggled.** `QuestWaypoints.Sync` computes the set of
-  markers that *should* exist from the pins and nudges the map toward it, off
-  `OnCountsChanged` plus a slow tick. Pin / unpin / check / uncheck / re-accept are five
-  paths that can each invalidate a marker, and hanging a side effect on each is how one gets
-  missed and a marker outlives its errand. Removal is by **current index into
-  `WaypointMapLayer.ownWaypoints`** (client-mirrored), found by matching title+position at
-  the moment of removal — never a remembered index, which shifts as other waypoints come and
-  go. Sent commands are held "in flight" for a few seconds because the map only updates once
-  the server answers, and an unguarded re-check would fire the command again.
-- **Map centring:** `GuiElementMap.CenterMapTo(BlockPos)`, reached from
-  `WorldMapManager.worldMapDlg` (public field) → `Composers.Values` → the composer's private
-  `interactiveElements`, matched **by type** rather than by element key, since the key is an
-  internal detail of a dialog we do not own. `WorldMapManager.ToggleMap(EnumDialogType)`
-  opens it; centre a tick later, as the element does not exist until the dialog composes.
+- **A wildcard with no `name` field is NOT expanded by the game** (found by Mark: the wooden
+  table read "Any suitable item 0/7" with no icon). Bookshelf's `{code: "plank-*", name:
+  "wood"}` is a *named* wildcard and expands into one resolved recipe per wood, giving real
+  codes to name and draw; table's bare `{code: "plank-*"}` stays one recipe holding a matcher
+  and nothing concrete. Counting still worked — `SatisfiesAsIngredient` does not care — but
+  there was nothing to display. `RecipeProbe.ResolveVariants` asks the world which
+  collectibles the matcher accepts (wildcard-match the *code* first: the block list is tens of
+  thousands and building each stack to ask properly is far slower), keeps up to 30 for icons
+  and the true count for the label. Done once per row; the answer cannot change mid-session.
+- **Waypoints act on transitions and are remembered on the pin — never reconciled, never on a
+  tick.** `Pin.WaypointPlaced` (persisted) is the *only* thing that decides whether a marker
+  gets placed. The first version instead asked the map which markers existed and added the
+  missing ones on a timer; the client's waypoint list read back empty, so "missing" was always
+  true and it planted a marker every few seconds until the player had **fifty** (Mark). The
+  lesson generalises: **never drive an outward, repeatable action from a check that can fail
+  quietly, on a schedule.** A flag that flips once cannot spam even when every read fails.
+  Unpinning is caught via `PinStore.OnPinRemoved`, which fires while the pin can still say it
+  had a marker. Removal is by **current index** into `WaypointMapLayer.ownWaypoints` (falling
+  back to `Waypoints`), matched on title+position at the moment of removal — never a
+  remembered index, which shifts as other waypoints come and go. `.tallybook clearmarkers`
+  removes all of ours, highest index first so removals cannot shift each other.
+- **Map centring — the working recipe:**
+  ```csharp
+  foreach (var compo in mapMgr.worldMapDlg.Composers.Values)
+      if (compo?.GetElement("mapElem") is GuiElementMap m) m.CenterMapTo(pos);
+  ```
+  after `ToggleMap(EnumDialogType.Dialog)` and a ~250ms delay. The element **has a public key,
+  `"mapElem"`** — use `GetElement`, and apply it to *every* composer rather than choosing one.
+  Do not gate opening on `IsOpened` alone: an open minimap satisfies it, so also require
+  `worldMapDlg.DialogType == EnumDialogType.Dialog`.
+  Two dead ends, both of which cost a testing round each (Mark):
+  - Reflecting into the dialog's private `fullDialog` composer and matching the element **by
+    type** finds *an* element that is not the rendered one — the map opens and stays on the
+    player, silently.
+  - "Did it work?" cannot be answered with *does the view contain the target*: a zoomed-out
+    map contains everything, so the check passes instantly and any retry is skipped. If a
+    check is wanted at all, compare the view's **centre**.
+- **The briefing text is recovered from the dialogue graph, not the live conversation.**
+  `QuestScanner.Briefing`: the component whose `setVariables` sets the gate variable is the
+  *accepting* step; the component with a `text[].jumpTo` pointing at it is the choice; the
+  component whose `jumpTo` is that choice is the NPC's actual pitch ("Can you bring me some
+  small raw hides? Say ten of them?"). Resolve `text[].value` through `Lang.Get`, skip
+  player-owned components, and skip results equal to the key (that is Lang saying it has no
+  translation). Kept on `Pin.QuestText`. Doing it this way means saving the conversation cost
+  no patch on the conversation.
 - Quest requirements become **ordinary pins** (`Pin.QuestGiver`), so tallying, the HUD, the
   table and persistence are all reused. `Store.Add(..., setCount: true)` raises an existing
   pin to the requested count instead of adding to it — an errand needs exactly 10, and
@@ -343,7 +411,27 @@ These are deliberate and each one has a failure mode behind it (spec §2, §2a, 
 - **Event-driven inventory counting, never per-frame polling.** The instant green-flip when
   you pick up the last board is the core loop; degrading it to a poll guts the mod.
 - **Carried inventory only** — no nearby-chest scanning. The question is "what do I have on
-  me", and answering a different question dishonestly is worse than not answering.
+  me", and answering a different question dishonestly is worse than not answering. The one
+  extension is `IncludeMountBags` (**off** by default, opt-in in the Options screen): bags on
+  an animal *you own* and are near are arguably still on you.
+  - **Ownership, never proximity.** `EntityBehaviorOwnable.IsOwner(EntityAgent)` is public and
+    ownership syncs to clients (`ModSystemEntityOwnership.StartClientSide`), so on a shared
+    server a friend's elk is correctly excluded. Counting any nearby container instead would
+    be exactly the nearby-chest scanning this section rejects.
+  - **Two hops to the goods:** `GetEntitiesAround` filtered by ownership (or being ridden) →
+    behaviors of type **`EntityBehaviorAttachable`** (which `EntityBehaviorRideableAccessories`
+    extends) → `.Inventory` slots hold the *bags*, and each bag's contents come from
+    `IHeldBag.GetContents(bagstack, world)`, because a bag stores its contents inside its own
+    itemstack. Match `Attachable`, **not** its parent `EntityBehaviorContainer` — the parent
+    also covers an animal's mouth inventory and `EntityBehaviorPlayerInventory`, and counting
+    those would put items in the totals that the player cannot reach. Bags on the ground or in
+    ground storage are unreachable from here by construction, which is the intent.
+  - **The one path that cannot be event-driven.** Moving something inside a bag raises no slot
+    event we can subscribe to, and an animal wandering in or out of range changes the answer
+    with no event at all — so it recounts on the 1s tick, gated on the option being on *and*
+    an owned animal actually being nearby. Everywhere else stays event-driven.
+  - Whether the client is told the contents at all is not guaranteed; it counts what it can
+    see and never errors.
 
 ## API caveat (standing rule)
 

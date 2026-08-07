@@ -29,11 +29,18 @@ namespace Tallybook
 
         bool renderFailed;
 
-        public GuiElementItemIcon(ICoreClientAPI capi, List<ItemStack> stacks, TallybookConfig config, ElementBounds bounds)
+        /// <summary>Cycle regardless of the "any items" setting — used where the several
+        /// stacks are several *different goals* rather than variants of one requirement, which
+        /// is a different thing from what that setting governs.</summary>
+        readonly bool alwaysCycle;
+
+        public GuiElementItemIcon(ICoreClientAPI capi, List<ItemStack> stacks, TallybookConfig config,
+                                  ElementBounds bounds, bool alwaysCycle = false)
             : base(capi, bounds)
         {
             this.stacks = stacks;
             this.config = config;
+            this.alwaysCycle = alwaysCycle;
             slot = new DummySlot(null, new DummyInventory(capi));
         }
 
@@ -41,7 +48,7 @@ namespace Tallybook
         {
             if (renderFailed || stacks == null || stacks.Count == 0) return;
 
-            int idx = config.HudCycleVariants && stacks.Count > 1
+            int idx = (alwaysCycle || config.HudCycleVariants) && stacks.Count > 1
                 ? (int)(api.World.ElapsedMilliseconds / 1000 % stacks.Count)
                 : 0;
             slot.Itemstack = stacks[idx];
@@ -66,6 +73,80 @@ namespace Tallybook
                 (api as ICoreClientAPI)?.Logger.Warning(
                     "[tallybook] icon render failed, hiding it: {0}", e.Message);
             }
+        }
+    }
+
+    /// <summary>
+    /// A HUD line too long for its column, which slides left every so often to show the rest
+    /// of itself and then returns. Truncating with "…" keeps the layout honest but leaves the
+    /// tail unreadable, and unlike the dialog a HUD cannot be hovered for the full text —
+    /// during play the mouse belongs to the world.
+    ///
+    /// The text is drawn to a texture once and then blitted each frame at an offset, clipped
+    /// to the line's bounds. Re-composing the whole HUD to animate would rebuild every
+    /// element several times a second for the sake of one moving row.
+    /// </summary>
+    class GuiElementMarqueeText : GuiElement
+    {
+        const long HoldMs = 15000;      // dwell at the start, reading position
+        const double SpeedPxPerSec = 45;
+        const long EndHoldMs = 2500;    // dwell at the end before snapping back
+
+        readonly string text;
+        readonly CairoFont font;
+        LoadedTexture texture;
+
+        public GuiElementMarqueeText(ICoreClientAPI capi, string text, CairoFont font, ElementBounds bounds)
+            : base(capi, bounds)
+        {
+            this.text = text;
+            this.font = font;
+        }
+
+        public override void ComposeElements(Cairo.Context ctx, Cairo.ImageSurface surface)
+        {
+            Bounds.CalcWorldBounds();
+            texture = api.Gui.TextTexture.GenUnscaledTextTexture(text, font, null);
+        }
+
+        public override void RenderInteractiveElements(float deltaTime)
+        {
+            if (texture == null) return;
+
+            double visible = Bounds.InnerWidth;
+            double overflow = texture.Width - visible;
+
+            if (overflow <= 0)
+            {
+                api.Render.Render2DTexturePremultipliedAlpha(
+                    texture.TextureId, Bounds.renderX, Bounds.renderY,
+                    texture.Width, texture.Height, 50, new Vec4f(1, 1, 1, 1));
+                return;
+            }
+
+            long scrollMs = (long)(overflow / SpeedPxPerSec * 1000);
+            long cycle = HoldMs + scrollMs + EndHoldMs;
+            long t = api.World.ElapsedMilliseconds % cycle;
+
+            double offset =
+                t < HoldMs ? 0
+                : t < HoldMs + scrollMs ? overflow * (t - HoldMs) / (double)scrollMs
+                : overflow;
+
+            // Clipped to the line, so the part hanging off the side never paints over the
+            // count beside it.
+            api.Render.PushScissor(Bounds, true);
+            api.Render.Render2DTexturePremultipliedAlpha(
+                texture.TextureId, Bounds.renderX - offset, Bounds.renderY,
+                texture.Width, texture.Height, 50, new Vec4f(1, 1, 1, 1));
+            api.Render.PopScissor();
+        }
+
+        public override void Dispose()
+        {
+            texture?.Dispose();
+            texture = null;
+            base.Dispose();
         }
     }
 
@@ -129,6 +210,12 @@ namespace Tallybook
             }
             base.Dispose();
         }
+
+        /// <summary>Does the whole line fit? Same measurement TbText.Fit uses, asked before
+        /// trimming rather than after.</summary>
+        static bool Fits(CairoFont font, string text, double maxWidth)
+            => string.IsNullOrEmpty(text)
+               || font.GetTextExtents(text).Width <= maxWidth * RuntimeEnv.GUIScale;
 
         void OnAnchorTick(float dt)
         {
@@ -202,7 +289,7 @@ namespace Tallybook
                 if (line.Stacks != null && line.Stacks.Count > 0)
                 {
                     composer.AddInteractiveElement(new GuiElementItemIcon(
-                        capi, line.Stacks, config, ElementBounds.Fixed(4, ly + 1, 18, 18)));
+                        capi, line.Stacks, config, ElementBounds.Fixed(4, ly + 1, 18, 18), line.CycleIcons));
                     tx = 26;
                 }
 
@@ -210,8 +297,17 @@ namespace Tallybook
                 // would let truncation eat the numbers — the one part of the line that has
                 // to survive — on exactly the long labels that need trimming most.
                 double textW = line.Trailing == null ? W - tx - 8 : W - tx - CountW - 8;
-                composer.AddStaticText(TbText.Fit(font, line.Text, textW), font,
-                    ElementBounds.Fixed(tx, ly, textW, LineH));
+
+                if (config.HudScrollLongLines && !Fits(font, line.Text, textW))
+                {
+                    composer.AddInteractiveElement(new GuiElementMarqueeText(
+                        capi, line.Text, font, ElementBounds.Fixed(tx, ly, textW, LineH)));
+                }
+                else
+                {
+                    composer.AddStaticText(TbText.Fit(font, line.Text, textW), font,
+                        ElementBounds.Fixed(tx, ly, textW, LineH));
+                }
 
                 if (line.Trailing != null)
                 {
@@ -275,6 +371,7 @@ namespace Tallybook
             public double[] Color;
             public bool Bold;
             public List<ItemStack> Stacks;
+            public bool CycleIcons;
         }
 
         List<HudLine> BuildLines()
@@ -285,7 +382,10 @@ namespace Tallybook
 
             var lines = new List<HudLine>();
             List<ItemStack> One(ItemStack s) => s == null ? null : new List<ItemStack> { s };
-            void Header(string t) => lines.Add(new HudLine { Text = t, Color = none });
+
+            // Section headings take the game's parchment tone rather than the row colour, so
+            // they still read as headings now that rows are white.
+            void Header(string t) => lines.Add(new HudLine { Text = t, Color = GuiStyle.ColorParchment });
 
             double[] Status(int have, int needed)
                 => have >= needed ? satisfied : have > 0 ? partial : none;
@@ -314,40 +414,67 @@ namespace Tallybook
             // contribute nothing here by design — an errand is counted, not decomposed, so
             // its ingredients only appear once "To list" has made it a goal of your own.
             var goals = active.Where(p => p.QuestGiver == null).ToList();
-            var gather = svc.MergedLeafTotals().Where(r => r.Needed > 0).ToList();
+            var pooled = config.HudGroupByItem
+                ? new List<TallyService.HudRow>()
+                : svc.MergedLeafTotals().Where(r => r.Needed > 0).ToList();
 
-            if (goals.Count > 0 || gather.Count > 0) Header("— gathering —");
+            if (goals.Count > 0 || pooled.Count > 0) Header("— gathering —");
 
-            foreach (var pin in goals)
+            int shown = 0, hidden = 0;
+
+            void Gather(TallyService.HudRow row, bool indented)
             {
-                string mark = pin.Complete ? "✓" : pin.Craftable ? "⚒" : "•";
+                if (row.Needed <= 0) return;
+                if (shown >= config.HudMaxRows) { hidden++; return; }
+
                 lines.Add(new HudLine
                 {
-                    Text = $"{mark} {pin.DisplayName}",
-                    Trailing = $"{pin.Have}/{pin.Count}",
-                    Color = pin.Complete || pin.Craftable ? satisfied : null,
-                    Bold = true,
-                    Stacks = One(pin.Stack)
-                });
-            }
-
-            int shown = 0;
-            foreach (var row in gather)
-            {
-                if (shown >= config.HudMaxRows)
-                {
-                    Header($"+{gather.Count - shown} more…");
-                    break;
-                }
-                lines.Add(new HudLine
-                {
-                    Text = row.Name,
+                    Text = indented ? "  " + row.Name : row.Name,
                     Trailing = $"{row.Have}/{row.Needed}",
                     Color = Status(row.Have, row.Needed),
                     Stacks = row.Req?.SampleStacks(capi.World)
                 });
                 shown++;
             }
+
+            string Mark(Pin p) => p.Complete ? "✓" : p.Craftable ? "⚒" : "•";
+
+            if (config.HudGroupByItem)
+            {
+                foreach (var pin in goals)
+                {
+                    lines.Add(new HudLine
+                    {
+                        Text = $"{Mark(pin)} {pin.DisplayName}",
+                        Trailing = $"{pin.Have}/{pin.Count}",
+                        Color = pin.Complete || pin.Craftable ? satisfied : null,
+                        Bold = true,
+                        Stacks = One(pin.Stack)
+                    });
+
+                    // Each build's own materials sit under it, so the list reads as a set of
+                    // jobs rather than one pile whose ownership you have to work out.
+                    foreach (var row in svc.LeafTotalsFor(pin)) Gather(row, indented: true);
+                }
+            }
+            else if (goals.Count > 0)
+            {
+                // Pooled totals answer "what do I fetch", so what they are *for* only needs
+                // one line — everything you are building, on a row that scrolls when there is
+                // more of it than fits, with the icon cycling through them to match.
+                lines.Add(new HudLine
+                {
+                    Text = string.Join("   ", goals.Select(p => $"{Mark(p)} {p.DisplayName} {p.Have}/{p.Count}")),
+                    Color = goals.All(p => p.Complete || p.Craftable) ? satisfied : null,
+                    Bold = true,
+                    Stacks = goals.Select(p => p.Stack).Where(s => s != null).ToList(),
+                    CycleIcons = true
+                });
+            }
+
+            foreach (var row in pooled) Gather(row, indented: false);
+
+            if (hidden > 0) Header($"+{hidden} more…");
 
             // Tools: the recipe won't craft without them, so a list that only shows
             // consumables is incomplete — a glass slab needs the saw as much as the glass.

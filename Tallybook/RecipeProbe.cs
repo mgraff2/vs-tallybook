@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.Config;
 using Vintagestory.API.Datastructures;
+using Vintagestory.API.Util;
 using Vintagestory.GameContent;
 
 namespace Tallybook
@@ -54,6 +56,12 @@ namespace Tallybook
 
         public int VariantCount => ExactCodes.Count + OtherMatchers.Count;
 
+        /// <summary>How many real items actually satisfy this row. For exact codes that is
+        /// just how many there are; for a bare wildcard ("plank-*", which the game does NOT
+        /// expand because it carries no name) it is what the world turned out to contain.
+        /// Uncapped, unlike the icon samples.</summary>
+        public int MatchedVariants;
+
         string key;
         List<ItemStack> sampleStacks;
 
@@ -67,6 +75,12 @@ namespace Tallybook
         public void PresetSampleStack(ItemStack stack)
         {
             if (stack != null) sampleStacks = new List<ItemStack> { stack };
+        }
+
+        /// <summary>Icons worked out by asking the world what a wildcard accepts.</summary>
+        public void PresetSampleStacks(List<ItemStack> stacks)
+        {
+            if (stacks != null && stacks.Count > 0) sampleStacks = stacks;
         }
 
         public List<ItemStack> SampleStacks(IWorldAccessor world, int max = 30)
@@ -130,22 +144,27 @@ namespace Tallybook
         readonly Dictionary<string, (ItemStack Sample, int Total, string Code)> byPage
             = new Dictionary<string, (ItemStack, int, string)>();
 
-        public InventorySnapshot(IEnumerable<IInventory> inventories)
+        public InventorySnapshot(IEnumerable<IInventory> inventories, IEnumerable<ItemStack> alsoCount = null)
         {
             foreach (var inv in inventories)
             {
-                foreach (var slot in inv)
-                {
-                    var stack = slot?.Itemstack;
-                    var code = stack?.Collectible?.Code?.ToShortString();
-                    if (code == null) continue;
-                    string page = RecipeProbe.PageCode(stack) ?? code;
-
-                    byPage[page] = byPage.TryGetValue(page, out var cur)
-                        ? (cur.Sample, cur.Total + stack.StackSize, cur.Code)
-                        : (stack, stack.StackSize, code);
-                }
+                foreach (var slot in inv) Add(slot?.Itemstack);
             }
+            if (alsoCount != null)
+            {
+                foreach (var stack in alsoCount) Add(stack);
+            }
+        }
+
+        void Add(ItemStack stack)
+        {
+            var code = stack?.Collectible?.Code?.ToShortString();
+            if (code == null) return;
+            string page = RecipeProbe.PageCode(stack) ?? code;
+
+            byPage[page] = byPage.TryGetValue(page, out var cur)
+                ? (cur.Sample, cur.Total + stack.StackSize, cur.Code)
+                : (stack, stack.StackSize, code);
         }
 
         public int Count(Requirement req)
@@ -509,8 +528,71 @@ namespace Tallybook
                 }
             }
 
-            foreach (var req in reqs) req.DisplayName = BuildDisplayName(req);
+            foreach (var req in reqs)
+            {
+                ResolveVariants(req);
+                req.DisplayName = BuildDisplayName(req);
+            }
             return reqs;
+        }
+
+        /// <summary>
+        /// Find the real items behind a row that has no concrete codes of its own.
+        ///
+        /// A wildcard ingredient the game did not expand ("plank-*" with no name) leaves us a
+        /// matcher and nothing to show: no name beyond "any suitable item", and no icon at
+        /// all. Asking the world which collectibles the matcher accepts recovers both, and
+        /// the answer cannot change within a session, so it is worked out once per row.
+        ///
+        /// The code is wildcard-matched before building a stack wherever possible — the block
+        /// list runs to tens of thousands, and a string compare is far cheaper than
+        /// constructing each one to ask properly.
+        /// </summary>
+        void ResolveVariants(Requirement req)
+        {
+            if (req.ExactCodes.Count > 0)
+            {
+                req.MatchedVariants = req.ExactCodes.Count;
+                return;
+            }
+
+            var matcher = req.OtherMatchers.FirstOrDefault();
+            if (matcher?.Code == null && matcher?.Tags == null) return;
+
+            var samples = new List<ItemStack>();
+            int found = 0;
+
+            void Consider(CollectibleObject obj)
+            {
+                if (obj?.Code == null) return;
+                if (matcher.Code != null && matcher.Code.Path.Contains('*')
+                    && !WildcardUtil.Match(matcher.Code, obj.Code)) return;
+
+                var stack = new ItemStack(obj);
+                if (!matcher.SatisfiesAsIngredient(stack, false)) return;
+
+                found++;
+                if (samples.Count < 30) samples.Add(stack);
+            }
+
+            try
+            {
+                if (matcher.Type == EnumItemClass.Block)
+                {
+                    foreach (var block in capi.World.Blocks) Consider(block);
+                }
+                else
+                {
+                    foreach (var item in capi.World.Items) Consider(item);
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not resolve variants for a row: {0}", e.Message);
+            }
+
+            req.MatchedVariants = found;
+            if (samples.Count > 0) req.PresetSampleStacks(samples);
         }
 
         void AddMatcher(Requirement req, CraftingRecipeIngredient ing)
@@ -528,9 +610,15 @@ namespace Tallybook
 
         string BuildDisplayName(Requirement req)
         {
-            string name = req.Sample != null ? IngredientName(req.Sample) : NameForCode(req.ExactCodes.FirstOrDefault());
+            // Prefer a real matched item: for a wildcard row it is the only thing that knows
+            // the row is about boards rather than "any suitable item".
+            var samples = req.SampleStacks(capi.World);
+            string name = samples.Count > 0
+                ? samples[0].GetName()
+                : req.Sample != null ? IngredientName(req.Sample) : NameForCode(req.ExactCodes.FirstOrDefault());
 
-            if (req.VariantCount <= 1) return name;
+            int variants = Math.Max(req.MatchedVariants, req.VariantCount);
+            if (variants <= 1) return name;
 
             // "Board (Aged oak)" -> "Board", so the row reads as the whole set rather than
             // naming one arbitrary member of it (spec §8).
@@ -539,8 +627,8 @@ namespace Tallybook
 
             string what = req.VariantLabel;
             return string.IsNullOrEmpty(what)
-                ? $"{name} (any, {req.VariantCount} variants)"
-                : $"{name} (any {what}, {req.VariantCount} variants)";
+                ? $"{name} (any, {variants} variants)"
+                : $"{name} (any {what}, {variants} variants)";
         }
 
         string NameForCode(string shortCode)
@@ -614,6 +702,107 @@ namespace Tallybook
         /// </summary>
         public bool Matches(CraftingRecipeIngredient ing, ItemStack stack)
             => stack?.Collectible != null && ing.SatisfiesAsIngredient(stack, false);
+
+        /// <summary>
+        /// Everything inside bags strapped to animals that are *yours* and within reach —
+        /// the one you are riding, and any you own standing nearby. Opt-in, because "what do
+        /// I have on me" is the question this mod answers and reasonable people disagree
+        /// about whether the pack mule counts.
+        ///
+        /// Ownership, not proximity, is the test. Counting any container that happens to be
+        /// near would be the nearby-chest scanning the design rejects; a beast you own and
+        /// are standing beside is genuinely part of what you are carrying, and the game can
+        /// tell us which is which.
+        ///
+        /// Two hops to the goods: the animal carries an attachable container whose slots hold
+        /// the bags, and each bag keeps its contents inside its own itemstack — which is what
+        /// IHeldBag reads. Yields nothing when there is no such animal, no container, or when
+        /// the client has not been told the contents; none of those is an error.
+        ///
+        /// Only bags *strapped to a living animal* count. A saddlebag lying on the ground, in
+        /// ground storage or in a chest is not reachable from here — those are not entities
+        /// with attached gear — which is deliberate: a bag you would have to walk over and
+        /// pick up is stock, not something you are carrying.
+        /// </summary>
+        public IEnumerable<ItemStack> OwnedAnimalBagStacks(double range)
+        {
+            var me = capi.World?.Player?.Entity;
+            if (me?.Pos == null) yield break;
+
+            var animals = capi.World.GetEntitiesAround(me.Pos.XYZ, (float)range, (float)range,
+                e => e != null && e != me && IsMine(e, me));
+            if (animals == null) yield break;
+
+            foreach (var animal in animals)
+            {
+                if (animal.SidedProperties?.Behaviors == null) continue;
+
+                foreach (var behavior in animal.SidedProperties.Behaviors)
+                {
+                    // Attachable specifically — the behaviour that holds gear strapped to the
+                    // animal, which is what a saddlebag is. Its parent EntityBehaviorContainer
+                    // also covers things that are emphatically not luggage (what the beast has
+                    // in its mouth, a player's own inventory), and counting those would put
+                    // items in your totals that you cannot reach.
+                    var inv = (behavior as EntityBehaviorAttachable)?.Inventory;
+                    if (inv == null) continue;
+
+                    foreach (var slot in inv)
+                    {
+                        var stack = slot?.Itemstack;
+                        if (stack?.Collectible == null) continue;
+
+                        var bag = AsBag(stack.Collectible);
+                        if (bag == null) continue;
+
+                        ItemStack[] contents;
+                        try { contents = bag.GetContents(stack, capi.World); }
+                        catch { continue; }
+                        if (contents == null) continue;
+
+                        foreach (var held in contents)
+                        {
+                            if (held?.Collectible != null) yield return held;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>Mine to rummage through: the animal under me, or one I own.</summary>
+        static bool IsMine(Entity animal, EntityPlayer me)
+        {
+            try
+            {
+                if ((me as EntityAgent)?.MountedOn?.Entity == animal) return true;
+                return animal.GetBehavior<EntityBehaviorOwnable>()?.IsOwner(me) == true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Is there anything worth recounting for out there? Cheap enough to ask on a
+        /// timer, which is what the bag path needs — see IncludeMountBags in CLAUDE.md.</summary>
+        public bool HasOwnedAnimalNearby(double range)
+        {
+            var me = capi.World?.Player?.Entity;
+            if (me?.Pos == null) return false;
+
+            var found = capi.World.GetEntitiesAround(me.Pos.XYZ, (float)range, (float)range,
+                e => e != null && e != me && IsMine(e, me));
+            return found != null && found.Length > 0;
+        }
+
+        static IHeldBag AsBag(CollectibleObject collectible)
+        {
+            if (collectible is IHeldBag direct) return direct;
+            if (collectible.CollectibleBehaviors == null) return null;
+
+            foreach (var behavior in collectible.CollectibleBehaviors)
+            {
+                if (behavior is IHeldBag viaBehavior) return viaBehavior;
+            }
+            return null;
+        }
 
         public IEnumerable<IInventory> CarriedInventories()
         {

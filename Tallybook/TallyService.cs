@@ -14,15 +14,17 @@ namespace Tallybook
     public class TallyService
     {
         readonly ICoreClientAPI capi;
+        readonly TallybookConfig config;
         public readonly RecipeProbe Probe;
         public readonly PinStore Store;
 
         /// <summary>Raised after every recount whose numbers changed anything visible.</summary>
         public event Action OnCountsChanged;
 
-        public TallyService(ICoreClientAPI capi)
+        public TallyService(ICoreClientAPI capi, TallybookConfig config)
         {
             this.capi = capi;
+            this.config = config;
             Probe = new RecipeProbe(capi);
             Store = new PinStore(capi);
 
@@ -259,7 +261,9 @@ namespace Tallybook
         /// visible number moved so open surfaces know to redraw.</summary>
         public void RecountAll()
         {
-            var snapshot = new InventorySnapshot(Probe.CarriedInventories());
+            var snapshot = new InventorySnapshot(
+                Probe.CarriedInventories(),
+                config.IncludeMountBags ? Probe.OwnedAnimalBagStacks(config.MountBagRange) : null);
             foreach (var pin in Store.Pins) TallyTree.Recompute(pin, snapshot);
 
             // Change detection by signature of every visible number. Simpler and safer than
@@ -267,7 +271,18 @@ namespace Tallybook
             string sig = Signature();
             if (sig == lastSignature) return;
             lastSignature = sig;
-            OnCountsChanged?.Invoke();
+
+            // Each surface is told separately so one that throws cannot silence the rest. The
+            // HUD once vanished entirely because a later subscriber threw during world load
+            // and took the whole notification — and with it the redraw — down with it.
+            foreach (var handler in OnCountsChanged?.GetInvocationList() ?? Array.Empty<Delegate>())
+            {
+                try { ((Action)handler)(); }
+                catch (Exception e)
+                {
+                    capi.Logger.Warning("[tallybook] a surface failed to update: {0}", e);
+                }
+            }
         }
 
         string lastSignature = "";
@@ -360,6 +375,35 @@ namespace Tallybook
                             Req = leaf.Req
                         };
                     }
+                }
+            }
+            return rows.Values.OrderBy(r => r.Have >= r.Needed ? 1 : 0).ThenBy(r => r.Name).ToList();
+        }
+
+        /// <summary>
+        /// Gather rows for one pin alone — what this thing still needs, rather than what
+        /// everything needs. Still merged *within* the pin, so an item wanted by two branches
+        /// of the same build is one row.
+        /// </summary>
+        public List<HudRow> LeafTotalsFor(Pin pin)
+        {
+            var rows = new Dictionary<string, HudRow>();
+            foreach (var leaf in TallyTree.Leaves(pin))
+            {
+                if (rows.TryGetValue(leaf.Req.Key, out var row))
+                {
+                    row.Needed += leaf.Needed;
+                    row.Have = Math.Max(row.Have, leaf.Have);
+                }
+                else
+                {
+                    rows[leaf.Req.Key] = new HudRow
+                    {
+                        Name = leaf.Req.DisplayName,
+                        Have = leaf.Have,
+                        Needed = leaf.Needed,
+                        Req = leaf.Req
+                    };
                 }
             }
             return rows.Values.OrderBy(r => r.Have >= r.Needed ? 1 : 0).ThenBy(r => r.Name).ToList();

@@ -1,13 +1,14 @@
 # Changelog
 
-## Unreleased — 0.1.0
+## 0.2.0 — 2026-08-07
 
-The full v1 feature set from the spec.
+First public release. The v1 feature set from the spec, plus villager errand tracking, a
+quest archive, and direct acquisition tracking for items nothing crafts.
 
 - **Pin from the handbook.** Every item's handbook page gains an "Add to Tallybook" link,
   plus "Go to Tallybook" to close the handbook and open the list. Arriving from a list row's
-  Book button also shows a "← Back to Tallybook" button beneath the handbook's own Back
-  button (a floating dialog anchored to the handbook's live bounds, not an injected element) — a separate floating dialog anchored to the handbook's live bounds rather than an
+  Handbook button also shows a "← Back to Tallybook" button beneath the handbook's own Back
+  button — a separate floating dialog anchored to the handbook's live bounds rather than an
   element injected into its chrome, so the handbook's layout is never patched.
   Pinning again increments the count rather than duplicating the row. What gets pinned is
   exactly the page being viewed: recipe outputs that share an item code but differ by
@@ -64,6 +65,48 @@ The full v1 feature set from the spec.
   ready when only one is met. Game particles on a 400ms timer rather than a custom renderer
   or per-frame work; purely cosmetic and local, and it disables itself rather than
   interrupting play if anything throws (`QuestReadyGlow` / `QuestReadyGlowColor`).
+- **The HUD groups materials under the item that needs them** — "Resonator" and what it
+  needs, then "Wooden table" and what that needs — rather than listing every pin and then one
+  pooled list. Pooling still merges an item two builds both want into a single line, so it
+  stays available as `HudGroupByItem` / the Options screen; grouping answers "what does this
+  one need", pooling answers "what do I fetch in total".
+- **Rows for unexpanded wildcards name and draw themselves properly.** An ingredient written
+  `plank-*` with no `name` field is not expanded by the game into per-wood recipes the way a
+  named one is, so such a row had nothing concrete behind it and read "Any suitable item 0/7"
+  with no icon. The accepted items are now resolved from the world, so it reads
+  "Board (any, N variants)" and cycles a board icon through the woods like any other.
+- **Long HUD lines scroll instead of ending in "…"**: a line too wide for its column holds
+  for 15 seconds, slides left to reveal the rest, then returns. The dialog can offer hover
+  text for a truncated row; a HUD cannot, since during play the mouse belongs to the world.
+  Drawn as a text texture blitted at an offset and clipped to the line, so animating one row
+  does not re-compose the whole overlay several times a second (`HudScrollLongLines`).
+- **"Nothing yet" rows are white**, level with the coordinates readout the HUD sits under —
+  the old grey read fine on a dialog background and murky over the world. A config still
+  carrying that grey is migrated, since it was the old default rather than a choice; HUD
+  section headings move to the game's parchment tone so they still read as headings.
+- **Options screen** in the management dialog, holding the settings that change what the list
+  shows or counts rather than spending a row above the table on every visit: icon cycling for
+  "any" rows, and counting saddlebags on animals you own within range — ridden or standing
+  beside you (off by default; "what do I have on me" is the question this mod answers, and
+  counting the pack mule changes the answer). The test is the game's own **ownership**, not
+  proximity: counting any container that happened to be near would be the nearby-chest
+  scanning the design rejects, and on a shared server another player's animals are never
+  counted.
+- **Quest history.** A third tab records what you have finished, kept after the pins are
+  gone, each with a **Read** button that opens what the villager actually said — recovered
+  from the dialogue graph by the chain's own "started" variable, so it works for quests
+  finished long before the mod existed and whose pins never existed at all. A **Journal**
+  button opens the game's journal from the same page, for the lore collected alongside. Quests completed while Tallybook was running are dated by in-game day; ones already
+  finished the first time it looked cannot be — inventing a date would be worse than saying
+  so — and are listed last, ordered by how deep into the story they sit. That ordering is read
+  from the content itself: a quest's opening is gated on variables other quests set, so the
+  dialogue files describe a real partial order (the archives must precede what they unlock),
+  and counting how many quests must precede each one sequences them without guesswork.
+- **Village errands are picked up retroactively at login.** Their state lives on the player
+  and is synced to the client, so quests you were already on — including from before the mod
+  was installed — appear without going to find anyone. Each is offered once ever, so unpinning
+  one sticks. Trader tasks stay conversation-based: their state lives on the NPC and only
+  exists while that trader is loaded.
 - **Items / Side quests tabs** in the management dialog: errands from villagers are a
   different kind of thing from what you decided to build, so they get their own tab with its
   own paging rather than being mixed in and told apart by a label. Errands are counted, not
@@ -81,11 +124,15 @@ The full v1 feature set from the spec.
   Counts sit in a reserved right-hand column so truncating a long label can never eat them.
 - **Villager errand tracking.** Accepting a villager's or trader's fetch quest adds it to
   the list automatically — a light-blue `x` map marker on the NPC (colour/icon/pinned
-  configurable) plus tallied pins labelled with who asked. The marker's existence is
-  reconciled from the list rather than bolted onto each action, so it appears while an errand
-  is pinned and checked and goes when it is unchecked or unpinned — five separate paths could
-  otherwise leave a marker outliving its errand. A **Map** button on each errand row opens
-  the world map centred on the giver. Requests are read from the game's
+  configurable) plus tallied pins labelled with who asked. The marker appears while an errand
+  is pinned and checked and goes when it is unchecked or unpinned, driven by a flag on the pin
+  rather than by re-reading the map on a timer — the latter placed a duplicate marker every
+  few seconds whenever that read came back empty. A **Map** button on each errand row opens
+  the full world map centred on the giver, and `.tallybook clearmarkers` removes every marker
+  Tallybook has placed. The villager's own words are kept with the errand and shown under its
+  row — recovered from the dialogue graph (the step that *sets* the quest variable is the
+  accepting one; the speech leading to that choice is the briefing) rather than by reading the
+  live conversation, so the conversation UI is still never touched. Requests are read from the game's
   own structured dialogue conditions rather than parsed from text, and only requests whose
   quest gates are currently satisfied are picked up — a gate that cannot be evaluated counts
   as unmet, so the failure direction is "nothing tracked", never a spoiler. Nothing patches

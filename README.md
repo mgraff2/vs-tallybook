@@ -5,9 +5,9 @@ Pin any item, and Tallybook tells you what you still need to gather — with liv
 inventory tracking and at-a-glance status. The handbook already answers "how do I make X";
 Tallybook answers "what do I still need, and am I done?"
 
-**Status: in development.** The design is finalised in
-[tallybook-mod-spec.md](tallybook-mod-spec.md); implementation follows the build order in
-§10 of that document. Nothing is released yet.
+**Version 0.2.0**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
+and nobody else needs it installed. The design is in
+[tallybook-mod-spec.md](tallybook-mod-spec.md).
 
 ### How it works
 
@@ -19,8 +19,10 @@ Tallybook answers "what do I still need, and am I done?"
    gets pinned is exactly the page you were on: variants that share an item code but are
    really different things (the four bookshelf shapes, each its own page and plank count)
    stay distinct.
-2. **Manage** — press **L** (rebindable): two tabs — **Items** for what you decided to build
-   or collect, **Side quests** for errands villagers gave you — each a table of icon,
+2. **Manage** — press **L** (rebindable): three tabs — **Items** for what you decided to build
+   or collect, **Side quests** for errands villagers gave you, and **History** for what you
+   have finished — each with a **Read** button for what the villager said at the time, and a
+   **Journal** button for the lore you collected along the way. The first two tabs are a table of icon,
    item (indented to show the craft tree), have/need, how many you want, actions — with
    − / + steppers and direct count entry, colour-coded status, and tool checks. Unpinning is
    hold-to-confirm, never a dialog: hold the Unpin button for a second, through its countdown;
@@ -67,9 +69,17 @@ back). A recipe existing is no reason to assume you meant to craft rather than g
 ingots have exactly one grid recipe, chiselling an iron anvil back into ingots, when what
 you really do is smelt them.
 
-Each errand row has a **Map** button that opens the world map centred on the quest giver,
+The errand keeps **what the villager actually said** — "Damned drifter trampled through my
+traps this week… Can you bring me some small raw hides? Say ten of them?" — quoted under its
+row and in full on hover, so you can re-read why you're carrying ten hides a week later.
+
+Each errand row has a **Map** button that opens the full world map centred on the quest giver,
 and a light-blue `x` marker is kept on the map for as long as the errand is pinned and
 checked — uncheck or unpin it and the marker goes, re-check or re-accept and it returns.
+
+The HUD lists everything you're building on one scrolling row, then the pooled totals — one
+line per material, however many builds want it. Options can switch that to a per-item
+breakdown instead.
 
 On the HUD, errands get their own **side quests** section reading
 `Iron ingot for Agnieszka (140m)  0/8`, with everything else below under **gathering**.
@@ -91,6 +101,13 @@ expansion tree already uses.
 Everything updates the instant your inventory changes, and the list (counts, recipe choices,
 expansion state) is saved per world.
 
+Counting is your **carried** inventory — hotbar and backpacks. An **Options** button in the
+L window can extend that to saddlebags on animals **you own** within 15 blocks, ridden or
+just standing beside you, and holds the icon-cycling setting too. Ownership is the game's
+own, so on a shared server your friend's elk is never counted toward your totals — and only
+bags actually strapped to an animal count, never one lying on the ground or stored in a
+chest.
+
 ## Why it works with every content mod, for free
 
 Servers push their content mods to connecting clients, so every modded recipe on a server is
@@ -106,18 +123,25 @@ as a maintenance promise, but as a property of where the data lives.
 | `HudMaxRows` | `12` | gather rows before `+N more…` |
 | `HudVisible` | `true` | HUD default; K toggles at runtime |
 | `HudCycleVariants` | `true` | cycle "any"-row icons through their variants (also toggleable in the L window) |
+| `HudScrollLongLines` | `true` | a HUD line too long for its column slides left every 15s to show the rest |
+| `HudGroupByItem` | `true` | HUD lists each pinned item followed by what it needs; off pools everything into one merged list |
 | `ConfirmOnUnpin` | `true` | unpin needs a 1s button hold; `false` = instant click |
+| `IncludeMountBags` / `MountBagRange` | `false` / `15` | count saddlebags on animals you own within N blocks (also in the L window's Options) |
 | `QuestWaypoints` | `true` | keep a map marker on tracked quest givers at all (off = Tallybook never touches your waypoints) |
 | `QuestWaypointColor` / `QuestWaypointIcon` / `QuestWaypointPinned` | `#4fc3f7` / `x` / `true` | how that marker looks — light blue, to read differently from your own markers |
 | `QuestReadyGlow` / `QuestReadyGlowColor` | `true` / `#FFBE3C` | gold shimmer over an NPC once you carry everything they asked for |
 | `AutoTrackQuests` | `true` | pick up villager fetch quests automatically when you accept them |
-| `ColorSatisfied` / `ColorPartial` / `ColorNone` | `#80FF80` / `#FFCC66` / `#909090` | status colours |
+| `ColorSatisfied` / `ColorPartial` / `ColorNone` | `#80FF80` / `#FFCC66` / `#FFFFFF` | status colours |
 
 Hotkeys (L, K) are rebindable in Settings → Controls like any other key.
 
+`.tallybook clearmarkers` removes every quest map marker Tallybook has placed, and
+`.tallybook markers` puts one back on every tracked quest giver — useful if you deleted them
+by hand and want them again.
+
 ## Install
 
-Not yet released. Once it is: drop `tallybook_X.Y.Z.zip` into
+Drop `tallybook_0.2.0.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source
@@ -163,6 +187,10 @@ is most of it. Manual pre-release checklist for what the server can't see:
    variants: the pinned recipe's plank count must match that page (attribute-distinct
    variants share a code; the 8-plank page must never pin the 5-plank shape), and pinning a
    second bookshelf shape must create a second row, not increment the first.
+2a. **Animal bags** — with the Options toggle on, put items in an owned elk's saddlebags:
+   they must count toward Have while riding *and* while standing near it, stop counting once
+   you walk out of range, and never count when the toggle is off. On a server, another
+   player's animal must never count toward yours.
 2. **Counting** — pick up and drop ingredients; dialog rows and HUD lines must flip state
    immediately, not on a timer. Pin an uncraftable item (low-quality soil x64): its
    have/needed must climb as you collect, reach "got it" at the target, and — for a

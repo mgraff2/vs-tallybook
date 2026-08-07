@@ -10,12 +10,12 @@ using Vintagestory.GameContent;
 
 namespace Tallybook
 {
-    enum TbScreen { List, ConfirmClear }
+    enum TbScreen { List, ConfirmClear, Options }
 
     /// <summary>Errands from villagers are a different kind of thing from things you decided
     /// to build, so they get their own tab rather than being mixed in and distinguished only
     /// by a label.</summary>
-    enum TbTab { Items, Quests }
+    enum TbTab { Items, Quests, History }
 
     /// <summary>
     /// Text that must stay on its own row. GuiElementStaticText does not clip: a line longer
@@ -26,6 +26,36 @@ namespace Tallybook
     /// </summary>
     static class TbText
     {
+        /// <summary>
+        /// Break a passage into lines that fit a width. Used where the text *is* the content —
+        /// a quest you are re-reading — rather than a cell in a row, so it wraps properly
+        /// instead of being cut off with an ellipsis.
+        /// </summary>
+        internal static List<string> Wrap(CairoFont font, string text, double maxWidth)
+        {
+            var lines = new List<string>();
+            if (string.IsNullOrWhiteSpace(text)) return lines;
+
+            double max = maxWidth * RuntimeEnv.GUIScale;
+            var line = new System.Text.StringBuilder();
+
+            foreach (var word in text.Split(' '))
+            {
+                string candidate = line.Length == 0 ? word : line + " " + word;
+                if (line.Length > 0 && font.GetTextExtents(candidate).Width > max)
+                {
+                    lines.Add(line.ToString());
+                    line.Clear().Append(word);
+                }
+                else
+                {
+                    line.Clear().Append(candidate);
+                }
+            }
+            if (line.Length > 0) lines.Add(line.ToString());
+            return lines;
+        }
+
         internal static string Fit(CairoFont font, string text, double maxWidth)
         {
             if (string.IsNullOrEmpty(text)) return text;
@@ -102,15 +132,28 @@ namespace Tallybook
         class PinRow : Row { public Pin Pin; }
         class NodeRow : Row { public Pin Pin; public TallyNode Node; }
         class ToolRow : Row { public Requirement Tool; }
-        class InfoRow : Row { public string Text; }
+        class InfoRow : Row
+        {
+            public string Text;
+            /// <summary>Shown on hover when the row is longer than its column — a quest
+            /// briefing is a paragraph and will always be.</summary>
+            public string Full;
+        }
 
         List<Row> allRows = new List<Row>();
 
-        public GuiDialogTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc)
+        readonly QuestHistory history;
+
+        /// <summary>Which archive entries are open for reading.</summary>
+        readonly HashSet<string> expandedRecords = new HashSet<string>();
+
+        public GuiDialogTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc,
+                                  QuestHistory history)
             : base(capi)
         {
             this.config = config;
             this.svc = svc;
+            this.history = history;
             // OnCountsChanged is the single redraw signal: every store mutation funnels
             // through TallyService.RecountAll, whose signature covers structure and numbers.
             svc.OnCountsChanged += OnCountsChanged;
@@ -173,6 +216,18 @@ namespace Tallybook
                 if (!pin.HasRecipe)
                 {
                     // Not craftable is not untrackable: the count above this row is live.
+                    // What they said, kept from the conversation so it can be re-read.
+                    if (pin.QuestGiver != null && pin.QuestText?.Count > 0)
+                    {
+                        allRows.Add(new InfoRow
+                        {
+                            Text = $"“{string.Join(" ", pin.QuestText)}”",
+                            Full = string.Join("\n\n", pin.QuestText),
+                            Indent = 1
+                        });
+                        continue;
+                    }
+
                     allRows.Add(new InfoRow
                     {
                         Text = pin.QuestGiver != null
@@ -221,6 +276,7 @@ namespace Tallybook
             {
                 case TbScreen.List: ComposeList(composer); break;
                 case TbScreen.ConfirmClear: ComposeConfirmClear(composer); break;
+                case TbScreen.Options: ComposeOptions(composer); break;
             }
 
             var replaced = SingleComposer;
@@ -232,12 +288,15 @@ namespace Tallybook
             }
 
             if (screen == TbScreen.List) RestoreCountInputs();
+            else if (screen == TbScreen.Options) RestoreOptionSwitches();
         }
 
         string TitleFor() => screen switch
         {
+            // These screens keep a qualifier — there it says which screen you are on.
             TbScreen.ConfirmClear => "Tallybook — Clear list",
-            _ => "Tallybook — Shopping list",
+            TbScreen.Options => "Tallybook — Options",
+            _ => "Tallybook",
         };
 
         void OnTitleBarClose()
@@ -254,7 +313,7 @@ namespace Tallybook
 
         void OnTabClicked(int index)
         {
-            var next = index == 1 ? TbTab.Quests : TbTab.Items;
+            var next = index == 2 ? TbTab.History : index == 1 ? TbTab.Quests : TbTab.Items;
             if (next == tab) return;
             tab = next;
             page = 0;              // page numbers do not carry across two different lists
@@ -279,15 +338,19 @@ namespace Tallybook
             int itemCount = PinsForTab(TbTab.Items).Count();
             int questCount = PinsForTab(TbTab.Quests).Count();
 
+            var done = history?.Records() ?? new List<QuestRecord>();
             var tabs = new[]
             {
                 new GuiTab { DataInt = 0, Name = $"Items ({itemCount})" },
                 new GuiTab { DataInt = 1, Name = $"Side quests ({questCount})" },
+                new GuiTab { DataInt = 2, Name = $"History ({done.Count})" },
             };
             c.AddHorizontalTabs(tabs, EB(0, y, DW, 26), OnTabClicked,
                 CairoFont.WhiteSmallText(),
                 CairoFont.WhiteSmallText().WithWeight(Cairo.FontWeight.Bold), "tabs");
             y += 34;
+
+            if (tab == TbTab.History) { ComposeHistory(c, done, ref y); return; }
 
             if (!PinsForTab(tab).Any())
             {
@@ -305,18 +368,8 @@ namespace Tallybook
                 return;
             }
 
-            // Items tab only: the setting is about rows that accept many variants, which is a
-            // recipe-ingredient idea. Errands name one exact item, so it has nothing to say
-            // there and would just be clutter on that tab.
-            if (tab == TbTab.Items)
-            {
-                c.AddSwitch(on =>
-                {
-                    config.HudCycleVariants = on;
-                    capi.StoreModConfig(config, "tallybook.json");
-                }, EB(8, y, 25, 25), "cyclevariants", 25);
-                c.AddStaticText("Cycle icons for \"any\" items", font, EB(40, y + 4, 300, 26));
-            }
+            c.AddSmallButton("Options", () => { screen = TbScreen.Options; Recompose(); return true; },
+                EB(8, y - 2, 92, 26), EnumButtonStyle.Small);
 
             // One bulk toggle instead of a confirm dialog per item: unchecking loses nothing,
             // so it needs no confirmation — that is the whole point of parking over unpinning.
@@ -326,12 +379,17 @@ namespace Tallybook
                 EB(DW - 112, y - 2, 112, 26), EnumButtonStyle.Small);
             y += 36;
 
-            // Widths bounded by the next column: an over-wide header ran into its neighbour
-            // and the two read as one word ("Have / needWant").
+            // Each header runs to the next *header*, not the next column — the stepper column
+            // has no label of its own, so bounding "Have / Want" at its edge left too little
+            // room and the text wrapped onto the row of numbers below. Fitted as well, so a
+            // translation longer than its space truncates rather than wrapping.
             var headFont = font.Clone().WithColor(GuiStyle.ColorParchment);
-            c.AddStaticText("Item", headFont, EB(ColName, y, ColProg - ColName - 8, 22));
-            c.AddStaticText("Have / Want", headFont, EB(ColProg, y, ColWant - ColProg - 8, 22));
-            c.AddStaticText("Actions", headFont, EB(ColAct1, y, DW - ColAct1 - 8, 22));
+            void Head(string text, double x, double w)
+                => c.AddStaticText(TbText.Fit(headFont, text, w), headFont, EB(x, y, w, 22));
+
+            Head("Item", ColName, ColProg - ColName - 8);
+            Head("Have / Want", ColProg, ColAct1 - ColProg - 8);
+            Head("Actions", ColAct1, DW - ColAct1 - 8);
             y += 22;
             c.AddGameOverlay(EB(0, y, DW, 2), GuiStyle.DialogBorderColor);
             y += 6;
@@ -531,11 +589,34 @@ namespace Tallybook
                 }
 
                 case InfoRow ir:
-                    FittedText(c, ir.Text, font.Clone().WithColor(GuiStyle.ColorParchment),
-                        EB(nx, ry + 4, ColAct1 - nx, 24), ColAct1 - nx);
+                {
+                    var infoFont = font.Clone().WithColor(GuiStyle.ColorParchment);
+                    double infoW = ColAct1 - nx;
+                    string shown = TbText.Fit(infoFont, ir.Text, infoW);
+                    c.AddStaticText(shown, infoFont, EB(nx, ry + 4, infoW, 24));
+
+                    string full = ir.Full ?? ir.Text;
+                    if (shown != ir.Text || full != ir.Text)
+                    {
+                        c.AddHoverText(full, font, 420, EB(nx, ry + 4, infoW, 24));
+                    }
                     break;
+                }
             }
             y += RowH;
+        }
+
+        /// <summary>Switches compose in the off state; setting On directly fires no callback.</summary>
+        void RestoreOptionSwitches()
+        {
+            var group = SingleComposer.GetSwitch("opt-group");
+            if (group != null) group.On = config.HudGroupByItem;
+
+            var cycle = SingleComposer.GetSwitch("opt-cycle");
+            if (cycle != null) cycle.On = config.HudCycleVariants;
+
+            var bags = SingleComposer.GetSwitch("opt-mountbags");
+            if (bags != null) bags.On = config.IncludeMountBags;
         }
 
         bool restoringInputs;
@@ -547,10 +628,6 @@ namespace Tallybook
             restoringInputs = true;
             try
             {
-                // Present on the Items tab only.
-                var cyc = SingleComposer.GetSwitch("cyclevariants");
-                if (cyc != null) cyc.On = config.HudCycleVariants;
-
                 // Tabs compose with the first one active; re-assert the real selection.
                 SingleComposer.GetHorizontalTabs("tabs")?.SetValue(tab == TbTab.Quests ? 1 : 0, false);
 
@@ -748,46 +825,38 @@ namespace Tallybook
             }
 
             TryClose();
-            if (!maps.IsOpened) maps.ToggleMap(EnumDialogType.Dialog);
 
-            // A tick later: the map dialog composes on open, and its map element does not
-            // exist until it has.
-            capi.Event.RegisterCallback(_ =>
-            {
-                try
-                {
-                    var element = FindMapElement(maps.worldMapDlg);
-                    element?.CenterMapTo(new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0));
-                }
-                catch (Exception e)
-                {
-                    capi.Logger.Warning("[tallybook] could not centre the map: {0}", e.Message);
-                }
-            }, 60);
+            // The minimap counts as "opened", so asking IsOpened alone would leave it showing
+            // and we would pan the corner minimap instead of the map you asked for.
+            var dlg = maps.worldMapDlg;
+            bool fullMapShowing = dlg != null && dlg.IsOpened() && dlg.DialogType == EnumDialogType.Dialog;
+            if (!fullMapShowing) maps.ToggleMap(EnumDialogType.Dialog);
+
+            var target = new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0);
+            capi.World.RegisterCallback(_ => Centre(maps, target), 250);
+            capi.World.RegisterCallback(_ => Centre(maps, target), 600);
             return true;
         }
 
         /// <summary>
-        /// The map widget inside the world map dialog. Found by type rather than by element
-        /// key, because the key is an internal detail of a dialog we do not own.
+        /// Point every map widget the dialog owns at a spot.
+        ///
+        /// Fetched by its element key through the composer's public accessor, and applied to
+        /// each composer rather than picked out of one: an earlier version reflected into the
+        /// dialog's private full-map composer and matched the widget by type, which found
+        /// something that was evidently not the one on screen — the map opened and stayed
+        /// looking at the player. Asking for the element by name, everywhere, is both simpler
+        /// and the approach already proven to work.
         /// </summary>
-        static GuiElementMap FindMapElement(GuiDialogWorldMap dialog)
+        static void Centre(WorldMapManager maps, BlockPos target)
         {
-            if (dialog == null) return null;
+            var dlg = maps?.worldMapDlg;
+            if (dlg == null) return;
 
-            foreach (var composer in dialog.Composers.Values)
+            foreach (var composer in dlg.Composers.Values)
             {
-                if (composer == null) continue;
-                var field = HarmonyLib.AccessTools.Field(typeof(GuiComposer), "interactiveElements");
-                if (field?.GetValue(composer) is System.Collections.IDictionary elements)
-                {
-                    foreach (var value in elements.Values)
-                    {
-                        if (value is GuiElementMap map) return map;
-                    }
-                }
+                if (composer?.GetElement("mapElem") is GuiElementMap map) map.CenterMapTo(target);
             }
-            return null;
         }
 
         bool OpenHandbookFor(Pin pin)
@@ -857,6 +926,176 @@ namespace Tallybook
         }
 
         // ------------------------------------------------------------------ confirm screens
+
+        /// <summary>
+        /// Quests you have finished. Dated ones first, oldest at the top; then everything
+        /// that was already done the first time Tallybook looked, which cannot be dated and
+        /// is ordered by how deep into the story it sits instead.
+        /// </summary>
+        void ComposeHistory(GuiComposer c, List<QuestRecord> done, ref double y)
+        {
+            var font = CairoFont.WhiteSmallText();
+            var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
+
+            if (done.Count == 0)
+            {
+                c.AddStaticText("Nothing finished yet.", font, EB(8, y + 8, DW, 26));
+                c.AddStaticText("Quests you complete are kept here, including ones you finished before Tallybook was installed.",
+                    quiet, EB(8, y + 38, DW, 46));
+                y += 96;
+                c.AddSmallButton("Journal", () => OpenJournal(), EB(DW - 190, y, 92, 28), EnumButtonStyle.Small);
+                c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+                return;
+            }
+
+            bool undatedHeaderDrawn = false;
+            var page = done.Skip(this.page * PageSize).Take(PageSize).ToList();
+
+            foreach (var record in page)
+            {
+                if (!record.Day.HasValue && !undatedHeaderDrawn)
+                {
+                    c.AddStaticText("— finished before Tallybook was watching —", quiet, EB(8, y + 4, DW, 22));
+                    y += 24;
+                    undatedHeaderDrawn = true;
+                }
+
+                var line = font.Clone().WithColor(TallybookConfig.ParseColor(config.ColorSatisfied));
+                string when = record.Day.HasValue ? $"day {(int)record.Day.Value}" : "earlier";
+                string what = record.Stage == "rewarded" ? "rewarded" : "handed in";
+
+                c.AddStaticText($"✓ {record.Name}", line, EB(8, y + 4, 300, 24));
+                c.AddStaticText($"{what}, {when}", quiet, EB(320, y + 4, 220, 24));
+
+                bool open = expandedRecords.Contains(record.Chain);
+                if (record.Text?.Count > 0)
+                {
+                    string chain = record.Chain;
+                    c.AddSmallButton(open ? "Hide" : "Read", () =>
+                    {
+                        if (!expandedRecords.Add(chain)) expandedRecords.Remove(chain);
+                        Recompose();
+                        return true;
+                    }, EB(DW - 90, y, 76, 26), EnumButtonStyle.Small);
+                }
+                y += RowH;
+
+                if (!open || record.Text == null) continue;
+
+                // The words themselves, at the width of the window — this is the reminiscing
+                // part, so it is given room rather than trimmed to a column.
+                foreach (var said in record.Text)
+                {
+                    foreach (var wrapped in TbText.Wrap(quiet, said, DW - 48))
+                    {
+                        c.AddStaticText(wrapped, quiet, EB(28, y, DW - 48, 22));
+                        y += 22;
+                    }
+                    y += 6;
+                }
+                y += 4;
+            }
+
+            y += 12;
+            int pages = Math.Max(0, (done.Count - 1) / PageSize);
+            if (pages > 0)
+            {
+                c.AddSmallButton("< Prev", () => { if (this.page > 0) { this.page--; Recompose(); } return true; },
+                    EB(DW / 2 - 130, y, 78, 28), EnumButtonStyle.Small);
+                c.AddStaticText($"Page {this.page + 1}/{pages + 1}", font, EB(DW / 2 - 44, y + 5, 90, 24));
+                c.AddSmallButton("Next >", () => { if (this.page < pages) { this.page++; Recompose(); } return true; },
+                    EB(DW / 2 + 52, y, 78, 28), EnumButtonStyle.Small);
+            }
+
+            c.AddSmallButton("Journal", () => OpenJournal(), EB(DW - 190, y, 92, 28), EnumButtonStyle.Small);
+            c.AddHoverText("Open your journal — the lore you have collected along the way.",
+                font, 260, EB(DW - 190, y, 92, 28));
+            c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+        }
+
+        /// <summary>
+        /// Hand over to the game's journal. Opened the way the player would, by its own
+        /// hotkey, so whatever it does on first use happens by its hand rather than ours —
+        /// and deferred a tick, since this runs from inside our own dialog's click handling.
+        /// </summary>
+        bool OpenJournal()
+        {
+            TryClose();
+            capi.Event.RegisterCallback(_ =>
+            {
+                try
+                {
+                    // Whatever the journal's hotkey is actually called — asking the registry
+                    // beats guessing at codes that vary between versions.
+                    foreach (var entry in capi.Input.HotKeys)
+                    {
+                        if (entry.Key?.IndexOf("journal", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        if (entry.Value?.Handler == null) continue;
+
+                        entry.Value.Handler(entry.Value.CurrentMapping);
+                        return;
+                    }
+
+                    // Failing that, the journal dialog itself.
+                    var journal = capi.ModLoader.GetModSystem<ModJournal>();
+                    if (journal != null
+                        && HarmonyLib.AccessTools.Field(typeof(ModJournal), "dialog")?.GetValue(journal) is GuiDialog dlg)
+                    {
+                        if (!dlg.IsOpened()) dlg.TryOpen();
+                        return;
+                    }
+                }
+                catch (Exception e)
+                {
+                    capi.Logger.Warning("[tallybook] could not open the journal: {0}", e.Message);
+                }
+
+                capi.ShowChatMessage("Tallybook: could not open the journal — try its own key.");
+            }, 0);
+            return true;
+        }
+
+        /// <summary>
+        /// Settings that change what the list shows or counts, gathered in one place rather
+        /// than sat above the table taking up a row on every visit.
+        /// </summary>
+        void ComposeOptions(GuiComposer c)
+        {
+            var font = CairoFont.WhiteSmallText();
+            var hint = font.Clone().WithColor(GuiStyle.ColorParchment);
+            double y = 40;
+
+            void Option(string key, bool on, string label, string explain, Action<bool> set)
+            {
+                c.AddSwitch(v => { set(v); capi.StoreModConfig(config, "tallybook.json"); },
+                    EB(8, y, 25, 25), key, 25);
+                c.AddStaticText(label, font, EB(44, y + 4, DW - 60, 26));
+                y += 26;
+                c.AddStaticText(explain, hint, EB(44, y, DW - 60, 40));
+                y += 44;
+            }
+
+            Option("opt-group", config.HudGroupByItem,
+                "Group the HUD under each item",
+                "Each pinned item followed by what it needs. Off pools everything into one "
+                + "shopping list, merging an item two builds both want into a single line.",
+                v => { config.HudGroupByItem = v; svc.RecountAll(); });
+
+            Option("opt-cycle", config.HudCycleVariants,
+                "Cycle icons for \"any\" items",
+                "A row that accepts several woods flips its icon through them, as the handbook does.",
+                v => config.HudCycleVariants = v);
+
+            Option("opt-mountbags", config.IncludeMountBags,
+                $"Count bags on my animals within {config.MountBagRange} blocks",
+                "Bags strapped to an animal you own — ridden or standing beside you — count "
+                + "toward Have. Only animals the game says are yours, and only bags on their "
+                + "backs: one lying on the ground or in a chest is not counted.",
+                v => { config.IncludeMountBags = v; svc.RecountAll(); });
+
+            y += 8;
+            c.AddSmallButton("Back", () => { BackToList(); return true; }, EB(8, y, 90, 30));
+        }
 
         void ComposeConfirmClear(GuiComposer c)
         {

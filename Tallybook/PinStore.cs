@@ -31,6 +31,16 @@ namespace Tallybook
         /// point you back at them without depending on a map waypoint surviving.</summary>
         public double QuestX, QuestY, QuestZ;
 
+        /// <summary>What the villager said when they asked, kept so the errand can be re-read
+        /// long after the conversation is closed.</summary>
+        public List<string> QuestText = new List<string>();
+
+        /// <summary>We have placed a map marker for this errand. Persisted, and the *only*
+        /// thing that decides whether another gets placed — reading the map back to find out
+        /// is not reliable, and a check that silently fails means a marker every few seconds
+        /// forever (it did).</summary>
+        public bool WaypointPlaced;
+
         /// <summary>
         /// Count this item, do not break it down — "I am going to go and find these". The
         /// difference matters whenever a recipe exists but is not how anyone would actually
@@ -112,10 +122,49 @@ namespace Tallybook
     /// </summary>
     /// <summary>On-disk shape: pins plus per-world recipe preferences (spec §2a: choosing a
     /// recipe for an item records it as that item's default; cleared with the list).</summary>
+    /// <summary>One finished quest, kept after its pins are gone.</summary>
+    public class QuestRecord
+    {
+        public string Chain;        // "beataquest"
+        public string Name;         // "Beata"
+        public string Stage;        // completed | rewarded
+
+        /// <summary>In-game day it finished, or null when it was already done the first time
+        /// we looked — a quest finished before this mod existed can be known about but not
+        /// dated, and inventing a day would be worse than admitting that.</summary>
+        public double? Day;
+
+        /// <summary>Where it sits in the story when there is no date: how many other quests
+        /// must come before it. Prerequisites are visible in the dialogue gates, so undated
+        /// entries can still be put in a sensible order rather than an arbitrary one.</summary>
+        public int Depth;
+
+        /// <summary>What they said when they asked, kept so a finished quest can be re-read
+        /// years later. The whole point of an archive is that it still means something.</summary>
+        public List<string> Text = new List<string>();
+    }
+
     public class SaveFile
     {
         public List<Pin> Pins = new List<Pin>();
         public Dictionary<string, string> RecipePrefs = new Dictionary<string, string>();
+
+        /// <summary>Errands the load-time scan has already offered. It runs every login, so
+        /// without this an errand you unpinned would return each time you logged in. Talking
+        /// to the NPC still re-adds it — that is a deliberate act, this is not.</summary>
+        public List<string> OfferedQuests = new List<string>();
+
+        /// <summary>Where each NPC was last seen, so an errand recovered at load can still be
+        /// marked on the map. Only ever filled in for NPCs you have actually been near.</summary>
+        public Dictionary<string, string> NpcPlaces = new Dictionary<string, string>();
+
+        public List<QuestRecord> QuestHistory = new List<QuestRecord>();
+
+        /// <summary>Last seen stage per quest chain. What makes dating possible: a chain that
+        /// was mid-flight when we last looked and is finished now finished *while we watched*,
+        /// so it gets today's date; one that was already finished the first time we ever saw
+        /// it did not.</summary>
+        public Dictionary<string, string> ChainStates = new Dictionary<string, string>();
     }
 
     public class PinStore
@@ -125,6 +174,10 @@ namespace Tallybook
 
         public IReadOnlyList<Pin> Pins => pins;
         public Dictionary<string, string> RecipePrefs { get; private set; } = new Dictionary<string, string>();
+        public HashSet<string> OfferedQuests { get; private set; } = new HashSet<string>();
+        public Dictionary<string, string> NpcPlaces { get; private set; } = new Dictionary<string, string>();
+        public List<QuestRecord> QuestHistory { get; private set; } = new List<QuestRecord>();
+        public Dictionary<string, string> ChainStates { get; private set; } = new Dictionary<string, string>();
         public event Action OnChanged;
 
         public PinStore(ICoreClientAPI capi)
@@ -202,9 +255,14 @@ namespace Tallybook
             Changed();
         }
 
+        /// <summary>Raised with the pin as it leaves the list, while its state can still be
+        /// read — anything hanging off a pin (a map marker) has to be told before it is gone.</summary>
+        public event Action<Pin> OnPinRemoved;
+
         public bool Remove(Pin pin)
         {
             if (pin == null || !pins.Remove(pin)) return false;
+            OnPinRemoved?.Invoke(pin);
             Changed();
             return true;
         }
@@ -212,6 +270,7 @@ namespace Tallybook
         public void Clear()
         {
             if (pins.Count == 0 && RecipePrefs.Count == 0) return;
+            foreach (var pin in pins.ToList()) OnPinRemoved?.Invoke(pin);
             pins.Clear();
             RecipePrefs.Clear();    // prefs clear with the list (spec §2a)
             Changed();
@@ -255,7 +314,15 @@ namespace Tallybook
                     pin.Expansions = TallyTree.SaveExpansions(pin.RootNodes);
                     pin.RecipeSignature = pin.Group?.Signature;
                 }
-                var file = new SaveFile { Pins = pins, RecipePrefs = RecipePrefs };
+                var file = new SaveFile
+                {
+                    Pins = pins,
+                    RecipePrefs = RecipePrefs,
+                    OfferedQuests = OfferedQuests.ToList(),
+                    NpcPlaces = NpcPlaces,
+                    QuestHistory = QuestHistory,
+                    ChainStates = ChainStates
+                };
                 File.WriteAllText(path, JsonConvert.SerializeObject(file, Formatting.Indented));
             }
             catch (Exception e)
@@ -277,6 +344,10 @@ namespace Tallybook
                     var loaded = JsonConvert.DeserializeObject<SaveFile>(File.ReadAllText(path));
                     if (loaded?.Pins != null) pins.AddRange(loaded.Pins.Where(p => p != null && p.Code != null));
                     if (loaded?.RecipePrefs != null) RecipePrefs = loaded.RecipePrefs;
+                    if (loaded?.OfferedQuests != null) OfferedQuests = new HashSet<string>(loaded.OfferedQuests);
+                    if (loaded?.NpcPlaces != null) NpcPlaces = loaded.NpcPlaces;
+                    if (loaded?.QuestHistory != null) QuestHistory = loaded.QuestHistory;
+                    if (loaded?.ChainStates != null) ChainStates = loaded.ChainStates;
                 }
             }
             catch (Exception e)
@@ -287,8 +358,18 @@ namespace Tallybook
             }
 
             // Drop pins whose item no longer exists at all — a row we cannot name or count is
-            // not a useful reminder, it is a mystery.
-            pins.RemoveAll(p => !resolve(p));
+            // not a useful reminder, it is a mystery. A pin that throws on resolve goes the
+            // same way: one bad entry must not abort the load and leave the surfaces with
+            // nothing, which looks exactly like the mod having failed to start.
+            pins.RemoveAll(p =>
+            {
+                try { return !resolve(p); }
+                catch (Exception e)
+                {
+                    capi.Logger.Warning("[tallybook] dropping unreadable pin {0}: {1}", p.Code, e.Message);
+                    return true;
+                }
+            });
             OnChanged?.Invoke();
         }
     }

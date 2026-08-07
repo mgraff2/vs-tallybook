@@ -16,6 +16,30 @@ namespace Tallybook
         /// <summary>Corner for the HUD overlay: topleft | topright | bottomleft | bottomright.</summary>
         public string HudPosition { get; set; } = "topright";
 
+        /// <summary>
+        /// Group the HUD's gathering section under each pinned item — "Resonator" then what
+        /// the resonator needs, then "Wooden table" then what that needs. **Off by default**:
+        /// pooling merges an item two builds both want into one line, which is what you want
+        /// while out fetching. Grouping answers the other question — what does this one thing
+        /// still need — and costs a repeated row per shared material.
+        /// </summary>
+        public bool HudGroupByItem { get; set; } = false;
+
+        /// <summary>
+        /// Which set of defaults this file was written against, so a default that changes
+        /// later can reach a config that already exists. Without it, changing a default only
+        /// affects players who have never run the mod — everyone else keeps a value they
+        /// never chose (the HUD's grouping, and the grey "nothing yet" colour, both hit this).
+        /// </summary>
+        public int ConfigVersion { get; set; }
+
+        const int CurrentConfigVersion = 1;
+
+        /// <summary>Let a HUD line too long for its column slide left every 15 seconds to
+        /// show the rest of itself, instead of ending in "…". A HUD cannot be hovered for the
+        /// full text the way the list can, so otherwise the tail is simply unreadable.</summary>
+        public bool HudScrollLongLines { get; set; } = true;
+
         /// <summary>HUD rows before truncating with "+N more".</summary>
         public int HudMaxRows { get; set; } = 12;
 
@@ -27,6 +51,16 @@ namespace Tallybook
         /// stands for the set. Toggleable from the shopping list window; read live at render
         /// time, so flipping it needs no recompose.</summary>
         public bool HudCycleVariants { get; set; } = true;
+
+        /// <summary>Count what is in bags on animals you own and are near — the one you are
+        /// riding included — as well as what you are carrying. Off by default: "what do I
+        /// have on me" is the question this mod answers, and quietly counting the pack mule
+        /// would change the answer without being asked. Ownership is the game's own, so on a
+        /// shared server another player's animals are never counted.</summary>
+        public bool IncludeMountBags { get; set; } = false;
+
+        /// <summary>How near one of your animals must be to count, in blocks.</summary>
+        public int MountBagRange { get; set; } = 15;
 
         /// <summary>True (default): unpinning requires holding the button through a 1-second
         /// countdown — deliberate, but never a dialog. False: a single click unpins
@@ -65,11 +99,20 @@ namespace Tallybook
         /// <summary>Status colors, themeable (spec §9).</summary>
         public string ColorSatisfied { get; set; } = "#80FF80";
         public string ColorPartial { get; set; } = "#FFCC66";
-        public string ColorNone { get; set; } = "#909090";
+
+        /// <summary>Nothing collected yet. White, to sit level with the coordinates readout
+        /// the HUD parks under — the old grey was legible on a dialog background but murky
+        /// over the world (Mark).</summary>
+        public string ColorNone { get; set; } = "#FFFFFF";
+
+        /// <summary>The grey this used to be. A config still carrying it was never a choice,
+        /// just the old default, so it is quietly brought forward — see Clamp.</summary>
+        const string RetiredColorNone = "#909090";
 
         public void Clamp()
         {
             HudMaxRows = Math.Min(30, Math.Max(3, HudMaxRows));
+            MountBagRange = Math.Min(64, Math.Max(1, MountBagRange));
             switch ((HudPosition ?? "").ToLowerInvariant())
             {
                 case "topleft": case "topright": case "bottomleft": case "bottomright":
@@ -85,9 +128,23 @@ namespace Tallybook
             QuestWaypointIcon = QuestWaypointIcon.Trim().Replace(" ", "");
 
             if (ParseColor(QuestReadyGlowColor) == null) QuestReadyGlowColor = "#FFBE3C";
+
+            // Carry an untouched old default forward rather than leaving existing players on
+            // a colour that was changed precisely because it read badly.
+            if (string.Equals(ColorNone, RetiredColorNone, StringComparison.OrdinalIgnoreCase))
+                ColorNone = "#FFFFFF";
+
+            if (ConfigVersion < 1)
+            {
+                // Pooled totals became the default after grouping shipped; adopt it for files
+                // written in between, which recorded the old default rather than a preference.
+                HudGroupByItem = false;
+            }
+            ConfigVersion = CurrentConfigVersion;
+
             if (ParseColor(ColorSatisfied) == null) ColorSatisfied = "#80FF80";
             if (ParseColor(ColorPartial) == null) ColorPartial = "#FFCC66";
-            if (ParseColor(ColorNone) == null) ColorNone = "#909090";
+            if (ParseColor(ColorNone) == null) ColorNone = "#FFFFFF";
         }
 
         /// <summary>"#RRGGBB" -> rgba doubles for CairoFont, or null when unparseable.</summary>
