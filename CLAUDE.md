@@ -35,12 +35,11 @@ folder-first, else mod DB API) — delete the cache to re-source. Server data pa
 PID, so a hand-run test and a running sweep no longer delete each other's directory mid-boot
 (that collision reports as "server did not start" and looks like a mod failure).
 
-**Companion set: `pinmatrix` (Pin Matrix — Waypoint Manager).** Our own other client-side
-mod: same author, same client, competing for hotkeys, HUD corners, and GUI dialog space, and
-a user running both is the expected case. These two must never break each other. Grow this
-set as Tallybook's surface grows — add recipe-adding content mods once the §8 registry reads
-land, and HUD-corner mods (e.g. `statushudcont`) once the §5 overlay ships. Derive additions
-from Tallybook's *real* interaction surface; do not copy another project's list wholesale.
+**Companion set: currently empty.** Grow this set as Tallybook's surface grows — add
+client-side GUI mods that compete for hotkeys, HUD corners, and dialog space, recipe-adding
+content mods once the §8 registry reads land, and HUD-corner mods (e.g. `statushudcont`) once
+the §5 overlay ships. Derive additions from Tallybook's *real* interaction surface; do not
+copy another project's list wholesale.
 
 ### 2. Game-version sweep — at the end of every version, before the release commit
 
@@ -122,11 +121,24 @@ Observed on a real modded client (~30,300 grid recipes), not theorised:
   a separate resolved recipe for every wood. That is why a modded client carries ~30,300 grid
   recipes and why one query matched enough to write ~231 chat lines.
 
-  Consequence: **never present a raw registry recipe to the player.** Group by output code
-  (plus `RecipeGroup`), then collapse the variants inside a group into one requirement that
-  accepts them all and counts them collectively. Watching a single raw recipe reports
-  "Board (Aged oak) 0/7" while the player carries twenty birch boards — accurate about that
-  registry entry, and a lie about the question being asked.
+  Consequence: **never present a raw registry recipe to the player.** Group by output page
+  code (see next bullet; plus `RecipeGroup`), then collapse the variants inside a group into
+  one requirement that accepts them all and counts them collectively. Watching a single raw
+  recipe reports "Board (Aged oak) 0/7" while the player carries twenty birch boards —
+  accurate about that registry entry, and a lie about the question being asked.
+- **Outputs sharing a code can be different items (found in 0.1.0 testing, Mark).** The four
+  bookshelf grid recipes all output block code `bookshelf` and differ only in output
+  *attributes* (`type: 2row1col…`, `material: {wood}`) — and each is its own handbook page
+  with its own plank count. Grouping by bare output code merged them, so pinning the 8-plank
+  page produced a 5-plank list. Group identity is therefore the handbook's own page identity
+  (`GuiHandbookItemStackPage.PageCodeForStack`, static, verified): pinning must yield **the
+  exact page the player clicked**, and pins persist their stack attributes (JSON token via
+  `TreeAttribute.ToJsonToken`/`FromJson`) so they resolve back to the same variant after
+  relog. Two corollaries: pin identity/dedup/prefs key on the page code, never the bare code
+  (`Pin.Key`); and where the wildcard substitutes into output attributes, each wood is its
+  own page, so such a pin honestly demands *that* wood's planks — "any wood" collapsing
+  applies only to recipes whose outputs are identical. When no group matches the page's
+  attributes, all groups for the code are the fallback (some recipe beats "no recipe known").
 
   **Grid layout is deliberately not part of the grouping key** (product decision, Mark): an
   item craftable four ways is still one thing to shop for, and the handbook is where layouts
@@ -136,9 +148,14 @@ Observed on a real modded client (~30,300 grid recipes), not theorised:
   you can definitely build one, whereas showing a larger layout's numbers sends the player
   after materials they may not need. `BuildRequirements` only merges variants whose shape and
   quantities match the representative, so a 5-plank layout never absorbs an 8-plank one.
-- **Registry access and live inventory events are both confirmed working** on a real modded
-  client, so §1's "every content mod's recipes for free" holds in practice, not just in
-  principle, and §4's event-driven counting needs no polling fallback.
+- **The registry holds pseudo-recipes that consume their own output (found by Mark, 0.1.0
+  testing).** `slabmode/*.json` recipes exist only to flip a slab's placement attributes:
+  1 glass slab → 1 glass slab. Same family: chiseled-block combining, armor repair. They
+  share an output code with the real recipe, tie or win the cheapest-representative choice
+  (slabmode loads before slabs alphabetically), and then the pin claims "to craft a glass
+  slab you need a glass slab" with no saw in sight. `RecipeProbe.EnsureIndex` drops any
+  recipe whose consumed ingredients include its own output code — exact code equality only,
+  so variant conversions (dye white wool red) survive.
 - **Ingredient `Name` survives expansion** ("wood"), which is what lets a collapsed row read
   "Board (any wood)" rather than an anonymous "any".
 - **The handbook groups more coarsely than we do, deliberately.** It shows one cycling preview
@@ -175,13 +192,13 @@ directly. One-way flow:
   (numbers AND structure: recipe choice, expansion shape) actually changed. The dialog and
   HUD subscribe to that single event — they can never observe a structural change with stale
   numbers, and they never redraw for a no-op.
-- `GuiDialogTallybook` (L) / `HudTallybook` (K) — surfaces. The dialog uses the Pin Matrix
+- `GuiDialogTallybook` (L) / `HudTallybook` (K) — surfaces. The dialog uses a
   recompose-everything pattern plus a **typing grace period**: recomposes steal focus, so
   live recounts defer up to ~2s while a count field is being typed
   (`restoringInputs` guards the SetValue→callback feedback loop — without it every recompose
   looks like typing and defers the next update forever).
 
-GUI lessons inherited from Pin Matrix — do not relearn these:
+GUI lessons learned the hard way — do not relearn these:
 
 - **Never align a HUD dialog with EnumDialogArea corner alignments.** Vanilla's coordinate
   overlay re-stacks itself below the first other RightTop-aligned composer every 250ms and
@@ -212,10 +229,99 @@ another mod, so the "no conditional compat registration" invariant above still h
 a handbook integration ever *does* branch on another mod, add the counted log marker described
 there.
 
+## Villager errands (quest tracking)
+
+There is **no quest system** in the game to query — quests *are* dialogue. A fetch request is
+a condition on the answer that hands the goods over, in the NPC's `config/dialogue/<name>.json`:
+
+```
+{ variable: "player.inventory", isValue: "{type:'item', code:'hide-raw-small', stacksize:10}" }
+```
+
+so nothing parses prose. `QuestScanner` reads it: find the conversable entity whose public
+`Dialog` field is open, read its resolved `dialogueLoc` (private field, via Harmony
+`AccessTools`) because villagers map entity code → file through `dialogueByType`, load that
+asset, and collect `player.inventory` conditions.
+
+- **No patch on the conversation UI, deliberately.** An earlier version injected a "track
+  this" link via a Harmony patch on `GuiDialogueDialog.EmitDialogue`; it was removed in
+  favour of `QuestWatcher` polling while a conversation is open. Villager dialogue is story
+  content and a mod that can break a conversation can cost progress that cannot be
+  recovered — and no detection of the *moment* of acceptance is needed anyway, because
+  accepting is exactly what flips the gate, so the next poll simply sees a request that is
+  live and was not before. Do not reintroduce the patch.
+- **Re-adding must stay possible (Mark).** The gate stays true for the whole quest, so a
+  guard is needed or unpinning mid-conversation is undone half a second later — but that
+  guard lives in `QuestWatcher` for **one conversation only** and is never persisted. Walk
+  away and come back and the errand is offered again; a permanent "already declined" memory
+  makes an unpin unrecoverable. Setting an errand aside for good is what *unchecking* is
+  for, which is why the auto path calls `Store.Add(..., activate: false)` — it must never
+  re-check a parked pin.
+
+- **The other conditions on the same answer are the quest's gates** (`player.gerhardtqueststarted`
+  = true, `…completed` ≠ true), evaluated against `VariablesModSystem.GetPlayerVariable`
+  (client-side; the server syncs `VariableData`). Strip the `player.` scope prefix.
+- **A bare `player.inventory` condition is NOT an errand — require ≥1 satisfied gate**
+  (found by Mark, 0.1.0 testing). The game uses the identical condition for **prices** and
+  for "do you have the thing" checks: Tad's healing costs one gear, expressed exactly like
+  Gerhardt's ten hides but with no other conditions at all. Accepting nothing and refusing
+  the service still left it on the list, because there was never an acceptance to detect —
+  and `Enumerable.All()` over an **empty** gate set returns true, which is how it slipped
+  through. A real fetch quest is tied to quest state; a shop price is not. Also note pins
+  merge by item and quest adds use `setCount: true`, so one bad capture of "10 gears"
+  elsewhere silently raises every other gear requirement to 10 — false positives here do not
+  stay local.
+- **Unevaluatable gate ⇒ not met.** The dialogue file also describes quests this player has
+  never been offered; surfacing those spoils content the game is deliberately withholding.
+  Fail toward "no link", never toward a spoiler. Same reason inverted `player.inventory`
+  conditions are ignored — "must NOT be carrying" is a state check, not a shopping list.
+- **Waypoint syntax** (confirmed working, Mark): `/waypoint addati <icon> <x> <y> <z>
+  <pinned> <color> <title>` — icon `x`, **decimal** coords, hex colour (`#ff3f33`), title is
+  rest-of-line. Format coords with `InvariantCulture`: a locale writing `131,5` splits one
+  argument into two and shifts every argument after it. A client-only mod cannot write
+  waypoints directly (`WaypointMapLayer.AddWaypoint` needs an `IServerPlayer`), so the chat
+  command is the route; the NPC position is also stored on the pin so losing the waypoint
+  never loses the way back.
+- **Quest pins are counted, never decomposed.** `TallyService.Resolve` skips recipe lookup
+  entirely when `QuestGiver != null`. Agnieszka's 8 iron ingots pulled in the *chisel an
+  iron anvil back into ingots* grid recipe, so the errand sprouted an "Iron anvil 0/1" row
+  and a tags-only chisel row — which read as a demand for an anvil the player lacks and,
+  worse, as a preview of an unoffered quest stage (Mark). An errand is a fetch; the real
+  acquisition path for ingots is smelting, which is not a grid recipe and could not be shown
+  anyway.
+- **Never render a raw wildcard as a name.** Tag-matched ingredients (`tags: ["tool-chisel"]`)
+  have no `ResolvedItemStack` and a `Code` that reads `*:*` — which is exactly what one row
+  displayed. `IngredientName` falls back to the author's `Name` field ("any metal").
+- **Waypoints are reconciled, never toggled.** `QuestWaypoints.Sync` computes the set of
+  markers that *should* exist from the pins and nudges the map toward it, off
+  `OnCountsChanged` plus a slow tick. Pin / unpin / check / uncheck / re-accept are five
+  paths that can each invalidate a marker, and hanging a side effect on each is how one gets
+  missed and a marker outlives its errand. Removal is by **current index into
+  `WaypointMapLayer.ownWaypoints`** (client-mirrored), found by matching title+position at
+  the moment of removal — never a remembered index, which shifts as other waypoints come and
+  go. Sent commands are held "in flight" for a few seconds because the map only updates once
+  the server answers, and an unguarded re-check would fire the command again.
+- **Map centring:** `GuiElementMap.CenterMapTo(BlockPos)`, reached from
+  `WorldMapManager.worldMapDlg` (public field) → `Composers.Values` → the composer's private
+  `interactiveElements`, matched **by type** rather than by element key, since the key is an
+  internal detail of a dialog we do not own. `WorldMapManager.ToggleMap(EnumDialogType)`
+  opens it; centre a tick later, as the element does not exist until the dialog composes.
+- Quest requirements become **ordinary pins** (`Pin.QuestGiver`), so tallying, the HUD, the
+  table and persistence are all reused. `Store.Add(..., setCount: true)` raises an existing
+  pin to the requested count instead of adding to it — an errand needs exactly 10, and
+  pinning it twice must not ask for 20.
+
 ## Design invariants — do not "fix" these
 
 These are deliberate and each one has a failure mode behind it (spec §2, §2a, §4):
 
+- **A recipe existing does not mean it is how the item is obtained.** `Pin.GatherOnly`
+  counts an item without decomposing it; Expand/Collapse on the pin row toggles it. Only
+  handbook pins start expanded — pinning there is an act of reading a recipe (Mark) —
+  everything else starts as counting. Iron ingots are the case that forced this: their sole *grid* recipe is
+  chiselling an iron anvil back into ingots, so a decomposed ingot pin demands an anvil the
+  player does not have, while smelting — the real source — is not a grid recipe and cannot
+  be shown. Errand copies (`Gather`) start gather-only for the same reason.
 - **No automatic recursion.** A pinned item shows its *direct* ingredients only. Expansion
   is always a deliberate player action with a recipe choice attached. Auto-expansion hits
   recipe cycles, per-level recipe-choice explosions, and silent wrong guesses — every one of
@@ -223,7 +329,17 @@ These are deliberate and each one has a failure mode behind it (spec §2, §2a, 
 - **HUD shows leaves only.** Expanding a node moves it from "gather this" to "craft this
   from the things below"; intermediates belong in the dialog's tree, not the HUD totals.
 - **Deficit-based scaling**, not gross requirement:
-  `craftsNeeded = ceil(max(0, parentNeeded − parentHave) / recipeOutputQuantity)`.
+  `craftsNeeded = ceil(max(0, parentNeeded − parentHave) / recipeOutputQuantity)`. This
+  applies at the **root** too: a pin's own carried count reduces its ingredient demand.
+- **Every pin tracks the pinned item itself** (`Pin.SelfNode`, built from the stack in
+  `TallyService.Resolve`). This is what makes recipe-less items — ore, hides, soil, a
+  villager's fetch request — real trackable goals rather than inert reminders, and it is
+  where a pin's `Have` comes from. Self-counting is page-code exact (`Requirement.SelfPageCode`
+  → single lookup in `InventorySnapshot`, which is keyed by page code and carries the bare
+  code alongside for code-level ingredient matching): owning a 5-plank bookshelf must never
+  mark the 8-plank pin as had, since that would zero out its whole ingredient list.
+  Self-nodes are deliberately **not** emitted as HUD gather rows — the pin header already
+  draws the same have/needed, and emitting both printed the identical line twice.
 - **Event-driven inventory counting, never per-frame polling.** The instant green-flip when
   you pick up the last board is the core loop; degrading it to a poll guts the mod.
 - **Carried inventory only** — no nearby-chest scanning. The question is "what do I have on
@@ -280,6 +396,45 @@ types), and a throwaway net10.0 console app referencing `VintagestoryAPI.dll` /
   it were called bare.
 - **Lifecycle:** `capi.Event.PlayerJoin` (compare `PlayerUID` against
   `capi.World.Player.PlayerUID` — it fires for other players too) and `capi.Event.LeaveWorld`.
+- **Stack identity & attributes:** `GuiHandbookItemStackPage.PageCodeForStack(ItemStack)`
+  (static, Vintagestory.GameContent) is the handbook's page identity — code plus
+  distinguishing attributes, minus `GlobalConstants.IgnoredStackAttributes`. The reverse
+  direction works too: `GuiDialogHandbook.OpenDetailPageFor(pageCode)` (instance found via
+  `capi.Gui.LoadedGuis.OfType<GuiDialogHandbook>()`) opens the handbook on that page.
+  **Derive that page code from the stack, never from `Pin.Key`** — a key carries the quest
+  giver (`…|for:Agnieszka`) so an errand and a personal goal can coexist as separate rows,
+  and passing it to the handbook silently opens nothing (found by Mark). `OpenDetailPageFor`
+  returns a bool; honour it rather than assuming the page exists.
+- **The handbook is missing from `Gui.LoadedGuis` until first opened** (found by Mark: Book
+  failed with "handbook is not available" until H had been pressed once). That list holds
+  dialogs registered with the GUI manager, and the handbook is not wired in until its first
+  open — but `ModSystemSurvivalHandbook` has built the instance long before. `HandbookPin.FindDialog`
+  falls back to that private `dialog` field, and `OpenLikeThePlayerWould` triggers the game's
+  own handbook hotkey handler so first-open setup happens by the game's hand, not ours; the
+  page is then selected a tick later, once registration has happened. Attribute
+  persistence: `(TreeAttribute)stack.Attributes` → `.ToJsonToken()` (instance) and
+  `TreeAttribute.FromJson(string)` (static, returns `IAttribute` — pattern-match to
+  `ITreeAttribute`); `ItemStack.Attributes` has a public setter. `ITreeAttribute` itself has
+  no `ToJsonToken` — cast to the concrete `TreeAttribute`.
+- **Item icons in GUIs:** subclass `GuiElement`, override `RenderInteractiveElements(float)`,
+  add via `composer.AddInteractiveElement(...)` (static elements only get cairo-composed
+  once — no per-frame render). Draw with `capi.Render.RenderItemstackToGui(slot, x, y, z,
+  size, color, ...)` — the `ItemStack`-direct overload is **obsolete** in 1.22.
+  **The slot must have an inventory: `new DummySlot(stack, new DummyInventory(capi))`.**
+  A bare `DummySlot` crashed the client outright on a raw hide (found by Mark): drawing a
+  **perishable** item makes the renderer ask for its transition state, which dereferences
+  `slot.Inventory`. Non-perishable items never hit that path, so this is invisible until
+  someone tracks food or hides. Anything thrown from a render override kills the client, so
+  wrap the draw in try/catch and latch it off — cosmetics are never worth a crash.
+  `Bounds.renderX/Y` are the element's live screen coords.
+- **HUD anchoring:** `capi.Gui.OpenedGuis` is a `List<GuiDialog>`; any dialog's on-screen
+  rect comes from `dlg.Composers.Values` → `composer.Bounds`
+  (`absX/absY/OuterWidth/OuterHeight`, in real pixels — divide by `RuntimeEnv.GUIScale` for
+  GUI units). The Tallybook HUD dodges **every** open HUD-type dialog in its column (top
+  half of screen only), not just the minimap (`GuiDialogWorldMap`, `DialogType == HUD` when
+  it is the corner minimap) — vanilla stacks the coordinates and clock overlays below the
+  minimap, so dodging only the minimap still overlapped them (found by Mark in 0.1.0
+  testing).
 
 ## Release flow
 

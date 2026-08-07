@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.GameContent;
 
 namespace Tallybook
 {
@@ -21,11 +24,17 @@ namespace Tallybook
         ICoreClientAPI capi;
         TallybookConfig config;
         TallyService svc;
+        QuestScanner quests;
+        QuestReadyGlow questGlow;
+        QuestWatcher questWatcher;
+        QuestWaypoints questWaypoints;
         GuiDialogTallybook dialog;
         HudTallybook hud;
+        HandbookReturnButton handbookReturn;
 
         readonly HashSet<IInventory> subscribed = new HashSet<IInventory>();
         bool recountQueued;
+        long handbookWatchId;
 
         public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Client;
 
@@ -46,7 +55,8 @@ namespace Tallybook
             capi.StoreModConfig(config, "tallybook.json");
 
             svc = new TallyService(api);
-            HandbookPin.Apply(api, OnPinRequested);
+            quests = new QuestScanner(api);
+            HandbookPin.Apply(api, OnPinRequested, OnOpenListRequested);
 
             // Defaults L and K per spec §9; both rebindable in Settings → Controls.
             capi.Input.RegisterHotKey("tallybook", "Tallybook (shopping list)", GlKeys.L, HotkeyType.GUIOrOtherControls);
@@ -65,6 +75,16 @@ namespace Tallybook
 
             api.Event.PlayerJoin += OnPlayerJoin;
             api.Event.LeaveWorld += OnLeaveWorld;
+
+            // The "came from the list" hint lives only as long as the handbook stays open;
+            // once it closes, a later press of H is a fresh visit with nowhere to go back to.
+            // Costs nothing while the flag is clear, which is nearly always.
+            handbookWatchId = api.Event.RegisterGameTickListener(_ =>
+            {
+                if (!HandbookPin.CameFromList) return;
+                var hb = capi.Gui.LoadedGuis?.OfType<GuiDialogHandbook>().FirstOrDefault();
+                if (hb == null || !hb.IsOpened()) HandbookPin.CameFromList = false;
+            }, 1000);
         }
 
         void EnsureGui()
@@ -72,6 +92,14 @@ namespace Tallybook
             if (dialog != null) return;
             dialog = new GuiDialogTallybook(capi, config, svc);
             hud = new HudTallybook(capi, config, svc);
+            handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
+            questGlow = new QuestReadyGlow(capi, config, svc);
+            questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);
+            questWaypoints = new QuestWaypoints(capi, config, svc.Store);
+
+            // Any change to the list can make a marker wrong — checking, unchecking,
+            // unpinning — so reconcile off the one event they all funnel through.
+            svc.OnCountsChanged += questWaypoints.Sync;
         }
 
         bool OnDialogHotkey(KeyCombination comb)
@@ -108,6 +136,25 @@ namespace Tallybook
             capi.ShowChatMessage(pin.HasRecipe
                 ? $"Tallybook: pinned {pin.DisplayName} x{pin.Count} — press L to manage your list."
                 : $"Tallybook: pinned {pin.DisplayName} x{pin.Count} — no crafting recipe known, kept as a reminder.");
+        }
+
+        /// <summary>
+        /// Swap the handbook for the shopping list. Deferred by a tick: this runs from inside
+        /// the handbook's own click handling, and closing a dialog out from under the event
+        /// loop that is still walking it is how composers get disposed mid-iteration.
+        /// </summary>
+        void OnOpenListRequested()
+        {
+            capi.Event.RegisterCallback(_ =>
+            {
+                EnsureGui();
+
+                var handbook = capi.Gui.LoadedGuis?.OfType<GuiDialogHandbook>().FirstOrDefault();
+                if (handbook != null && handbook.IsOpened()) handbook.TryClose();
+
+                HandbookPin.CameFromList = false;    // the round trip is finished
+                if (!dialog.IsOpened()) dialog.TryOpen();
+            }, 0);
         }
 
         void OnPlayerJoin(IClientPlayer player)
@@ -159,14 +206,66 @@ namespace Tallybook
             }, 0);
         }
 
+        /// <summary>
+        /// Take on a villager's fetch request: mark where they are, then pin what they want.
+        /// The pins are ordinary pins — the direct-gather tracking already counts them — so a
+        /// quest item behaves exactly like any other goal, and the errand is finished when the
+        /// row goes green.
+        /// </summary>
+        void OnQuestTracked(QuestOffer offer)
+        {
+            if (offer == null) return;
+            EnsureGui();
+
+            int added = 0;
+            foreach (var req in offer.Requirements)
+            {
+                var pin = svc.Store.Add(req.Stack, req.Quantity, setCount: true, activate: false,
+                                        questGiver: offer.NpcName);
+                if (pin == null) continue;
+
+                if (offer.Pos != null)
+                {
+                    pin.QuestX = offer.Pos.X;
+                    pin.QuestY = offer.Pos.Y;
+                    pin.QuestZ = offer.Pos.Z;
+                }
+                svc.Resolve(pin);
+                added++;
+            }
+
+            svc.Store.Changed();
+            questWaypoints?.Sync();      // mark them now rather than on the next slow tick
+            if (added == 0) return;
+
+            // Say so out loud: this happened without the player asking, so silently editing
+            // their list would be the mod acting behind their back.
+            capi.ShowChatMessage(
+                $"Tallybook: tracking {offer.Summary} for {offer.NpcName}, and marked them on your map. Press L for your list.");
+        }
+
         public override void Dispose()
         {
+            if (handbookWatchId != 0 && capi != null)
+            {
+                capi.Event.UnregisterGameTickListener(handbookWatchId);
+                handbookWatchId = 0;
+            }
             HandbookPin.Remove();
             if (capi != null) OnLeaveWorld();
             dialog?.Dispose();
             dialog = null;
             hud?.Dispose();
             hud = null;
+            handbookReturn?.Dispose();
+            handbookReturn = null;
+            questGlow?.Dispose();
+            questGlow = null;
+            questWatcher?.Dispose();
+            questWatcher = null;
+            if (questWaypoints != null && svc != null) svc.OnCountsChanged -= questWaypoints.Sync;
+            questWaypoints?.Dispose();
+            questWaypoints = null;
             base.Dispose();
         }
     }

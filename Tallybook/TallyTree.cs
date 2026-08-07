@@ -71,9 +71,21 @@ namespace Tallybook
         /// </summary>
         public static void Recompute(Pin pin, InventorySnapshot inv)
         {
+            // The pin's own have/needed, whether or not anything crafts it. An item with no
+            // recipe is still worth tracking — "collect 64 low-quality soil" is a real goal,
+            // and answering it is the same question the rest of the mod answers.
+            if (pin.SelfNode != null)
+            {
+                pin.SelfNode.Needed = pin.Count;
+                pin.SelfNode.Have = inv.Count(pin.SelfNode.Req);
+            }
+
             if (pin.Group == null) return;
 
-            int rootCrafts = CraftsFor(pin.Count, pin.Group.OutputQuantity);
+            // Deficit at the root, exactly as at every level below it (spec §2a): already
+            // carrying two of the four you pinned means gathering ingredients for two.
+            int deficit = Math.Max(0, pin.Count - pin.Have);
+            int rootCrafts = CraftsFor(deficit, pin.Group.OutputQuantity);
             foreach (var node in pin.RootNodes)
             {
                 node.Needed = node.Req.Quantity * rootCrafts;
@@ -113,6 +125,9 @@ namespace Tallybook
         /// </summary>
         public static IEnumerable<TallyNode> Leaves(Pin pin)
         {
+            // A pin with no recipe contributes no gather rows: its own have/needed rides on
+            // the pin header, which every surface already draws. Emitting it here too would
+            // print the identical line twice in the HUD for the common one-pin case.
             foreach (var node in pin.RootNodes)
             {
                 foreach (var leaf in LeavesOf(node)) yield return leaf;

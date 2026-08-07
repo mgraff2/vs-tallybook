@@ -1,0 +1,108 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Vintagestory.API.Client;
+using Vintagestory.API.Common.Entities;
+
+namespace Tallybook
+{
+    /// <summary>
+    /// Notices when you take on a villager's errand and adds it to the list by itself — no
+    /// button, no extra click: accept the quest the way the game intends and the items are
+    /// already being tallied by the time the conversation closes.
+    ///
+    /// This deliberately replaced a Harmony patch that injected a link into the conversation.
+    /// Nothing here touches the dialogue UI at all, which matters more than the saved code:
+    /// villager conversation is story content, and a mod that can break a conversation can
+    /// cost a player progress they cannot get back. Watching state the server already sends
+    /// us carries none of that risk.
+    ///
+    /// How it knows: a fetch request is only *live* once its quest gates are true (started,
+    /// not yet completed). So there is no need to detect the moment of acceptance — polling
+    /// while a conversation is open is enough, because accepting is exactly what flips the
+    /// gate, and the next poll sees a live request that was not live before.
+    ///
+    /// What it will not do is fight the player *during* a conversation. The gate stays true
+    /// for as long as the quest is open, so without a guard, unpinning an errand mid-chat
+    /// would see it reappear half a second later. That guard lasts exactly one conversation:
+    /// walk away, come back, and the errand is offered again — re-accepting should re-add,
+    /// and a permanent "you already declined this" memory would make an unpin unrecoverable
+    /// (Mark). To set an errand aside for good, uncheck it instead: auto-tracking never
+    /// re-activates a parked pin.
+    /// </summary>
+    public class QuestWatcher
+    {
+        const int IntervalMs = 500;
+
+        readonly ICoreClientAPI capi;
+        readonly TallybookConfig config;
+        readonly TallyService svc;
+        readonly QuestScanner scanner;
+        readonly Action<QuestOffer> onAccepted;
+        long tickId;
+
+        // Scoped to the conversation in progress, and dropped the moment it ends.
+        readonly HashSet<string> offeredThisChat = new HashSet<string>();
+        Entity talkingTo;
+
+        public QuestWatcher(ICoreClientAPI capi, TallybookConfig config, TallyService svc,
+                            QuestScanner scanner, Action<QuestOffer> onAccepted)
+        {
+            this.capi = capi;
+            this.config = config;
+            this.svc = svc;
+            this.scanner = scanner;
+            this.onAccepted = onAccepted;
+            tickId = capi.Event.RegisterGameTickListener(OnTick, IntervalMs);
+        }
+
+        public void Dispose()
+        {
+            if (tickId != 0)
+            {
+                capi.Event.UnregisterGameTickListener(tickId);
+                tickId = 0;
+            }
+        }
+
+        void OnTick(float dt)
+        {
+            try
+            {
+                if (!config.AutoTrackQuests) return;
+
+                // Only while actually in conversation. Quests are accepted in dialogue, so
+                // this is both the only moment worth checking and a natural bound on the work.
+                var npc = scanner.FindTalkingNpc();
+                if (npc == null || npc != talkingTo)
+                {
+                    talkingTo = npc;
+                    offeredThisChat.Clear();
+                    if (npc == null) return;
+                }
+
+                var offer = scanner.Scan(npc);
+                if (offer == null) return;
+
+                var fresh = new QuestOffer { Npc = offer.Npc, NpcName = offer.NpcName, Pos = offer.Pos };
+                foreach (var req in offer.Requirements)
+                {
+                    if (offeredThisChat.Add(OfferKey(offer.NpcName, req))) fresh.Requirements.Add(req);
+                }
+                if (fresh.Requirements.Count == 0) return;
+
+                onAccepted(fresh);
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] quest auto-tracking disabled after error: {0}", e.Message);
+                config.AutoTrackQuests = false;
+            }
+        }
+
+        /// <summary>Identity of a request already offered in this conversation. Includes the
+        /// quantity so a villager asking for more of the same thing later still registers.</summary>
+        static string OfferKey(string giver, QuestRequirement req)
+            => $"{giver}|{req.Stack?.Collectible?.Code}|{req.Quantity}";
+    }
+}

@@ -82,15 +82,11 @@ function Get-CompatMod([string]$modid, [string]$filePattern) {
 
 # Companion set. Keep it derived from Tallybook's real interaction surface — hotkeys, HUD
 # corners, GUI dialogs, per-world ModData files — not copied wholesale from another project.
-#   pinmatrix - our own other client-side mod. Same author, same client, same hotkey space
-#               and HUD/dialog real estate; a user running both is the expected case, so
-#               these two must never break each other.
 # Add here as the surface grows (recipe-adding content mods once §8 registry reads land;
-# HUD-corner mods once §5 ships).
+# HUD-corner mods once §5 ships), e.g.:
+#   somemodid = Get-CompatMod "somemodid" "somemodid_*.zip"
 Write-Host "Collecting companion mods..."
-$mods = [ordered]@{
-    pinmatrix = Get-CompatMod "pinmatrix" "pinmatrix_*.zip"
-}
+$mods = [ordered]@{}
 $mods.GetEnumerator() | ForEach-Object { Write-Host "  $($_.Key): $(Split-Path $_.Value -Leaf)" }
 
 # combos: solo, +each companion, all together. 'expect' = companion modids that must show

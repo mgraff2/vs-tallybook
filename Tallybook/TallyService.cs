@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.API.Datastructures;
 
 namespace Tallybook
 {
@@ -51,11 +52,46 @@ namespace Tallybook
                 if (block != null) pin.Stack = new ItemStack(block);
                 else if (item != null) pin.Stack = new ItemStack(item);
                 else return false;
+
+                // Attributes are part of what was pinned, not decoration — without them a
+                // saved 8-plank bookshelf would resolve back to whichever variant shares its
+                // code, which is exactly the lie the page-code identity exists to prevent.
+                if (pin.Attributes != null
+                    && TreeAttribute.FromJson(pin.Attributes) is ITreeAttribute attrs)
+                {
+                    pin.Stack.Attributes = attrs;
+                }
             }
 
-            pin.Groups = Probe.FindGroupsFor(pin.Code);
+            // Rebuilt from the resolved stack every load: it is derived data, and the stack is
+            // the only thing that knows which variant this pin means.
+            pin.SelfNode = new TallyNode { Req = Probe.RequirementForStack(pin.Stack) };
+
+            // An errand is a fetch: go get eight iron ingots and hand them over. Showing how
+            // to *craft* the item turns that into something else entirely — for iron ingots
+            // the only grid recipe is "chisel an iron anvil back into ingots", which reads
+            // like a demand for an anvil you do not have and, worse, like a preview of a
+            // quest stage the villager has not offered yet (Mark). Quest pins are counted,
+            // not decomposed.
+            if (pin.QuestGiver != null)
+            {
+                pin.Groups = new List<RecipeVariantGroup>();
+                SetGroup(pin, null, rememberPref: false);
+                return true;
+            }
+
+            pin.Groups = Probe.FindGroupsFor(pin.Stack);
+
+            // Groups are still resolved so the row can offer to break it down; it just is not
+            // broken down until asked.
+            if (pin.GatherOnly)
+            {
+                SetGroup(pin, null, rememberPref: false);
+                return true;
+            }
+
             var chosen = pin.Groups.FirstOrDefault(g => g.Signature == pin.RecipeSignature)
-                         ?? PreferredGroup(pin.Code, pin.Groups)
+                         ?? PreferredGroup(pin.Key, pin.Groups)
                          ?? pin.Groups.FirstOrDefault();
             SetGroup(pin, chosen, rememberPref: false);
 
@@ -64,9 +100,9 @@ namespace Tallybook
             return true;
         }
 
-        RecipeVariantGroup PreferredGroup(string code, List<RecipeVariantGroup> groups)
+        RecipeVariantGroup PreferredGroup(string key, List<RecipeVariantGroup> groups)
         {
-            return Store.RecipePrefs.TryGetValue(code, out var sig)
+            return Store.RecipePrefs.TryGetValue(key, out var sig)
                 ? groups.FirstOrDefault(g => g.Signature == sig)
                 : null;
         }
@@ -82,7 +118,8 @@ namespace Tallybook
             if (rememberPref && group != null)
             {
                 // Choosing a recipe records it as this item's per-world default (spec §2a).
-                Store.RecipePrefs[pin.Code] = group.Signature;
+                // Keyed by page identity so two variants of one code keep separate defaults.
+                Store.RecipePrefs[pin.Key] = group.Signature;
             }
         }
 
@@ -92,11 +129,34 @@ namespace Tallybook
 
         // ---- recipe choice -----------------------------------------------------------
 
+        /// <summary>
+        /// Unfold a pin into its recipe, or fold it back to plain counting. Only pins added
+        /// from the handbook start unfolded: pinning there is an act of reading a recipe, so
+        /// wanting to see it is a fair assumption. Anything arriving another way is a thing
+        /// to go and get until the player says otherwise.
+        /// </summary>
+        public void ToggleGatherOnly(Pin pin)
+        {
+            if (pin.Groups.Count == 0) return;
+
+            pin.Expansions = new List<SavedExpansion>();
+            pin.GatherOnly = !pin.GatherOnly;
+            if (pin.GatherOnly) SetGroup(pin, null, rememberPref: false);
+            else
+            {
+                var chosen = pin.Groups.FirstOrDefault(g => g.Signature == pin.RecipeSignature)
+                             ?? PreferredGroup(pin.Key, pin.Groups)
+                             ?? pin.Groups[0];
+                SetGroup(pin, chosen, rememberPref: false);
+            }
+            Store.Changed();
+        }
+
         /// <summary>Cycle a pin to its next recipe choice. Expansion state is discarded — the
         /// old tree described a different recipe's ingredients.</summary>
         public void CyclePinRecipe(Pin pin)
         {
-            if (pin.Groups.Count < 2) return;
+            if (pin.Groups.Count < 2 || pin.GatherOnly) return;
             int idx = pin.Groups.IndexOf(pin.Group);
             var next = pin.Groups[(idx + 1) % pin.Groups.Count];
             pin.Expansions = new List<SavedExpansion>();
@@ -222,7 +282,9 @@ namespace Tallybook
             var sb = new System.Text.StringBuilder();
             foreach (var pin in Store.Pins)
             {
-                sb.Append(pin.Code).Append(':').Append(pin.Count)
+                sb.Append(pin.Key).Append(':').Append(pin.Count)
+                  .Append('/').Append(pin.Have)
+                  .Append(pin.Active ? 'A' : 'a')
                   .Append(pin.Craftable ? '+' : '-')
                   .Append(pin.Group?.Signature).Append(';');
                 foreach (var node in Walk(pin))
@@ -230,6 +292,9 @@ namespace Tallybook
                     sb.Append('|').Append(node.Req.Key).Append('=')
                       .Append(node.Have).Append('/').Append(node.Needed)
                       .Append('@').Append(node.Choice?.Signature);
+                    // Expanded craft-steps carry tools of their own; leaving them out let a
+                    // node tool arrive in inventory without any surface redrawing.
+                    foreach (var t in node.Tools) sb.Append(t.Present ? 'y' : 'n');
                 }
                 foreach (var t in pin.Tools) sb.Append(t.Present ? 'y' : 'n');
             }
@@ -260,6 +325,11 @@ namespace Tallybook
             public string Name;
             public int Have;
             public int Needed;
+
+            /// <summary>The first-seen requirement behind this merged row — the icon source.
+            /// Rows merge by requirement key, so any of the merged requirements accepts the
+            /// same variant set; first-seen is as representative as any.</summary>
+            public Requirement Req;
         }
 
         /// <summary>
@@ -272,6 +342,7 @@ namespace Tallybook
             var rows = new Dictionary<string, HudRow>();
             foreach (var pin in Store.Pins)
             {
+                if (!pin.Active) continue;
                 foreach (var leaf in TallyTree.Leaves(pin))
                 {
                     if (rows.TryGetValue(leaf.Req.Key, out var row))
@@ -285,12 +356,51 @@ namespace Tallybook
                         {
                             Name = leaf.Req.DisplayName,
                             Have = leaf.Have,
-                            Needed = leaf.Needed
+                            Needed = leaf.Needed,
+                            Req = leaf.Req
                         };
                     }
                 }
             }
             return rows.Values.OrderBy(r => r.Have >= r.Needed ? 1 : 0).ThenBy(r => r.Name).ToList();
+        }
+
+        /// <summary>
+        /// Names of quest givers every one of whose tracked requests is now satisfied — the
+        /// people you can go and hand something to. All-or-nothing per giver: an errand that
+        /// wants two things is not ready when you have only one of them, and flagging it as
+        /// ready would send the player on a wasted walk.
+        /// </summary>
+        public HashSet<string> ReadyQuestGivers()
+        {
+            var progress = new Dictionary<string, bool>();
+            foreach (var pin in Store.Pins)
+            {
+                if (!pin.Active || pin.QuestGiver == null) continue;
+                bool wasReady = progress.TryGetValue(pin.QuestGiver, out var r) ? r : true;
+                progress[pin.QuestGiver] = wasReady && pin.Complete;
+            }
+            return new HashSet<string>(progress.Where(kv => kv.Value).Select(kv => kv.Key));
+        }
+
+        /// <summary>
+        /// Every tool any pin's recipes call for — pin-level and expanded craft-steps alike —
+        /// merged by requirement key. Tools are presence checks, never counted (spec §4), so
+        /// one saw row covers every recipe that wants a saw. Missing tools sort first.
+        /// </summary>
+        public List<Requirement> MergedTools()
+        {
+            var tools = new Dictionary<string, Requirement>();
+            foreach (var pin in Store.Pins)
+            {
+                if (!pin.Active) continue;
+                foreach (var t in pin.Tools) tools.TryAdd(t.Key, t);
+                foreach (var node in Walk(pin))
+                {
+                    foreach (var t in node.Tools) tools.TryAdd(t.Key, t);
+                }
+            }
+            return tools.Values.OrderBy(t => t.Present ? 1 : 0).ThenBy(t => t.DisplayName).ToList();
         }
     }
 }

@@ -15,6 +15,38 @@ namespace Tallybook
         // ---- persisted ---------------------------------------------------------------
         public string Code;
         public bool IsBlock;
+
+        /// <summary>Stack attributes of the exact variant pinned, as a JSON token; null for
+        /// plain items. Attributes are identity here, not decoration: the four bookshelf
+        /// shapes share one block code and differ only in attributes, and pinning one of them
+        /// must never resolve to another (spec: pin what the handbook page showed).</summary>
+        public string Attributes;
+
+        /// <summary>Who asked for this, when it came from a villager's fetch request. Shown
+        /// on the row so a quest item reads as an errand rather than an unexplained pin, and
+        /// kept per-pin so quest items and self-set goals live in one list.</summary>
+        public string QuestGiver;
+
+        /// <summary>Where that NPC was standing when the errand was taken on, so the list can
+        /// point you back at them without depending on a map waypoint surviving.</summary>
+        public double QuestX, QuestY, QuestZ;
+
+        /// <summary>
+        /// Count this item, do not break it down — "I am going to go and find these". The
+        /// difference matters whenever a recipe exists but is not how anyone would actually
+        /// obtain the thing: iron ingots have exactly one grid recipe, chiselling an iron
+        /// anvil back into ingots, so a decomposed ingot pin demands an anvil nobody has
+        /// while the real source, smelting, is not a grid recipe at all. Cycling the recipe
+        /// button past the last recipe returns here.
+        /// </summary>
+        public bool GatherOnly;
+
+        /// <summary>Unchecked pins stay in the list and in the save file but stop counting:
+        /// no ingredient rows, no HUD presence. Deactivating is deliberately confirm-free —
+        /// it exists so emptying the working list is one action, not one dialog per item —
+        /// which is safe because nothing is lost.</summary>
+        public bool Active = true;
+
         public int Count = 1;
 
         /// <summary>Which recipe the player chose for this item (spec §3); resolved back to a
@@ -31,8 +63,35 @@ namespace Tallybook
         [JsonIgnore] public List<TallyNode> RootNodes = new List<TallyNode>();
         [JsonIgnore] public List<Requirement> Tools = new List<Requirement>();
 
+        /// <summary>"How many of this do I have" — every pin tracks its own acquisition, not
+        /// just its ingredients. For an item with no recipe this is the whole point of the
+        /// pin; for a craftable one it is what the ingredient counts scale down against.</summary>
+        [JsonIgnore] public TallyNode SelfNode;
+
+        [JsonIgnore] public int Have => SelfNode?.Have ?? 0;
+
+        /// <summary>Got what was asked for. Outranks "ready to craft": no reason to build
+        /// what is already in the bag.</summary>
+        [JsonIgnore] public bool Complete => Have >= Count;
+
         [JsonIgnore] public bool HasRecipe => Group != null;
         [JsonIgnore] public string DisplayName => Stack?.GetName() ?? Code;
+
+        /// <summary>Identity at handbook-page granularity — the dedup/removal/preference key.
+        /// Code alone is not enough once attribute-distinct variants can be pinned. Cached
+        /// only once the stack is resolved, so an early read never locks in the bare code.
+        ///
+        /// The quest giver is part of it: an errand for Agnieszka and your own plan to make
+        /// the same item are two different rows living in two different tabs, and merging
+        /// them would let her request quietly rewrite your own goal's count.</summary>
+        [JsonIgnore]
+        public string Key => Stack == null
+            ? MakeKey(Code, QuestGiver)
+            : key ??= MakeKey(RecipeProbe.PageCode(Stack) ?? Code, QuestGiver);
+        string key;
+
+        public static string MakeKey(string pageCode, string questGiver)
+            => questGiver == null ? pageCode : $"{pageCode}|for:{questGiver}";
 
         /// <summary>All direct rows satisfied and every tool present (spec §4's rollup).</summary>
         [JsonIgnore]
@@ -73,22 +132,36 @@ namespace Tallybook
             this.capi = capi;
         }
 
-        public Pin Find(string code) => pins.FirstOrDefault(p => p.Code == code);
-
         /// <summary>Pinning an already-pinned item increments it — never a duplicate row
-        /// (spec §3).</summary>
-        public Pin Add(ItemStack stack, int amount = 1)
+        /// (spec §3). "Already pinned" is judged by page identity, not code: the 8-plank and
+        /// 5-plank bookshelves share a code but are different pins.</summary>
+        /// <param name="setCount">
+        /// False (the handbook): pinning again means "one more of these", so the count adds
+        /// up. True (a fetch request): the NPC wants a fixed 10, so an existing pin is raised
+        /// to 10 rather than pushed to 13 — asking for more than the errand needs would be a
+        /// lie, and lowering a larger goal the player set themselves would be presumptuous.
+        /// </param>
+        /// <param name="activate">
+        /// False (auto-tracked errands): leave an existing pin's checked state alone. A pin
+        /// the player parked is a decision to set it aside, and quietly re-checking it every
+        /// time they talk to that villager would override them.
+        /// </param>
+        public Pin Add(ItemStack stack, int amount = 1, bool setCount = false, bool activate = true,
+                       string questGiver = null)
         {
             var code = stack?.Collectible?.Code?.ToShortString();
             if (code == null) return null;
 
-            var pin = Find(code);
+            string key = Pin.MakeKey(RecipeProbe.PageCode(stack) ?? code, questGiver);
+            var pin = pins.FirstOrDefault(p => p.Key == key);
             if (pin == null)
             {
                 pin = new Pin
                 {
                     Code = code,
                     IsBlock = stack.Class == EnumItemClass.Block,
+                    Attributes = RecipeProbe.AttributesJson(stack),
+                    QuestGiver = questGiver,
                     Count = Math.Max(1, amount),
                     Stack = stack.Clone()
                 };
@@ -96,11 +169,30 @@ namespace Tallybook
             }
             else
             {
-                pin.Count += Math.Max(1, amount);
+                pin.Count = setCount
+                    ? Math.Max(pin.Count, Math.Max(1, amount))
+                    : pin.Count + Math.Max(1, amount);
+                // Pinning by hand is an unambiguous "I want this on my list now", so it
+                // re-checks a parked pin. Auto-tracking gets no such licence.
+                if (activate) pin.Active = true;
             }
 
             Changed();
             return pin;
+        }
+
+        public void SetActive(Pin pin, bool active)
+        {
+            if (pin == null || pin.Active == active) return;
+            pin.Active = active;
+            Changed();
+        }
+
+        public void SetAllActive(bool active)
+        {
+            if (!pins.Any(p => p.Active != active)) return;
+            foreach (var pin in pins) pin.Active = active;
+            Changed();
         }
 
         public void SetCount(Pin pin, int count)
@@ -110,11 +202,9 @@ namespace Tallybook
             Changed();
         }
 
-        public bool Remove(string code)
+        public bool Remove(Pin pin)
         {
-            var pin = Find(code);
-            if (pin == null) return false;
-            pins.Remove(pin);
+            if (pin == null || !pins.Remove(pin)) return false;
             Changed();
             return true;
         }

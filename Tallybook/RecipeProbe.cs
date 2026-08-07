@@ -4,6 +4,8 @@ using System.Linq;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
+using Vintagestory.API.Datastructures;
+using Vintagestory.GameContent;
 
 namespace Tallybook
 {
@@ -42,9 +44,51 @@ namespace Tallybook
         /// be asked one at a time.</summary>
         public List<CraftingRecipeIngredient> OtherMatchers = new List<CraftingRecipeIngredient>();
 
+        /// <summary>
+        /// Set only on a pin's *self* requirement — "the pinned item itself", the gather
+        /// target for items you find rather than craft. Counting then matches the exact
+        /// handbook page rather than the bare code, so owning a 5-plank bookshelf never
+        /// reports the 8-plank one as had.
+        /// </summary>
+        public string SelfPageCode;
+
         public int VariantCount => ExactCodes.Count + OtherMatchers.Count;
 
         string key;
+        List<ItemStack> sampleStacks;
+
+        /// <summary>
+        /// One representative stack per accepted variant, for icon display (capped — an icon
+        /// slideshow needs examples, not an exhaustive census). Resolved lazily and cached:
+        /// the accepted codes cannot change within a world session.
+        /// </summary>
+        /// <summary>Use this exact stack as the row's icon (self requirements know precisely
+        /// which variant they mean; resolving from a code would show the base variant).</summary>
+        public void PresetSampleStack(ItemStack stack)
+        {
+            if (stack != null) sampleStacks = new List<ItemStack> { stack };
+        }
+
+        public List<ItemStack> SampleStacks(IWorldAccessor world, int max = 30)
+        {
+            if (sampleStacks != null) return sampleStacks;
+
+            var stacks = new List<ItemStack>();
+            foreach (var m in OtherMatchers)
+            {
+                if (m.ResolvedItemStack != null && stacks.Count < max) stacks.Add(m.ResolvedItemStack);
+            }
+            foreach (var code in ExactCodes.OrderBy(c => c, StringComparer.Ordinal))
+            {
+                if (stacks.Count >= max) break;
+                var loc = new AssetLocation(code);
+                var item = world.GetItem(loc);
+                if (item != null) { stacks.Add(new ItemStack(item)); continue; }
+                var block = world.GetBlock(loc);
+                if (block != null) stacks.Add(new ItemStack(block));
+            }
+            return sampleStacks = stacks;
+        }
 
         /// <summary>
         /// Stable identity across sessions and recompute passes: sorted accepted codes plus
@@ -56,6 +100,8 @@ namespace Tallybook
             get
             {
                 if (key != null) return key;
+                if (SelfPageCode != null) return key = $"S|{SelfPageCode}";
+
                 var codes = string.Join(",", ExactCodes.OrderBy(c => c, StringComparer.Ordinal));
                 var others = string.Join(",", OtherMatchers
                     .Select(m => $"{m.Type}:{m.MatchingType}:{m.Code}")
@@ -76,8 +122,13 @@ namespace Tallybook
     /// </summary>
     public class InventorySnapshot
     {
-        readonly Dictionary<string, (ItemStack Sample, int Total)> byCode
-            = new Dictionary<string, (ItemStack, int)>();
+        /// <summary>
+        /// Keyed by handbook page code, not bare item code, so attribute-distinct variants
+        /// stay countable apart — that is what lets a "gather this exact item" row be honest.
+        /// The bare code rides along because ingredient matching is code-level.
+        /// </summary>
+        readonly Dictionary<string, (ItemStack Sample, int Total, string Code)> byPage
+            = new Dictionary<string, (ItemStack, int, string)>();
 
         public InventorySnapshot(IEnumerable<IInventory> inventories)
         {
@@ -88,20 +139,26 @@ namespace Tallybook
                     var stack = slot?.Itemstack;
                     var code = stack?.Collectible?.Code?.ToShortString();
                     if (code == null) continue;
+                    string page = RecipeProbe.PageCode(stack) ?? code;
 
-                    byCode[code] = byCode.TryGetValue(code, out var cur)
-                        ? (cur.Sample, cur.Total + stack.StackSize)
-                        : (stack, stack.StackSize);
+                    byPage[page] = byPage.TryGetValue(page, out var cur)
+                        ? (cur.Sample, cur.Total + stack.StackSize, cur.Code)
+                        : (stack, stack.StackSize, code);
                 }
             }
         }
 
         public int Count(Requirement req)
         {
+            // Self requirements name one exact page — a single lookup, and no chance of
+            // another variant of the same code counting toward it.
+            if (req.SelfPageCode != null)
+                return byPage.TryGetValue(req.SelfPageCode, out var self) ? self.Total : 0;
+
             int total = 0;
-            foreach (var entry in byCode)
+            foreach (var entry in byPage)
             {
-                if (req.ExactCodes.Contains(entry.Key))
+                if (req.ExactCodes.Contains(entry.Value.Code))
                 {
                     total += entry.Value.Total;
                     continue;
@@ -123,6 +180,13 @@ namespace Tallybook
     public class RecipeVariantGroup
     {
         public string OutputCode;
+
+        /// <summary>Output identity at handbook-page granularity (code plus distinguishing
+        /// attributes). Two recipes can share an output code yet produce different items —
+        /// the four bookshelf shapes differ only in output attributes — and each of those is
+        /// its own handbook page, so it must be its own group.</summary>
+        public string OutputPageCode;
+
         public string OutputName;
         public int OutputQuantity;
         public ItemStack OutputStack;
@@ -136,8 +200,10 @@ namespace Tallybook
 
         public List<GridRecipe> Recipes = new List<GridRecipe>();
 
-        /// <summary>Stable identity for persistence: which recipe choice the player made.</summary>
-        public string Signature => $"{OutputCode}|{Pattern}|{Width}x{Height}";
+        /// <summary>Stable identity for persistence: which recipe choice the player made.
+        /// Uses the page code, not the bare output code, so choices for two attribute-distinct
+        /// variants of one code never collide.</summary>
+        public string Signature => $"{OutputPageCode}|{Pattern}|{Width}x{Height}";
 
         /// <summary>Short label for the recipe-choice cycler.</summary>
         public string ChoiceLabel(int perCraftTotal)
@@ -191,6 +257,7 @@ namespace Tallybook
             {
                 string code = OutputCode(r);
                 if (code == "?") continue;
+                if (ConsumesOwnOutput(r, code)) continue;
                 if (!byOutput.TryGetValue(code, out var list))
                 {
                     list = new List<GridRecipe>();
@@ -198,6 +265,28 @@ namespace Tallybook
                 }
                 list.Add(r);
             }
+        }
+
+        /// <summary>
+        /// True for recipes that consume the very item they produce: slab placement-mode
+        /// recipes (1 glass slab → 1 glass slab, rotated), chiseled-block combining, armor
+        /// repair. Those convert an item the player already has — they can never help make
+        /// one from scratch, so they are excluded from the index entirely. Left in, one of
+        /// them can win the cheapest-representative choice and make the list claim "to craft
+        /// a glass slab you need a glass slab" — while hiding the real recipe's saw (found by
+        /// Mark: the glass slab pin showed no tool). Exact code equality only: a recipe
+        /// turning one variant into another (dyeing white wool red) produces something the
+        /// player doesn't have yet, and stays.
+        /// </summary>
+        bool ConsumesOwnOutput(GridRecipe r, string outputCode)
+        {
+            foreach (var (ing, _) in ConsumedIngredients(r))
+            {
+                var code = ing.ResolvedItemStack?.Collectible?.Code?.ToShortString()
+                           ?? ing.Code?.ToShortString();
+                if (code == outputCode) return true;
+            }
+            return false;
         }
 
         /// <summary>
@@ -214,6 +303,66 @@ namespace Tallybook
                 return new List<RecipeVariantGroup>();
 
             return BuildGroups(recipes);
+        }
+
+        /// <summary>
+        /// Recipe choices for the exact stack the handbook page showed. When any group's
+        /// output matches the stack's page code, only those groups are returned — viewing the
+        /// 8-plank bookshelf must never pin the 5-plank one, they are different blocks that
+        /// happen to share a code. When none match (the page's stack carries attributes no
+        /// recipe output has), all groups for the code are the honest fallback: some recipe
+        /// beats "no recipe known" for an item that plainly has one.
+        /// </summary>
+        public List<RecipeVariantGroup> FindGroupsFor(ItemStack stack)
+        {
+            var all = FindGroupsFor(stack?.Collectible?.Code?.ToShortString());
+            string page = PageCode(stack);
+            if (page == null) return all;
+
+            var exact = all.Where(g => g.OutputPageCode == page).ToList();
+            return exact.Count > 0 ? exact : all;
+        }
+
+        /// <summary>
+        /// Stack identity at handbook-page granularity, via the game's own
+        /// GuiHandbookItemStackPage.PageCodeForStack — code plus the attributes that make
+        /// variants distinct pages, minus attributes the game says never matter
+        /// (GlobalConstants.IgnoredStackAttributes). Delegating means "pin exactly the page
+        /// the player clicked" stays true even if the handbook's notion of a page changes.
+        /// </summary>
+        public static string PageCode(ItemStack stack)
+        {
+            if (stack?.Collectible?.Code == null) return null;
+            try { return GuiHandbookItemStackPage.PageCodeForStack(stack); }
+            catch { return $"{stack.Class}-{stack.Collectible.Code.ToShortString()}"; }
+        }
+
+        /// <summary>
+        /// The "I want this item itself" requirement behind every pin — the gather target for
+        /// things you find rather than craft (64 low-quality soil, 10 small hides for a
+        /// villager), and the have-count for things you do craft. Matches the exact page, so
+        /// it never counts a sibling variant.
+        /// </summary>
+        public Requirement RequirementForStack(ItemStack stack)
+        {
+            if (stack?.Collectible?.Code == null) return null;
+
+            var req = new Requirement
+            {
+                Quantity = 1,
+                DisplayName = stack.GetName(),
+                SelfPageCode = PageCode(stack)
+            };
+            req.ExactCodes.Add(stack.Collectible.Code.ToShortString());
+            req.PresetSampleStack(stack);
+            return req;
+        }
+
+        /// <summary>Stack attributes as a JSON token for persistence; null when empty.</summary>
+        public static string AttributesJson(ItemStack stack)
+        {
+            var json = (stack?.Attributes as TreeAttribute)?.ToJsonToken();
+            return string.IsNullOrEmpty(json) || json == "{}" ? null : json;
         }
 
         /// <summary>
@@ -250,20 +399,28 @@ namespace Tallybook
                 // the same ingredient row ("Board" in every wood), so grouping by output would
                 // recreate the per-wood explosion one level down. Shape+quantity gates in
                 // BuildRequirements keep genuinely different recipes from merging.
+                //
+                // Output identity is the page code, not the bare output code: recipes sharing
+                // a code can still produce different items distinguished only by output
+                // attributes (the four bookshelf shapes), and those are separate handbook
+                // pages — so they must be separate groups here too.
                 .GroupBy(r => collapseOutputs
                     ? $"{r.RecipeGroup}|{r.IngredientPattern}|{r.Width}x{r.Height}|{OutputQuantity(r)}"
-                    : $"{OutputCode(r)}|{r.RecipeGroup}")
+                    : $"{OutputIdentity(r)}|{r.RecipeGroup}")
                 .Select(g =>
                 {
-                    // Represent the group by its cheapest layout. Layouts can want very
-                    // different amounts (the bookshelf ones need 7, 8, 8 and 5 planks), and a
-                    // shopping list has to commit to one number. The smallest is the honest
-                    // floor: gather this much and you can definitely build one. Anything larger
-                    // would send the player after materials they may not need.
+                    // Represent the group by its cheapest layout. Layouts producing the same
+                    // item can still want different amounts, and a shopping list has to commit
+                    // to one number. The smallest is the honest floor: gather this much and
+                    // you can definitely build one. Anything larger would send the player
+                    // after materials they may not need. (Layouts producing attribute-distinct
+                    // items — the bookshelf shapes — never reach this point as one group; the
+                    // page-code key above already split them.)
                     var representative = g.OrderBy(TotalIngredientCount).First();
                     return new RecipeVariantGroup
                     {
                         OutputCode = OutputCode(representative),
+                        OutputPageCode = OutputIdentity(representative),
                         OutputName = representative.Output?.ResolvedItemStack?.GetName() ?? "?",
                         OutputQuantity = OutputQuantity(representative),
                         OutputStack = representative.Output?.ResolvedItemStack,
@@ -397,11 +554,22 @@ namespace Tallybook
             return shortCode;
         }
 
+        /// <summary>
+        /// A readable name for an ingredient. Tag-matched ingredients ("any chisel") have no
+        /// resolved stack and no usable code — their Code reads as the bare wildcard "*:*",
+        /// which is what a row was showing before this fallback existed. Fall back to the
+        /// recipe author's own word for what varies, which is the whole reason that field is
+        /// there, and never render a raw wildcard at a player.
+        /// </summary>
         string IngredientName(CraftingRecipeIngredient ing)
         {
             var stack = ing.ResolvedItemStack;
             if (stack != null) return stack.GetName();
-            return ing.Code?.ToShortString() ?? "?";
+
+            string code = ing.Code?.ToShortString();
+            if (!string.IsNullOrEmpty(code) && !code.Contains("*")) return NameForCode(code);
+
+            return string.IsNullOrEmpty(ing.Name) ? "any suitable item" : $"any {ing.Name}";
         }
 
         /// <summary>
@@ -466,9 +634,72 @@ namespace Tallybook
         public string OutputCode(GridRecipe recipe)
             => recipe?.Output?.ResolvedItemStack?.Collectible?.Code?.ToShortString() ?? "?";
 
+        string OutputIdentity(GridRecipe recipe)
+            => PageCode(recipe?.Output?.ResolvedItemStack) ?? "?";
+
         /// <summary>Total items consumed by a recipe, used to pick a group's cheapest layout.</summary>
         int TotalIngredientCount(GridRecipe recipe)
             => ConsumedIngredients(recipe).Sum(c => c.Quantity);
+
+        /// <summary>
+        /// Per-cell variant stacks for drawing a group's crafting grid: one list per cell of
+        /// the representative layout (row-major, empty list = empty cell), each holding the
+        /// distinct stacks that cell accepts across the group's variants. Only recipes with
+        /// the representative's exact layout contribute — the group can hold other layouts of
+        /// the same item, and the drawn grid must be the one the requirement numbers describe.
+        /// Variant order is recipe order in every cell and in OutputStacks, so a bookshelf's
+        /// plank cells and its output cycle woods in lockstep.
+        /// </summary>
+        public List<List<ItemStack>> CellStacks(RecipeVariantGroup group, int maxPerCell = 20)
+        {
+            var cells = new List<List<ItemStack>>();
+            int n = (group?.Width ?? 0) * (group?.Height ?? 0);
+            if (n == 0) return cells;
+
+            var sameLayout = SameLayoutRecipes(group);
+            for (int i = 0; i < n; i++)
+            {
+                var seen = new HashSet<string>();
+                var stacks = new List<ItemStack>();
+                foreach (var r in sameLayout)
+                {
+                    var ing = r.ResolvedIngredients != null && i < r.ResolvedIngredients.Length
+                        ? r.ResolvedIngredients[i]
+                        : null;
+                    var st = ing?.ResolvedItemStack;
+                    var code = st?.Collectible?.Code?.ToShortString();
+                    if (code == null || stacks.Count >= maxPerCell || !seen.Add(code)) continue;
+                    stacks.Add(st);
+                }
+                cells.Add(stacks);
+            }
+            return cells;
+        }
+
+        /// <summary>Distinct output stacks across the group's same-layout variants, in the
+        /// same recipe order as CellStacks so cycling icons stay in sync.</summary>
+        public List<ItemStack> OutputStacks(RecipeVariantGroup group, int max = 20)
+        {
+            var seen = new HashSet<string>();
+            var stacks = new List<ItemStack>();
+            foreach (var r in SameLayoutRecipes(group))
+            {
+                var st = r.Output?.ResolvedItemStack;
+                var code = st?.Collectible?.Code?.ToShortString();
+                if (code == null || stacks.Count >= max || !seen.Add(code)) continue;
+                stacks.Add(st);
+            }
+            return stacks;
+        }
+
+        static List<GridRecipe> SameLayoutRecipes(RecipeVariantGroup group)
+        {
+            if (group?.Recipes == null) return new List<GridRecipe>();
+            return group.Recipes
+                .Where(r => r.Width == group.Width && r.Height == group.Height
+                            && r.IngredientPattern == group.Pattern)
+                .ToList();
+        }
 
         /// <summary>Output count per craft — the divisor in the §2a deficit math.</summary>
         public int OutputQuantity(GridRecipe recipe)
