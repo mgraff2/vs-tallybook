@@ -261,7 +261,7 @@ namespace Tallybook
                         svc.RecountAll();
                     }
 
-                    RecordNearbyNpcs();
+                    RecordNearbyVillagers();
 
                     // Capture what the map can tell us about quest pins into the pins
                     // themselves, so the Map button never depends on a live waypoint read —
@@ -298,6 +298,7 @@ namespace Tallybook
             questGlow = new QuestReadyGlow(capi, config, svc);
             questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);
             questWatcher.History = questHistory;
+            questWatcher.OnConversing = RecordNpcPlace;
             // Checking and unchecking come through the recount; unpinning has to be caught as
             // it happens, while the pin can still tell us it had a marker.
             svc.OnCountsChanged += questWaypoints.Sync;
@@ -564,69 +565,63 @@ namespace Tallybook
         /// recovered at load ever get a map marker — at load we know who wants what, but not
         /// where they live unless we have been there.
         /// </summary>
-        bool placesLearned;
-
-        void RecordNearbyNpcs()
+        /// <summary>
+        /// Remember where an NPC is. Two sources, by kind (Mark's rule): *villagers* — fixed
+        /// residents with a base-game dialogue file of their own — are noted whenever they
+        /// are loaded nearby, because where they live is stable public knowledge; *traders*
+        /// (everyone else) only while actually talking to them — they are met, not tracked.
+        /// There is no third source: a client-side mod cannot ask the server where an
+        /// unloaded entity or block is, so "look them up at the server" is bounded by what
+        /// is loaded around the player.
+        ///
+        /// The directory entry updates freely (it rides along with the next save); a pin
+        /// *gaining* a position is worth an immediate save and redraw, since it changes what
+        /// the list can do.
+        /// </summary>
+        void RecordNpcPlace(Entity npc)
         {
-            var me = capi.World?.Player?.Entity;
-            if (me?.Pos == null) return;
+            string name = npc?.GetName();
+            var pos = npc?.Pos?.XYZ;
+            if (string.IsNullOrEmpty(name) || pos == null) return;
 
-            // LoadedEntities, not GetEntitiesAround: the partition query returned nothing,
-            // ever — NpcPlaces stayed empty across a whole session of standing in a village
-            // (found by Mark), while FindTalkingNpc walks LoadedEntities with the same
-            // behavior check and has worked all along. Use the path with the proof.
-            var entities = capi.World?.LoadedEntities;
-            if (entities == null) return;
+            svc.Store.NpcPlaces[name] = string.Format(
+                CultureInfo.InvariantCulture, "{0:0.0},{1:0.0},{2:0.0}", pos.X, pos.Y, pos.Z);
 
-            var found = new List<Entity>();
-            foreach (var e in entities.Values)
+            bool learned = false;
+            foreach (var pin in svc.Store.Pins)
             {
-                if (e == null || e == me) continue;
-                if (e.GetBehavior<EntityBehaviorConversable>() == null) continue;
-                if (e.Pos == null || e.Pos.XYZ.SquareDistanceTo(me.Pos.XYZ) > 24 * 24) continue;
-                found.Add(e);
+                if (!string.Equals(pin.QuestGiver, name, StringComparison.OrdinalIgnoreCase)) continue;
+                if (pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0) continue;
+
+                pin.QuestX = pos.X; pin.QuestY = pos.Y; pin.QuestZ = pos.Z;
+                learned = true;
             }
-            if (found.Count == 0) return;
-
-            bool changed = false;
-            foreach (var npc in found)
+            if (learned)
             {
-                string name = npc.GetName();
-                var pos = npc.Pos?.XYZ;
-                if (string.IsNullOrEmpty(name) || pos == null) continue;
-
-                string place = string.Format(CultureInfo.InvariantCulture, "{0:0.0},{1:0.0},{2:0.0}", pos.X, pos.Y, pos.Z);
-                if (svc.Store.NpcPlaces.TryGetValue(name, out string had) && had == place) continue;
-
-                svc.Store.NpcPlaces[name] = place;
-                changed = true;
-
-                // Give the errand its location the moment we learn it. An errand whose giver
-                // we have never stood next to has no position, and without one there is no
-                // Map button and no marker — so walking past them should be enough, without
-                // having to open a conversation. Only fills a blank: a position recorded when
-                // the errand was taken on is the better one.
-                foreach (var pin in svc.Store.Pins)
-                {
-                    if (!string.Equals(pin.QuestGiver, name, StringComparison.OrdinalIgnoreCase)) continue;
-                    if (pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0) continue;
-
-                    ApplyKnownPlace(pin);
-                    placesLearned = true;
-                }
-            }
-
-            // The directory itself rides along with the next save — writing the file every
-            // time a villager takes a step would be absurd. A pin gaining a location is
-            // different: that changes what the list can do, so it is worth a write and a
-            // redraw.
-            if (placesLearned)
-            {
-                placesLearned = false;
                 svc.Store.Save();
                 svc.RecountAll();
             }
-            _ = changed;
+        }
+
+        /// <summary>Villagers only — see RecordNpcPlace for the rule. LoadedEntities, not
+        /// GetEntitiesAround: the partition query returned nothing, ever (found by Mark —
+        /// NpcPlaces stayed empty across a whole session in the village), while the
+        /// conversation path's LoadedEntities walk has worked all along.</summary>
+        void RecordNearbyVillagers()
+        {
+            var me = capi.World?.Player?.Entity;
+            var entities = capi.World?.LoadedEntities;
+            if (me?.Pos == null || entities == null) return;
+
+            foreach (var e in entities.Values)
+            {
+                if (e == null || e == me) continue;
+                if (e.Pos == null || e.Pos.XYZ.SquareDistanceTo(me.Pos.XYZ) > 60 * 60) continue;
+                if (e.GetBehavior<EntityBehaviorConversable>() == null) continue;
+                if (!quests.IsVillagerName(e.GetName())) continue;
+
+                RecordNpcPlace(e);
+            }
         }
 
         void OnLeaveWorld()

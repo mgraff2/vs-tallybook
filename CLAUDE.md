@@ -402,8 +402,17 @@ asset, and collect `player.inventory` conditions.
   conversation-only by nature, not by choice). Offered **once ever** per errand
   (`SaveFile.OfferedQuests`), because it runs at every login and an unpinned errand returning
   each time would be its own bug; talking to the NPC still re-adds, that being deliberate.
-  Locations come from `SaveFile.NpcPlaces`, a directory built by noting conversable NPCs you
-  walk past — at load we know who wants what, never where they live.
+  Locations come from `SaveFile.NpcPlaces` — at load we know who wants what, never where they
+  live. **The directory fills by kind (Mark's rule): villagers on sight, traders in
+  conversation only.** A villager is a name with a base-game `config/dialogue/<name>.json`
+  (`QuestScanner.IsVillagerName`) — fixed residents whose whereabouts are stable public
+  knowledge; everyone else is met, not tracked (`RecordNpcPlace`, fired from the conversation
+  poll). A blanket walk-past radar existed briefly and was removed on request. The hard limit
+  behind all of it: a client-side mod cannot ask the server where an unloaded entity or block
+  is — position knowledge is bounded by loaded chunks, however knowable quest *status* is.
+  And iterate `LoadedEntities`, never `GetEntitiesAround` — the partition query returned
+  nothing, ever, and the empty NpcPlaces it produced was misread as "hasn't walked past yet"
+  for a whole session (found by Mark).
 - **The player's journal is readable client-side** (not yet used): `ModJournal` keeps a
   private `ownJournal` (`Journal.Entries` → `JournalEntry{ EntryId, LoreCode, Title, Chapters }`)
   and `DidDiscoverLore(playerUid, code, chapterId)` is public. So showing collected lore
