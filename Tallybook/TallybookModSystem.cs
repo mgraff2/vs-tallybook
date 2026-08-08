@@ -105,6 +105,30 @@ namespace Tallybook
                         return TextCommandResult.Success("");
                     })
                 .EndSubCommand()
+                .BeginSubCommand("npcs")
+                    .WithDescription("List conversable NPCs nearby with their exact names — ground truth for quest-giver matching")
+                    .HandleWith(_ =>
+                    {
+                        EnsureGui();
+                        var me = capi.World?.Player?.Entity;
+                        if (me?.Pos == null) return TextCommandResult.Error("No position available.");
+
+                        int seen = 0;
+                        foreach (var e in capi.World.LoadedEntities.Values)
+                        {
+                            if (e == null || e == me) continue;
+                            if (e.GetBehavior<EntityBehaviorConversable>() == null) continue;
+                            if (e.Pos == null) continue;
+                            double d = Math.Sqrt(e.Pos.XYZ.SquareDistanceTo(me.Pos.XYZ));
+                            if (d > 60) continue;
+                            capi.ShowChatMessage($"  '{e.GetName()}' ({(int)d}m)  [{e.Code?.ToShortString()}]");
+                            seen++;
+                        }
+                        return TextCommandResult.Success(seen > 0
+                            ? $"{seen} conversable NPC(s) within 60 blocks. Quest givers match on these names."
+                            : "No conversable NPCs within 60 blocks.");
+                    })
+                .EndSubCommand()
                 .BeginSubCommand("here")
                     .WithDescription("Set a quest giver's location to where you are standing: .tallybook here Agnieszka")
                     .WithArgs(api.ChatCommands.Parsers.All("giver"))
@@ -547,9 +571,22 @@ namespace Tallybook
             var me = capi.World?.Player?.Entity;
             if (me?.Pos == null) return;
 
-            var found = capi.World.GetEntitiesAround(me.Pos.XYZ, 24, 24,
-                e => e?.GetBehavior<EntityBehaviorConversable>() != null);
-            if (found == null || found.Length == 0) return;
+            // LoadedEntities, not GetEntitiesAround: the partition query returned nothing,
+            // ever — NpcPlaces stayed empty across a whole session of standing in a village
+            // (found by Mark), while FindTalkingNpc walks LoadedEntities with the same
+            // behavior check and has worked all along. Use the path with the proof.
+            var entities = capi.World?.LoadedEntities;
+            if (entities == null) return;
+
+            var found = new List<Entity>();
+            foreach (var e in entities.Values)
+            {
+                if (e == null || e == me) continue;
+                if (e.GetBehavior<EntityBehaviorConversable>() == null) continue;
+                if (e.Pos == null || e.Pos.XYZ.SquareDistanceTo(me.Pos.XYZ) > 24 * 24) continue;
+                found.Add(e);
+            }
+            if (found.Count == 0) return;
 
             bool changed = false;
             foreach (var npc in found)
