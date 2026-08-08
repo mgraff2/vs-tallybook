@@ -2,9 +2,9 @@
 
 ## Short summary (under 100 characters)
 
-Crafting shopping list with live counts + villager quest tracker with map pins. Client-side.
+Crafting shopping list + villager quest tracker: live counts, map pins, HUD. Fully client-side.
 
-(92 characters)
+(95 characters)
 
 ---
 
@@ -51,8 +51,9 @@ stand at the forge and type .tallybook here Agnieszka.
 **HUD.** A corner overlay in the minimap's style: side quests with distances, then pooled
 gathering totals — one Boards 12/48 line even when three builds want boards — then required
 tools with carried/missing checks. Item icons on every line, with "any wood"-style rows
-cycling their icon through the accepted variants, handbook-style. It dodges the minimap,
-clock and coordinates rather than fighting them, and disappears when your list is empty.
+cycling their icon through the accepted variants, handbook-style. It slots in directly under
+the minimap and coordinates like one more panel in the stack — sitting under compact corner
+elements, beside tall ones — and disappears when your list is empty.
 
 **History.** Everything you've finished, including quests completed before Tallybook was
 installed, with the conversation transcripts preserved and story milestones (villages found,
@@ -90,7 +91,7 @@ rebindable under Settings → Controls.
 
 ## Changelog — first ModDB release
 
-**Tallybook 0.3.5 — for Vintage Story 1.22.x**
+**Tallybook 0.3.6 — for Vintage Story 1.22.x**
 
 Initial ModDB release.
 
@@ -108,7 +109,7 @@ Initial ModDB release.
   buttons that centre the world map on the giver — or on an errand's map destination while
   you're still fetching — and .tallybook here to set a giver's location by standing there.
 - HUD overlay: side quests with distances, pooled gathering totals, and tool checks, with
-  item icons and variant cycling; positions itself around the minimap, clock and coordinates.
+  item icons and variant cycling; slots in directly under the minimap and coordinates.
 - History tab: finished quests (including pre-install ones) with transcripts, plus story
   milestones, ordered by prerequisites where dates are unknowable.
 - Options screen with live text-size slider governing HUD and window, mount-bag counting

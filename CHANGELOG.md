@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.6 — 2026-08-08
+
+- **The HUD hugs the minimap and coordinates again.** Its anchor sat it below the deepest
+  HUD element in its column, so a tall side panel — prospecting readouts, which can also stay
+  "open" with full bounds while visually collapsed — dragged it to mid-screen. Only compact
+  corner residents count now: the minimap, coordinates and clock are things to sit under; a
+  tall panel is a neighbour to sit beside.
+
 ## 0.3.5 — 2026-08-08
 
 - **History reads at the same size as the other tabs.** Its record names were drawn at the
