@@ -307,16 +307,22 @@ things the files genuinely cannot know should live on the pin.
 - **`.tallybook quests`** ties the whole thing out: every errand in the world's dialogue with
   its item, giver, maps, gate state and tracked status. A command rather than a screen, for the
   spoiler reason above.
-- **Maps are known per dialogue *file*, never per errand — do not tie them to one (found by
-  Mark, twice).** `MapsGivenBy` reads a file's `triggerdata` handouts, and a file covers
-  several unrelated quest threads: Agnieszka takes iron ingots at her forge and separately
-  gives out the map to Tobias' cave. Attaching a file's maps to its fetch errands sent her
-  errand across the world, and then sent *every* errand to the Devastation. `MapTargetFor`
-  therefore returns **the quest giver, always**, or null when we have never stood next to
-  them. The destination is not lost — reading a locator map puts vanilla's own waypoint on the
-  map, which is where it belongs. The general rule: the catalogue is authoritative about what
-  it actually records; a relationship it does not record must not be inferred because it would
-  be convenient.
+- **A map belongs to an errand only via a shared gate variable — never via the file (found by
+  Mark, twice; the sound tie found on the third pass).** A dialogue file covers several
+  unrelated quest threads: Agnieszka takes iron ingots at her forge and separately hands out
+  the map to Tobias' cave, so attaching a file's `triggerdata` map handouts to its fetch
+  errands sent her errand across the world, then sent *every* errand to the Devastation. The
+  tie that IS in the data: the answer line leading into Tobias' map handout is gated on
+  `player.gavelens` — the same variable gating the lens turn-in. A shared quest variable is
+  the game's own statement that two threads are one quest; `QuestScanner.MapsForGates`
+  attaches on exactly that, one hop, and unconditioned handout entries attach nothing
+  (verified against the 1.22.6 files: lens→devastation attaches; Gerhardt's and Agnieszka's
+  handouts, gated on their own letter/map variables, attach to no errand). `MapTargetFor` then
+  goes: errand's tied map destination while incomplete → giver's recorded position → a
+  waypoint *naming* the giver ("Tobias' cave" names Tobias — a person-tie, also sound) → null,
+  and says so. The general rule stands: the files are authoritative about what they record; a
+  relationship they do not record must not be inferred because it would be convenient — the
+  fix was finding where the relationship actually IS recorded.
 
 ## Villager errands (quest tracking)
 

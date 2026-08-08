@@ -166,6 +166,7 @@ namespace Tallybook
             // item — alternatives. Flattening them into one pool read "3 logs AND 5 hides"
             // as "logs, or hides if you prefer" (found by Fable's review).
             var byGate = new Dictionary<string, List<List<QuestRequirement>>>();
+            var allGates = new List<DlgCond>();
 
             foreach (var comp in file.components)
             {
@@ -210,6 +211,7 @@ namespace Tallybook
                             byGate[gateKey] = lines;
                         }
                         lines.Add(thisLine);
+                        allGates.AddRange(gates);
                     }
 
                     foreach (var said in Briefing(file, gates))
@@ -219,7 +221,9 @@ namespace Tallybook
                 }
             }
 
-            offer.Maps.AddRange(MapsGivenBy(file));
+            // Only maps tied to these errands by a shared gate variable — never everything
+            // the file hands out.
+            offer.Maps.AddRange(MapsForGates(file, allGates));
 
             foreach (var lines in byGate.Values)
             {
@@ -283,20 +287,42 @@ namespace Tallybook
         }
 
         /// <summary>
-        /// Locator maps this dialogue hands over, by their in-game names.
+        /// Map handouts that belong to THIS errand: components handing a locator map, where an
+        /// answer line leading into the handout is gated on one of the errand's own gate
+        /// variables.
         ///
-        /// The name comes from the item itself rather than being assembled from its code —
-        /// "locatormap-devastationarea" is not something to show anybody, and the game already
-        /// has a proper name for it.
+        /// The shared variable is the game's own statement that they are one quest. Tobias'
+        /// "what am I supposed to do again?" line hands over the Devastation map and is gated
+        /// on `player.gavelens` — the same variable gating the lens turn-in. Gerhardt's and
+        /// Agnieszka's handout threads are gated on their own letter/map variables, shared
+        /// with no errand, so nothing attaches to their fetch quests (all verified against
+        /// the 1.22.6 dialogue files).
+        ///
+        /// This replaces attaching every map in the *file* to every errand in it, which sent
+        /// Agnieszka's iron ingots to the Devastation — a file spans unrelated threads, and
+        /// only a shared gate proves two of them are the same quest. Unconditioned entry
+        /// lines attach nothing: fail toward no map, never toward a walk across the world.
+        ///
+        /// Names come from the item itself — "locatormap-devastationarea" is not something to
+        /// show anybody, and the game already has a proper name for it.
         /// </summary>
-        List<string> MapsGivenBy(DlgFile file)
+        List<string> MapsForGates(DlgFile file, IEnumerable<DlgCond> gates)
         {
             var names = new List<string>();
+            var gateVars = new HashSet<string>(
+                gates.Where(g => g?.variable != null).Select(g => g.variable));
+            if (gateVars.Count == 0) return names;
 
             foreach (var comp in file.components)
             {
                 string code = comp?.triggerdata?.code;
                 if (code == null || !code.Contains("locatormap")) continue;
+
+                bool tied = file.components.Any(other =>
+                    other?.text != null && other.text.Any(line =>
+                        line?.jumpTo == comp.code
+                        && AllConditions(line).Any(c => c?.variable != null && gateVars.Contains(c.variable))));
+                if (!tied) continue;
 
                 var item = capi.World.GetItem(new AssetLocation(code));
                 string name = item == null ? null : new ItemStack(item).GetName();
@@ -841,7 +867,6 @@ namespace Tallybook
                 if (file?.components == null) continue;
 
                 string npc = NpcNameFrom(loc);
-                var maps = MapsGivenBy(file);
 
                 foreach (var comp in file.components)
                 {
@@ -870,7 +895,9 @@ namespace Tallybook
                                 NpcName = npc,
                                 ItemCode = code,
                                 Quantity = req.Quantity,
-                                Maps = maps,
+                                // This errand's maps, tied by shared gate variable — never
+                                // everything the file hands out.
+                                Maps = MapsForGates(file, gates),
                                 Gates = gates,
                                 Briefing = Briefing(file, gates)
                             });
@@ -916,21 +943,6 @@ namespace Tallybook
         /// "no", never toward a claim we cannot support.</summary>
         public bool DefIsLive(QuestDef def)
             => def?.Gates != null && def.Gates.Count > 0 && def.Gates.All(g => GateMet(g, null));
-
-        /// <summary>
-        /// The maps this NPC hands out, by name, found from their dialogue file alone.
-        ///
-        /// Needed because the map names are what a re-read locator map is matched against: the
-        /// waypoint reading the map creates is the only record of where the errand goes, and
-        /// without the names there is nothing to recognise it by. An errand tracked before we
-        /// kept them — or one whose names were lost — otherwise stays unmappable forever, no
-        /// matter how many times the player reads the map again (found by Mark).
-        /// </summary>
-        public List<string> MapsFor(string giverName)
-        {
-            var file = LoadDialogueByName(giverName);
-            return file?.components == null ? new List<string>() : MapsGivenBy(file);
-        }
 
         /// <summary>
         /// A villager's dialogue file found from their name — vanilla names the files after

@@ -55,6 +55,12 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **An errand that comes with a map points at the map's destination while you are still
+  fetching, then back to the giver.** The tie is the game's own: the dialogue line that hands
+  Tobias' Devastation map is gated on the same quest variable as the lens turn-in, and a
+  shared variable is what makes two conversation threads one quest. Maps whose handout shares
+  no variable with any errand attach to nothing — which is why Agnieszka's ingots no longer
+  go anywhere but her forge.
 - **A waypoint that names the quest giver counts as knowing where they are.** Reading "Map to
   Tobias' cave" drops the game's own waypoint at his cave, and a title carrying his name is
   the game saying whose place it is — so Tobias gets a Map button before you have ever stood

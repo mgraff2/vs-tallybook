@@ -172,13 +172,58 @@ namespace Tallybook
             return layer.Waypoints;
         }
 
-        // NOTE: there is deliberately no "where does the errand's map point" lookup here any
-        // more. Matching waypoints against map names, and remembering the result on the pin,
-        // both existed and were removed with MapTargetFor's simplification — maps are known
-        // per dialogue file, not per errand, so any such tie is invented (see CLAUDE.md). The
-        // removed version also saved the store from inside a GUI compose path, which is not a
-        // pattern to reintroduce. WaypointNamed below is the narrow exception that IS sound:
-        // it ties a waypoint to a *person*, and only by that person's own name.
+        /// <summary>
+        /// Where a map that came with an errand points, read off the waypoint that reading it
+        /// created — vanilla's own record of the place. Matched on the distinctive words of
+        /// the map's name ("Devastation" out of "Map to the devastation"), which is loose by
+        /// nature: a near miss falls back to the giver, which is where the errand ends anyway.
+        ///
+        /// Safe to use only because QuestMaps is now tied to the errand by a shared quest
+        /// variable in the dialogue (QuestScanner.MapsForGates). This same lookup over
+        /// *per-file* maps sent every errand to the Devastation. Read live, never persisted,
+        /// acts on nothing — a failed read costs a button target, not a marker.
+        /// </summary>
+        public Vec3d WaypointForMaps(List<string> mapNames)
+        {
+            if (mapNames == null || mapNames.Count == 0) return null;
+
+            try
+            {
+                var list = OwnWaypoints();
+                if (list == null) return null;
+
+                var words = mapNames.SelectMany(Distinctive).ToList();
+                if (words.Count == 0) return null;
+
+                foreach (var wp in list)
+                {
+                    if (wp?.Title == null || wp.Position == null) continue;
+                    if (words.Any(w => wp.Title.IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0))
+                        return wp.Position;
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not look up a quest map site: {0}", e.Message);
+            }
+            return null;
+        }
+
+        /// <summary>The words in a map's name worth matching on — "Map to the Devastation"
+        /// carries exactly one.</summary>
+        static IEnumerable<string> Distinctive(string mapName)
+        {
+            var ignore = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "map", "maps", "to", "the", "of", "a", "an", "and", "location", "locator"
+            };
+
+            foreach (var word in (mapName ?? "").Split(' ', ',', '\'', '"'))
+            {
+                string w = word.Trim();
+                if (w.Length >= 5 && !ignore.Contains(w)) yield return w;
+            }
+        }
 
         /// <summary>
         /// A waypoint whose title names this person — "Tobias' cave" for Tobias — or null.

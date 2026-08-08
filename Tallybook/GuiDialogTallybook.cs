@@ -632,10 +632,14 @@ namespace Tallybook
                         // back to Tobias" are opposite directions.
                         if (MapTargetFor(pin) != null)
                         {
+                            bool toSite = MapSiteFor(pin) != null;
                             c.AddSmallButton("Map", () => ShowOnMap(pin),
                                 EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
-                            c.AddHoverText($"Open the map centred on {pin.QuestGiver}.",
-                                font, 240, EB(ColAct2, y, 40, 26));
+                            c.AddHoverText(toSite
+                                    ? $"Open the map where {string.Join(", ", pin.QuestMaps)} points."
+                                      + $" Once you have the goods, this points back to {pin.QuestGiver}."
+                                    : $"Open the map centred on {pin.QuestGiver}.",
+                                font, 260, EB(ColAct2, y, 40, 26));
                         }
                     }
                     else if (pin.Groups.Count > 0)
@@ -1027,11 +1031,14 @@ namespace Tallybook
         }
 
         /// <summary>
-        /// Where the Map button goes: **the quest giver, always**. A recorded position first;
-        /// failing that, a waypoint that names them — reading "Map to Tobias' cave" is how
-        /// you learn where Tobias is before you have ever stood next to him. Null when
-        /// neither exists, in which case the row says so rather than offering a button that
-        /// guesses.
+        /// Where the Map button goes. While the errand is still being fetched and a map that
+        /// belongs to it (tied by a shared quest variable in the dialogue — never merely by
+        /// who handed it over) has been read, it goes where that map points: the lens is in
+        /// the Devastation, and that is the walk being made. Once the goods are in hand —
+        /// or when no tied map exists — it goes to the giver: a recorded position first,
+        /// else a waypoint that names them ("Map to Tobias' cave" is how you learn where
+        /// Tobias is before you have ever stood next to him). Null when nothing is known,
+        /// in which case the row says so rather than offering a button that guesses.
         ///
         /// It used to prefer the destination of a map that came with the errand — Tobias hands
         /// over a map to the Devastation, so "go to the Devastation, then come back" reads
@@ -1050,12 +1057,21 @@ namespace Tallybook
         /// </summary>
         BlockPos MapTargetFor(Pin pin)
         {
+            var site = MapSiteFor(pin);
+            if (site != null) return new BlockPos((int)site.X, (int)site.Y, (int)site.Z, 0);
+
             if (pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0)
                 return new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0);
 
             var named = waypoints?.WaypointNamed(pin.QuestGiver);
             return named == null ? null : new BlockPos((int)named.X, (int)named.Y, (int)named.Z, 0);
         }
+
+        /// <summary>The destination of this errand's own map, while it still matters —
+        /// pointing there after the goods are in hand sends the player the wrong way down a
+        /// very long road.</summary>
+        Vintagestory.API.MathTools.Vec3d MapSiteFor(Pin pin)
+            => pin.Complete ? null : waypoints?.WaypointForMaps(pin.QuestMaps);
 
         /// <summary>
         /// Point every map widget the dialog owns at a spot.

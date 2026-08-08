@@ -327,13 +327,15 @@ namespace Tallybook
                     if (said != null && said.Count > 0) { pin.QuestText = said; filled = true; }
                 }
 
-                // Deliberately NOT filled in here: which maps an NPC hands out is known per
-                // *file*, not per errand, and an NPC's dialogue covers several unrelated quest
-                // threads. Agnieszka takes iron ingots and separately hands over the map to
-                // Tobias' cave, on a different thread entirely — attaching her file's maps to
-                // her fetch errand sent the player across the world instead of to her forge
-                // (found by Mark). Nothing in the files reliably ties a particular map to a
-                // particular fetch request, so no tie is claimed.
+                // The def's maps are tied to this errand by a shared gate variable — the
+                // per-file version of this fill sent Agnieszka's ingots to the Devastation,
+                // because her file also hands out an unrelated map. A def with no tied maps
+                // honestly contributes none.
+                if ((pin.QuestMaps == null || pin.QuestMaps.Count == 0) && def?.Maps.Count > 0)
+                {
+                    pin.QuestMaps = def.Maps.ToList();
+                    filled = true;
+                }
 
                 // And a location, if we have ever stood next to them. Was only ever applied to
                 // freshly recovered errands, so a pin that lost its position kept no way back.
