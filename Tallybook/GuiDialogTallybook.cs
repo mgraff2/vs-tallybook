@@ -31,9 +31,28 @@ namespace Tallybook
         /// a quest you are re-reading — rather than a cell in a row, so it wraps properly
         /// instead of being cut off with an ellipsis.
         /// </summary>
+        /// <summary>
+        /// Strip line breaks out of text bound for a single row.
+        ///
+        /// Applied here, at the last moment before drawing, rather than only where text is
+        /// captured: a static text element honours embedded breaks and silently paints over
+        /// the rows beneath, and text captured by an earlier build is already saved with them
+        /// in. Doing it at the display end means no stored data can reintroduce the problem.
+        /// </summary>
+        internal static string OneLine(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            if (text.IndexOf('\n') < 0 && text.IndexOf('\r') < 0) return text;
+
+            var flat = text.Replace("\r", " ").Replace("\n", " ");
+            while (flat.Contains("  ")) flat = flat.Replace("  ", " ");
+            return flat.Trim();
+        }
+
         internal static List<string> Wrap(CairoFont font, string text, double maxWidth)
         {
             var lines = new List<string>();
+            text = OneLine(text);
             if (string.IsNullOrWhiteSpace(text)) return lines;
 
             double max = maxWidth * RuntimeEnv.GUIScale;
@@ -58,6 +77,7 @@ namespace Tallybook
 
         internal static string Fit(CairoFont font, string text, double maxWidth)
         {
+            text = OneLine(text);
             if (string.IsNullOrEmpty(text)) return text;
             double max = maxWidth * RuntimeEnv.GUIScale;
             if (font.GetTextExtents(text).Width <= max) return text;
@@ -147,13 +167,23 @@ namespace Tallybook
         /// <summary>Which archive entries are open for reading.</summary>
         readonly HashSet<string> expandedRecords = new HashSet<string>();
 
+        readonly Action<bool> setHudVisible;
+        readonly Action onHudChanged;
+        readonly QuestWaypoints waypoints;
+
+        static double DefaultHudFontSize => CairoFont.WhiteSmallText().UnscaledFontsize;
+
         public GuiDialogTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc,
-                                  QuestHistory history)
+                                  QuestHistory history, QuestWaypoints waypoints,
+                                  Action<bool> setHudVisible, Action onHudChanged)
             : base(capi)
         {
+            this.onHudChanged = onHudChanged;
             this.config = config;
             this.svc = svc;
             this.history = history;
+            this.waypoints = waypoints;
+            this.setHudVisible = setHudVisible;
             // OnCountsChanged is the single redraw signal: every store mutation funnels
             // through TallyService.RecountAll, whose signature covers structure and numbers.
             svc.OnCountsChanged += OnCountsChanged;
@@ -216,27 +246,25 @@ namespace Tallybook
                 if (!pin.HasRecipe)
                 {
                     // Not craftable is not untrackable: the count above this row is live.
-                    // What they said, kept from the conversation so it can be re-read.
-                    if (pin.QuestGiver != null && pin.QuestText?.Count > 0)
+                    // The conversation, only when asked for. An errand is one line until you
+                    // want the story behind it.
+                    if (pin.QuestGiver != null && pin.QuestTextExpanded)
                     {
-                        allRows.Add(new InfoRow
+                        foreach (var said in pin.QuestText ?? new List<string>())
                         {
-                            Text = $"“{string.Join(" ", pin.QuestText)}”",
-                            Full = string.Join("\n\n", pin.QuestText),
-                            Indent = 1
-                        });
-                        continue;
-                    }
+                            allRows.Add(new InfoRow { Text = said, Full = said, Indent = 1 });
+                        }
 
-                    allRows.Add(new InfoRow
-                    {
-                        Text = pin.QuestGiver != null
-                            ? $"errand for {pin.QuestGiver} — gather these and hand them over"
-                            : pin.Groups.Count > 0
-                                ? "gathering — press Expand to show its recipe instead"
-                                : "no crafting recipe — tracking what you gather",
-                        Indent = 1
-                    });
+                        // The place attached to the errand, when one came with it.
+                        if (pin.QuestMaps?.Count > 0)
+                        {
+                            string maps = "came with " + string.Join(", ", pin.QuestMaps);
+                            allRows.Add(new InfoRow { Text = maps, Full = maps, Indent = 1 });
+                        }
+                    }
+                    // Everything else that used to be said here — "gathering, press Expand",
+                    // "no crafting recipe" — is on the row's own controls as hover help. It was
+                    // the same sentence under every row, which is a caption, not information.
                     continue;
                 }
                 foreach (var node in pin.RootNodes) AddNodeRows(pin, node, 1);
@@ -338,7 +366,13 @@ namespace Tallybook
             int itemCount = PinsForTab(TbTab.Items).Count();
             int questCount = PinsForTab(TbTab.Quests).Count();
 
-            var done = history?.Records() ?? new List<QuestRecord>();
+            // Open quests first, then what is finished — the archive reads as a story so far.
+            var done = new List<QuestRecord>();
+            if (history != null)
+            {
+                done.AddRange(history.InProgress());
+                done.AddRange(history.Records());
+            }
             var tabs = new[]
             {
                 new GuiTab { DataInt = 0, Name = $"Items ({itemCount})" },
@@ -471,6 +505,24 @@ namespace Tallybook
                     c.AddSwitch(on => svc.Store.SetActive(pin, on), EB(ColCheck, y + 1, 25, 25), "act-" + pin.Key, 25);
                     Icon(pin.Stack == null ? null : new List<ItemStack> { pin.Stack });
 
+                    // Errands carry their conversation; a leading toggle opens it, in the
+                    // place a tree control belongs rather than in the crowded action columns.
+                    double nameX = nx;
+                    if (pin.QuestGiver != null && pin.QuestText?.Count > 0)
+                    {
+                        c.AddSmallButton(pin.QuestTextExpanded ? "−" : "+", () =>
+                        {
+                            pin.QuestTextExpanded = !pin.QuestTextExpanded;
+                            svc.Store.Save();
+                            Recompose();
+                            return true;
+                        }, EB(nx, y, 24, 26), EnumButtonStyle.Small);
+
+                        c.AddHoverText(pin.QuestTextExpanded ? "Hide what was said." : "Read what was said.",
+                            font, 200, EB(nx, y, 24, 26));
+                        nameX = nx + 28;
+                    }
+
                     var titleFont = CairoFont.WhiteSmallishText();
                     if (!pin.Active) titleFont = titleFont.WithColor(TallybookConfig.ParseColor(config.ColorNone));
                     else if (pin.Complete || pin.Craftable) titleFont = titleFont.WithColor(TallybookConfig.ParseColor(config.ColorSatisfied));
@@ -479,7 +531,8 @@ namespace Tallybook
                     if (pin.QuestGiver != null) title += $"  (for {pin.QuestGiver})";
                     if (pin.Active && pin.Complete) title += " — got it";
                     else if (pin.Active && pin.Craftable) title += " — ready to craft";
-                    FittedText(c, title, titleFont, EB(nx, ry + 3, NameW(indent), 26), NameW(indent));
+                    double titleW = ColProg - nameX - 10;
+                    FittedText(c, title, titleFont, EB(nameX, ry + 3, titleW, 26), titleW);
 
                     Progress(pin.Have, pin.Count, !pin.Active);
 
@@ -502,12 +555,15 @@ namespace Tallybook
                             + "The errand keeps its own row and count.",
                             font, 260, EB(ColAct1, y, 80, 26));
 
-                        if (pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0)
+                        var site = waypoints?.FindReadMapSite(pin.QuestMaps);
+                        if (site != null || pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0)
                         {
                             c.AddSmallButton("Map", () => ShowOnMap(pin),
                                 EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
-                            c.AddHoverText($"Open the map centred on {pin.QuestGiver}.",
-                                font, 220, EB(ColAct2, y, 40, 26));
+                            c.AddHoverText(site != null
+                                    ? $"Open the map where {string.Join(", ", pin.QuestMaps)} points."
+                                    : $"Open the map centred on {pin.QuestGiver}.",
+                                font, 240, EB(ColAct2, y, 40, 26));
                         }
                     }
                     else if (pin.Groups.Count > 0)
@@ -520,6 +576,11 @@ namespace Tallybook
                         c.AddSmallButton(pin.GatherOnly ? "Expand" : "Collapse",
                             () => { svc.ToggleGatherOnly(pin); return true; },
                             EB(ColAct1, y, 80, 26), EnumButtonStyle.Small);
+
+                        c.AddHoverText(pin.GatherOnly
+                                ? "Counting this item only. Expand to show its recipe and plan the craft."
+                                : "Showing this item's recipe. Collapse to go back to just counting it.",
+                            font, 260, EB(ColAct1, y, 80, 26));
 
                         if (!pin.GatherOnly && pin.Groups.Count > 1)
                         {
@@ -609,6 +670,15 @@ namespace Tallybook
         /// <summary>Switches compose in the off state; setting On directly fires no callback.</summary>
         void RestoreOptionSwitches()
         {
+            // Sliders compose empty; give it its range and where it currently sits.
+            var fontSlider = SingleComposer.GetSlider("opt-hudfont");
+            fontSlider?.SetValues(
+                (int)Math.Round(config.HudFontSize > 0 ? config.HudFontSize : DefaultHudFontSize),
+                10, 28, 1, " px");
+
+            var hudSwitch = SingleComposer.GetSwitch("opt-hud");
+            if (hudSwitch != null) hudSwitch.On = config.HudVisible;
+
             var group = SingleComposer.GetSwitch("opt-group");
             if (group != null) group.On = config.HudGroupByItem;
 
@@ -628,8 +698,10 @@ namespace Tallybook
             restoringInputs = true;
             try
             {
-                // Tabs compose with the first one active; re-assert the real selection.
-                SingleComposer.GetHorizontalTabs("tabs")?.SetValue(tab == TbTab.Quests ? 1 : 0, false);
+                // Tabs compose with the first one active; re-assert the real selection. Must
+                // cover every tab — a missing case silently highlights the wrong one.
+                int active = tab == TbTab.History ? 2 : tab == TbTab.Quests ? 1 : 0;
+                SingleComposer.GetHorizontalTabs("tabs")?.SetValue(active, false);
 
                 // Visible pins only: inputs exist just for the composed page, and asking the
                 // composer for a key it never composed is unhealthy whether it throws or not.
@@ -824,6 +896,11 @@ namespace Tallybook
                 return true;
             }
 
+            // Where the errand is *going*, when a map came with it and you have read it —
+            // the lens is in the Devastation, and that is the walk you are about to make.
+            // The giver already carries their own marker for the way back.
+            var site = waypoints?.FindReadMapSite(pin.QuestMaps);
+
             TryClose();
 
             // The minimap counts as "opened", so asking IsOpened alone would leave it showing
@@ -832,7 +909,9 @@ namespace Tallybook
             bool fullMapShowing = dlg != null && dlg.IsOpened() && dlg.DialogType == EnumDialogType.Dialog;
             if (!fullMapShowing) maps.ToggleMap(EnumDialogType.Dialog);
 
-            var target = new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0);
+            var target = site != null
+                ? new BlockPos((int)site.X, (int)site.Y, (int)site.Z, 0)
+                : new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0);
             capi.World.RegisterCallback(_ => Centre(maps, target), 250);
             capi.World.RegisterCallback(_ => Centre(maps, target), 600);
             return true;
@@ -939,8 +1018,8 @@ namespace Tallybook
 
             if (done.Count == 0)
             {
-                c.AddStaticText("Nothing finished yet.", font, EB(8, y + 8, DW, 26));
-                c.AddStaticText("Quests you complete are kept here, including ones you finished before Tallybook was installed.",
+                c.AddStaticText("Nothing recorded yet.", font, EB(8, y + 8, DW, 26));
+                c.AddStaticText("Quests you take on and finish are kept here, including ones you finished before Tallybook was installed.",
                     quiet, EB(8, y + 38, DW, 46));
                 y += 96;
                 c.AddSmallButton("Journal", () => OpenJournal(), EB(DW - 190, y, 92, 28), EnumButtonStyle.Small);
@@ -948,32 +1027,52 @@ namespace Tallybook
                 return;
             }
 
-            bool undatedHeaderDrawn = false;
+            string section = null;
             var page = done.Skip(this.page * PageSize).Take(PageSize).ToList();
 
             foreach (var record in page)
             {
-                if (!record.Day.HasValue && !undatedHeaderDrawn)
+                bool openQuest = record.Stage == "open" || record.Stage == "awaiting";
+                string wants = openQuest ? "open"
+                    : record.Day.HasValue ? "dated"
+                    : "undated";
+
+                if (wants != section)
                 {
-                    c.AddStaticText("— finished before Tallybook was watching —", quiet, EB(8, y + 4, DW, 22));
+                    section = wants;
+                    string heading =
+                        wants == "open" ? "— still going —"
+                        : wants == "dated" ? "— finished —"
+                        : "— finished before Tallybook was watching —";
+
+                    c.AddStaticText(heading, quiet, EB(8, y + 4, DW, 22));
                     y += 24;
-                    undatedHeaderDrawn = true;
                 }
 
-                var line = font.Clone().WithColor(TallybookConfig.ParseColor(config.ColorSatisfied));
+                var line = font.Clone().WithColor(TallybookConfig.ParseColor(
+                    openQuest ? config.ColorPartial : config.ColorSatisfied));
+
                 string when = record.Day.HasValue ? $"day {(int)record.Day.Value}" : "earlier";
-                string what = record.Stage == "rewarded" ? "rewarded" : "handed in";
+                string detail =
+                    record.Stage == "open" ? "under way"
+                    : record.Stage == "awaiting" ? "done — go and collect"
+                    : record.Stage == "rewarded" ? $"rewarded, {when}"
+                    : record.Stage == "completed" ? $"handed in, {when}"
+                    : when;
 
-                c.AddStaticText($"✓ {record.Name}", line, EB(8, y + 4, 300, 24));
-                c.AddStaticText($"{what}, {when}", quiet, EB(320, y + 4, 220, 24));
+                c.AddStaticText($"{(openQuest ? "•" : "✓")} {record.Name}", line, EB(8, y + 4, 300, 24));
+                c.AddStaticText(detail, quiet, EB(320, y + 4, 220, 24));
 
-                bool open = expandedRecords.Contains(record.Chain);
+                // Keyed by stage as well as quest: the same quest can legitimately appear in
+                // two sections at once, and two rows sharing an identity open together.
+                string key = record.Chain + "|" + record.Stage;
+                bool open = expandedRecords.Contains(key);
+
                 if (record.Text?.Count > 0)
                 {
-                    string chain = record.Chain;
                     c.AddSmallButton(open ? "Hide" : "Read", () =>
                     {
-                        if (!expandedRecords.Add(chain)) expandedRecords.Remove(chain);
+                        if (!expandedRecords.Add(key)) expandedRecords.Remove(key);
                         Recompose();
                         return true;
                     }, EB(DW - 90, y, 76, 26), EnumButtonStyle.Small);
@@ -1065,15 +1164,53 @@ namespace Tallybook
             var hint = font.Clone().WithColor(GuiStyle.ColorParchment);
             double y = 40;
 
+            // Switch, label, and a "?" carrying the explanation on hover. The reasoning used
+            // to sit under each row in full, which reads well with three options and buries
+            // the screen with ten.
+            // The "?" column sits clear of the widest control on a row. The slider ends at
+            // 372 and its handle and value bubble overhang that edge, so the mark needs real
+            // space rather than merely a non-overlapping rectangle.
+            const double markX = 408;
+
             void Option(string key, bool on, string label, string explain, Action<bool> set)
             {
                 c.AddSwitch(v => { set(v); capi.StoreModConfig(config, "tallybook.json"); },
                     EB(8, y, 25, 25), key, 25);
-                c.AddStaticText(label, font, EB(44, y + 4, DW - 60, 26));
-                y += 26;
-                c.AddStaticText(explain, hint, EB(44, y, DW - 60, 40));
-                y += 44;
+                c.AddStaticText(TbText.Fit(font, label, markX - 52), font, EB(44, y + 4, markX - 52, 26));
+
+                c.AddStaticText("?", hint.Clone().WithColor(GuiStyle.LinkTextColor), EB(markX, y + 4, 16, 24));
+                c.AddHoverText(explain, font, 340, EB(markX, y + 4, 16, 24));
+
+                y += 32;
             }
+
+            // A slider rather than a number: the right size is the one that looks right, and
+            // the HUD redraws on every step so you are choosing by eye, not by arithmetic.
+            void Slider(string key, string label, string explain, Action<int> set)
+            {
+                c.AddStaticText(TbText.Fit(font, label, 236), font, EB(8, y + 4, 236, 26));
+                c.AddSlider(v => { set(v); return true; }, EB(252, y + 2, 120, 22), key);
+
+                c.AddStaticText("?", hint.Clone().WithColor(GuiStyle.LinkTextColor), EB(markX, y + 4, 16, 24));
+                c.AddHoverText(explain, font, 340, EB(markX, y + 4, 16, 24));
+                y += 32;
+            }
+
+            Slider("opt-hudfont", "HUD text size",
+                "Smaller text fits more on screen; the rows close up to match. The slider "
+                + "moves the HUD as you drag it, so pick what looks right rather than a number.",
+                v =>
+                {
+                    config.HudFontSize = v;
+                    capi.StoreModConfig(config, "tallybook.json");
+                    onHudChanged?.Invoke();
+                });
+
+            Option("opt-hud", config.HudVisible,
+                "Show the HUD overlay",
+                "The corner readout, also toggled with K. Here as well because a hotkey can be "
+                + "taken by another mod, and a HUD you cannot turn back on looks broken.",
+                v => setHudVisible?.Invoke(v));
 
             Option("opt-group", config.HudGroupByItem,
                 "Group the HUD under each item",

@@ -35,6 +35,15 @@ namespace Tallybook
         /// long after the conversation is closed.</summary>
         public List<string> QuestText = new List<string>();
 
+        /// <summary>Is this errand's conversation open for reading? Closed to begin with — an
+        /// errand is one line until you ask for the story — and remembered either way, so a
+        /// quest you opened stays open next time you look.</summary>
+        public bool QuestTextExpanded;
+
+        /// <summary>Maps that came with the errand, by name. "Fetch a lens" and "fetch a lens
+        /// from the Devastation" are different errands to be handed.</summary>
+        public List<string> QuestMaps = new List<string>();
+
         /// <summary>We have placed a map marker for this errand. Persisted, and the *only*
         /// thing that decides whether another gets placed — reading the map back to find out
         /// is not reliable, and a check that silently fails means a marker every few seconds

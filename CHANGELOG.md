@@ -1,10 +1,23 @@
 # Changelog
 
-## 0.2.0 — 2026-08-07
+## 0.3.0 — 2026-08-07
 
-First public release. The v1 feature set from the spec, plus villager errand tracking, a
-quest archive, and direct acquisition tracking for items nothing crafts.
+First public release. A crafting shopping list that tracks what you are gathering, the
+errands villagers give you, and the story you have already finished.
 
+- **HUD text size is a slider in Options**, and the HUD redraws as you drag it — the right
+  size is the one that looks right, not a number you work out. Row height and icons follow
+  the text, so shrinking it genuinely fits more on screen. Left alone it uses the game's own
+  small-text size, read at runtime so it cannot drift from the rest of the interface.
+- **Errands read as a transcript** — `Gerhardt: "…"` with your own name against the line that
+  prompted it, since every villager line answers something you said. Closed by default, opened
+  with a **+** beside the name, and remembered either way.
+- **An errand says which map came with it** ("came with Map to the Devastation"), and once you
+  have read that map, its **Map** button goes to the destination rather than the giver —
+  reading a locator map is what puts its place on your map, so no extra bookkeeping is needed
+  to know you have it.
+- **Options** gathers the settings that change what the list shows or counts, one line each
+  with a **?** carrying the explanation on hover.
 - **Pin from the handbook.** Every item's handbook page gains an "Add to Tallybook" link,
   plus "Go to Tallybook" to close the handbook and open the list. Arriving from a list row's
   Handbook button also shows a "← Back to Tallybook" button beneath the handbook's own Back

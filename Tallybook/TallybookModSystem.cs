@@ -134,13 +134,13 @@ namespace Tallybook
         {
             if (dialog != null) return;
             questHistory = new QuestHistory(capi, svc.Store, quests);
-            dialog = new GuiDialogTallybook(capi, config, svc, questHistory);
+            questWaypoints = new QuestWaypoints(capi, config, svc.Store);
+            dialog = new GuiDialogTallybook(capi, config, svc, questHistory, questWaypoints,
+                                            SetHudVisible, () => hud?.Refresh());
             hud = new HudTallybook(capi, config, svc);
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
             questGlow = new QuestReadyGlow(capi, config, svc);
             questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);
-            questWaypoints = new QuestWaypoints(capi, config, svc.Store);
-
             // Checking and unchecking come through the recount; unpinning has to be caught as
             // it happens, while the pin can still tell us it had a marker.
             svc.OnCountsChanged += questWaypoints.Sync;
@@ -154,6 +154,18 @@ namespace Tallybook
             if (dialog.IsOpened()) dialog.TryClose();
             else dialog.TryOpen();
             return true;
+        }
+
+        /// <summary>One place that turns the HUD on or off, so the hotkey and the Options
+        /// switch cannot disagree about what is showing.</summary>
+        void SetHudVisible(bool visible)
+        {
+            EnsureGui();
+            hud.UserVisible = visible;
+            hud.Refresh();
+
+            config.HudVisible = visible;
+            capi.StoreModConfig(config, "tallybook.json");
         }
 
         bool OnHudHotkey(KeyCombination comb)
@@ -241,7 +253,8 @@ namespace Tallybook
             bool filled = false;
             foreach (var pin in svc.Store.Pins)
             {
-                if (pin.QuestGiver == null || pin.QuestText?.Count > 0) continue;
+                if (pin.QuestGiver == null) continue;
+                if (QuestScanner.IsTranscript(pin.QuestText)) continue;
 
                 var said = quests.BriefingFor(pin.QuestGiver, pin.Code, pin.Count);
                 if (said == null || said.Count == 0) continue;
@@ -405,6 +418,7 @@ namespace Tallybook
                     pin.QuestZ = offer.Pos.Z;
                 }
                 if (offer.Briefing.Count > 0) pin.QuestText = offer.Briefing.ToList();
+                if (offer.Maps.Count > 0) pin.QuestMaps = offer.Maps.ToList();
                 svc.Resolve(pin);
                 added++;
             }

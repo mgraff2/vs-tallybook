@@ -171,14 +171,33 @@ namespace Tallybook
     public class HudTallybook : GuiDialog
     {
         const double W = 250;
-        const double LineH = 21;
         const double Margin = 8;
         const double CountW = 54;      // reserved right-hand column for "3/10"
+
+        /// <summary>The game's own small-text size — the size to use when nobody has chosen
+        /// one, read rather than hardcoded so it cannot drift from the rest of the UI.</summary>
+        static double DefaultFontSize => CairoFont.WhiteSmallText().UnscaledFontsize;
+
+        double FontSize => config.HudFontSize > 0 ? config.HudFontSize : DefaultFontSize;
+
+        /// <summary>Row height follows the text, or shrinking the font would leave the rows
+        /// just as far apart and save nothing.</summary>
+        double LineH => Math.Round(FontSize * 1.5);
+
+        CairoFont Font(bool bold = false)
+        {
+            var font = bold
+                ? CairoFont.WhiteSmallText().WithWeight(Cairo.FontWeight.Bold)
+                : CairoFont.WhiteSmallText();
+
+            return config.HudFontSize > 0 ? font.WithFontSize((float)FontSize) : font;
+        }
 
         readonly TallybookConfig config;
         readonly TallyService svc;
         long anchorListenerId;
         double composedForFrameW, composedForFrameH, composedForScale, composedForAnchorBottom;
+        double composedForFontSize;
         string composedForDistances = "";
 
         /// <summary>Runtime toggle (hotkey K). Starts from config so players who keep it off
@@ -224,6 +243,7 @@ namespace Tallybook
                 && capi.Render.FrameHeight == composedForFrameH
                 && RuntimeEnv.GUIScale == composedForScale
                 && CurrentAnchorBottom() == composedForAnchorBottom
+                && FontSize == composedForFontSize
                 && DistanceSignature() == composedForDistances) return;
             Refresh();
         }
@@ -250,6 +270,7 @@ namespace Tallybook
             composedForScale = RuntimeEnv.GUIScale;
 
             var lines = BuildLines();
+            composedForFontSize = FontSize;
             double h = 8 + lines.Count * LineH + 8;
 
             double screenW = capi.Render.FrameWidth / RuntimeEnv.GUIScale;
@@ -278,19 +299,19 @@ namespace Tallybook
                 .BeginChildElements(bgBounds);
 
             double ly = 4;
+            double iconSize = Math.Min(20, LineH - 3);
+
             foreach (var line in lines)
             {
-                var font = line.Bold
-                    ? CairoFont.WhiteSmallText().WithWeight(Cairo.FontWeight.Bold)
-                    : CairoFont.WhiteSmallText();
+                var font = Font(line.Bold);
                 if (line.Color != null) font = font.WithColor(line.Color);
 
                 double tx = 4;
                 if (line.Stacks != null && line.Stacks.Count > 0)
                 {
                     composer.AddInteractiveElement(new GuiElementItemIcon(
-                        capi, line.Stacks, config, ElementBounds.Fixed(4, ly + 1, 18, 18), line.CycleIcons));
-                    tx = 26;
+                        capi, line.Stacks, config, ElementBounds.Fixed(4, ly + 1, iconSize, iconSize), line.CycleIcons));
+                    tx = iconSize + 8;
                 }
 
                 // A trailing count gets its own reserved column. Baking it into the text
@@ -299,6 +320,7 @@ namespace Tallybook
                 double textW = line.Trailing == null ? W - tx - 8 : W - tx - CountW - 8;
 
                 if (config.HudScrollLongLines && !Fits(font, line.Text, textW))
+
                 {
                     composer.AddInteractiveElement(new GuiElementMarqueeText(
                         capi, line.Text, font, ElementBounds.Fixed(tx, ly, textW, LineH)));

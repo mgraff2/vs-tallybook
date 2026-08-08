@@ -33,12 +33,16 @@ namespace Tallybook
         /// </summary>
         public int ConfigVersion { get; set; }
 
-        const int CurrentConfigVersion = 1;
+        const int CurrentConfigVersion = 2;
 
         /// <summary>Let a HUD line too long for its column slide left every 15 seconds to
         /// show the rest of itself, instead of ending in "…". A HUD cannot be hovered for the
         /// full text the way the list can, so otherwise the tail is simply unreadable.</summary>
         public bool HudScrollLongLines { get; set; } = true;
+
+        /// <summary>HUD text size. 0 means the game's own small-text size, whatever that is on
+        /// this version — better than baking in a number that could drift.</summary>
+        public double HudFontSize { get; set; }
 
         /// <summary>HUD rows before truncating with "+N more".</summary>
         public int HudMaxRows { get; set; } = 12;
@@ -113,6 +117,7 @@ namespace Tallybook
         {
             HudMaxRows = Math.Min(30, Math.Max(3, HudMaxRows));
             MountBagRange = Math.Min(64, Math.Max(1, MountBagRange));
+            if (HudFontSize != 0) HudFontSize = Math.Min(32, Math.Max(8, HudFontSize));
             switch ((HudPosition ?? "").ToLowerInvariant())
             {
                 case "topleft": case "topright": case "bottomleft": case "bottomright":
@@ -139,6 +144,14 @@ namespace Tallybook
                 // Pooled totals became the default after grouping shipped; adopt it for files
                 // written in between, which recorded the old default rather than a preference.
                 HudGroupByItem = false;
+            }
+            if (ConfigVersion < 2)
+            {
+                // A hidden HUD is indistinguishable from a broken one, and the only way back
+                // was a hotkey that other mods can and do claim. Anyone carrying "off" from
+                // before there was a visible switch for it gets it back on; the switch in the
+                // Options screen is now how you turn it off on purpose.
+                HudVisible = true;
             }
             ConfigVersion = CurrentConfigVersion;
 

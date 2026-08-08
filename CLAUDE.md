@@ -390,6 +390,16 @@ These are deliberate and each one has a failure mode behind it (spec §2, §2a, 
   chiselling an iron anvil back into ingots, so a decomposed ingot pin demands an anvil the
   player does not have, while smelting — the real source — is not a grid recipe and cannot
   be shown. Errand copies (`Gather`) start gather-only for the same reason.
+- **Never craft for the player, and never write to their inventory.** Auto-crafting was
+  investigated and rejected (Mark): "I don't want to automate the game into boringness." The
+  mechanism exists — `InventoryBase.ActivateSlot` / `IInventoryNetworkUtil.GetFlipSlotsPacket`
+  plus `SendPacketClient` drives the same moves dragging does — so this is a **product**
+  decision, not a technical limit, and finding that it is possible is not a reason to revisit
+  it. Two supporting reasons: everything here only ever *reads*, so the worst bug to date is a
+  wrong number, whereas a bug that writes scatters or loses items and destroys the one promise
+  the mod makes; and automated inventory manipulation is what anti-cheat tooling looks for on
+  someone else's server. The handbook already shows the recipe, and a row's Handbook button
+  goes straight there.
 - **No automatic recursion.** A pinned item shows its *direct* ingredients only. Expansion
   is always a deliberate player action with a recipe choice attached. Auto-expansion hits
   recipe cycles, per-level recipe-choice explosions, and silent wrong guesses — every one of

@@ -32,7 +32,20 @@ namespace Tallybook
         /// re-read later, when "ten of what, and why?" has faded.</summary>
         public List<string> Briefing = new List<string>();
 
+        /// <summary>Maps this NPC hands out — "Map to the Devastation" and the like. A quest
+        /// that comes with a map is a quest with a place attached, and saying which one is the
+        /// difference between "fetch a lens" and "fetch a lens from the Devastation".</summary>
+        public List<string> Maps = new List<string>();
+
         public string Summary => string.Join(", ", Requirements.Select(r => $"{r.Quantity} x {r.Name}"));
+    }
+
+    /// <summary>A story flag dialogue can set, and what has to happen first.</summary>
+    public class StoryVar
+    {
+        public string Name;
+        public HashSet<string> Requires = new HashSet<string>();
+        public int Depth;
     }
 
     /// <summary>One quest chain — the "beataquest" behind beataqueststarted / …completed /
@@ -79,6 +92,10 @@ namespace Tallybook
             public string jumpTo;
             public Dictionary<string, string> setVariables;
             public DlgText[] text;
+
+            /// <summary>What the step hands over — including the locator maps that quests
+            /// come with, which is how an errand knows there is a place attached to it.</summary>
+            public StackSpec triggerdata;
         }
         class DlgText { public string value; public string jumpTo; public DlgCond condition; public DlgCond[] conditions; }
         class DlgCond { public string variable; public string isValue; public string isNotValue; }
@@ -170,6 +187,8 @@ namespace Tallybook
                 }
             }
 
+            offer.Maps.AddRange(MapsGivenBy(file));
+
             foreach (var group in byGate.Values)
             {
                 offer.Requirements.Add(group[0]);
@@ -197,6 +216,7 @@ namespace Tallybook
         List<string> Briefing(DlgFile file, List<DlgCond> gates)
         {
             var lines = new List<string>();
+            string me = capi.World?.Player?.PlayerName ?? "You";
 
             foreach (var gate in gates)
             {
@@ -214,13 +234,85 @@ namespace Tallybook
                 var briefing = choice?.code == null ? null : file.components.FirstOrDefault(c =>
                     c?.jumpTo == choice.code && !IsPlayer(c));
 
+                // Read as the conversation it was. Every villager line answers something you
+                // said, and the dialogue graph knows which: the answer that jumps to a step is
+                // what prompted it.
+                if (briefing?.code != null) AddPlayerLine(lines, file, briefing.code, me);
                 AddSpeech(lines, briefing);
+
+                if (choice != null) AddPlayerLine(lines, file, accept.code, me);
                 AddSpeech(lines, accept);
             }
             return lines;
         }
 
+        /// <summary>
+        /// Locator maps this dialogue hands over, by their in-game names.
+        ///
+        /// The name comes from the item itself rather than being assembled from its code —
+        /// "locatormap-devastationarea" is not something to show anybody, and the game already
+        /// has a proper name for it.
+        /// </summary>
+        List<string> MapsGivenBy(DlgFile file)
+        {
+            var names = new List<string>();
+
+            foreach (var comp in file.components)
+            {
+                string code = comp?.triggerdata?.code;
+                if (code == null || !code.Contains("locatormap")) continue;
+
+                var item = capi.World.GetItem(new AssetLocation(code));
+                string name = item == null ? null : new ItemStack(item).GetName();
+                if (string.IsNullOrEmpty(name)) continue;
+
+                if (!names.Contains(name)) names.Add(name);
+            }
+            return names;
+        }
+
+        /// <summary>The player's answer that leads to a given step, quoted under their name.</summary>
+        void AddPlayerLine(List<string> into, DlgFile file, string targetCode, string me)
+        {
+            foreach (var comp in file.components)
+            {
+                if (comp?.text == null || !IsPlayer(comp)) continue;
+
+                foreach (var line in comp.text)
+                {
+                    if (line?.jumpTo != targetCode || string.IsNullOrEmpty(line.value)) continue;
+
+                    string text = Lang.Get(line.value);
+                    if (string.IsNullOrEmpty(text) || text == line.value) continue;
+
+                    string said = $"{me}: \"{OneLine(text)}\"";
+                    if (!into.Contains(said)) into.Add(said);
+                    return;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Flatten a spoken line to one line. Dialogue text carries its own line breaks for
+        /// the conversation window, and a static text element honours them — so a single
+        /// "row" quietly rendered as three and painted over the two beneath it.
+        /// </summary>
+        static string OneLine(string text)
+        {
+            var flat = text.Replace("\r", " ").Replace("\n", " ").Trim();
+            while (flat.Contains("  ")) flat = flat.Replace("  ", " ");
+            return flat;
+        }
+
         static bool IsPlayer(DlgComp comp) => comp?.owner == "player";
+
+        /// <summary>"gerhardt" → "Gerhardt". The owner field is the speaker.</summary>
+        static string SpeakerOf(DlgComp comp)
+        {
+            string owner = comp?.owner;
+            if (string.IsNullOrEmpty(owner)) return "They";
+            return char.ToUpperInvariant(owner[0]) + owner.Substring(1);
+        }
 
         /// <summary>
         /// Every village errand you are currently on, found without talking to anyone.
@@ -277,6 +369,14 @@ namespace Tallybook
                         if (gates.Any(g => g.variable?.StartsWith("player.") != true)) continue;
                         if (!gates.All(g => GateMet(g, null))) continue;
 
+                        // At least one gate must be a *positive* flag that something happened.
+                        // Negative gates ("gavelens is not true") are satisfied by default on a
+                        // brand-new world, so a scan that accepted them would hand a player who
+                        // has never left home a list of every errand in the game. In
+                        // conversation that risk does not exist — you are stood in front of the
+                        // person — which is why only this path is fussy.
+                        if (!gates.Any(g => g.isValue != null)) continue;
+
                         foreach (var w in wanted)
                         {
                             var req = ToRequirement(w);
@@ -329,6 +429,15 @@ namespace Tallybook
             return new List<string>();
         }
 
+        /// <summary>
+        /// Was this text captured before extracts were written as a transcript? Plain
+        /// paragraphs from an older build are re-derived rather than left looking different
+        /// from everything captured since.
+        /// </summary>
+        public static bool IsTranscript(List<string> text)
+            => text != null && text.Count > 0
+               && text.All(line => line.Contains(": \"") && line.IndexOf('\n') < 0 && line.IndexOf('\r') < 0);
+
         /// <summary>Read a player-scope quest flag. Public so the history can ask too.</summary>
         public string PlayerVariable(string name)
         {
@@ -338,6 +447,113 @@ namespace Tallybook
                 return vars?.GetPlayerVariable(capi.World.Player.PlayerUID, name);
             }
             catch { return null; }
+        }
+
+        Dictionary<string, StoryVar> storyVars;
+
+        /// <summary>
+        /// Every player-scope story flag the loaded content can set, with what must happen
+        /// first.
+        ///
+        /// Quest chains are only a slice of the story: buying the elk, reading the note,
+        /// hearing about the archives and meeting each villager are all recorded the same way
+        /// — a variable set by a line of dialogue — and none of them is called `…quest…`. An
+        /// archive that only knows about quest chains is empty for a player who has done
+        /// plenty (Mark).
+        ///
+        /// Prerequisites are the conditions on the answer that *leads to* the step which sets
+        /// the flag, so the graph reflects what actually has to precede what.
+        /// </summary>
+        public Dictionary<string, StoryVar> StoryVariables()
+        {
+            if (storyVars != null) return storyVars;
+            storyVars = new Dictionary<string, StoryVar>();
+
+            try
+            {
+                var files = new List<DlgFile>();
+                foreach (var loc in capi.Assets.GetLocations("config/dialogue/") ?? new List<AssetLocation>())
+                {
+                    if (!loc.Path.EndsWith(".json")) continue;
+                    var file = capi.Assets.TryGet(loc)?.ToObject<DlgFile>();
+                    if (file?.components != null) files.Add(file);
+                }
+
+                // What can be set at all.
+                foreach (var file in files)
+                {
+                    foreach (var comp in file.components)
+                    {
+                        foreach (var name in PlayerVarsSetBy(comp))
+                        {
+                            if (!storyVars.ContainsKey(name)) storyVars[name] = new StoryVar { Name = name };
+                        }
+                    }
+                }
+
+                // What has to come first.
+                foreach (var file in files)
+                {
+                    foreach (var setter in file.components)
+                    {
+                        var names = PlayerVarsSetBy(setter).ToList();
+                        if (names.Count == 0 || setter.code == null) continue;
+
+                        foreach (var other in file.components)
+                        {
+                            if (other?.text == null) continue;
+                            foreach (var line in other.text)
+                            {
+                                if (line?.jumpTo != setter.code) continue;
+
+                                foreach (var cond in AllConditions(line))
+                                {
+                                    if (cond.variable == null || cond.isValue == null) continue;
+                                    if (!cond.variable.StartsWith("player.")) continue;
+
+                                    string need = cond.variable.Substring("player.".Length);
+                                    if (!storyVars.ContainsKey(need)) continue;
+
+                                    foreach (var name in names)
+                                    {
+                                        if (need != name) storyVars[name].Requires.Add(need);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                foreach (var v in storyVars.Values) v.Depth = DepthOfVar(v, new HashSet<string>());
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not map story variables: {0}", e.Message);
+            }
+            return storyVars;
+        }
+
+        static IEnumerable<string> PlayerVarsSetBy(DlgComp comp)
+        {
+            if (comp?.setVariables == null) yield break;
+            foreach (var key in comp.setVariables.Keys)
+            {
+                if (key != null && key.StartsWith("player.")) yield return key.Substring("player.".Length);
+            }
+        }
+
+        int DepthOfVar(StoryVar v, HashSet<string> visiting)
+        {
+            if (!visiting.Add(v.Name)) return 0;      // content may describe a cycle
+
+            int deepest = 0;
+            foreach (var need in v.Requires)
+            {
+                if (!storyVars.TryGetValue(need, out var prior)) continue;
+                deepest = Math.Max(deepest, DepthOfVar(prior, visiting) + 1);
+            }
+            visiting.Remove(v.Name);
+            return deepest;
         }
 
         Dictionary<string, QuestChain> chains;
@@ -528,6 +744,8 @@ namespace Tallybook
         {
             if (comp?.text == null || IsPlayer(comp)) return;
 
+            string speaker = SpeakerOf(comp);
+
             foreach (var line in comp.text)
             {
                 if (string.IsNullOrEmpty(line?.value)) continue;
@@ -536,7 +754,9 @@ namespace Tallybook
                 // Lang.Get hands back the key when there is no translation; a raw key on
                 // screen is worse than saying nothing.
                 if (string.IsNullOrEmpty(text) || text == line.value) continue;
-                if (!into.Contains(text)) into.Add(text);
+
+                string said = $"{speaker}: \"{OneLine(text)}\"";
+                if (!into.Contains(said)) into.Add(said);
             }
         }
 
