@@ -232,9 +232,14 @@ namespace Tallybook
 
         /// <summary>Does the whole line fit? Same measurement TbText.Fit uses, asked before
         /// trimming rather than after.</summary>
+        /// <summary>With slack, not exactly: our measurement and the static-text element's own
+        /// wrap decision disagree by a hair at the boundary, and when "fits exactly" loses,
+        /// the last word wraps and overdraws the row below — "Raw hide (Small) for" with
+        /// "Gerhardt" bleeding through the next errand was this (Mark, from a screenshot,
+        /// after the same bug in the dialog).</summary>
         static bool Fits(CairoFont font, string text, double maxWidth)
             => string.IsNullOrEmpty(text)
-               || font.GetTextExtents(text).Width <= maxWidth * RuntimeEnv.GUIScale;
+               || font.GetTextExtents(text).Width <= (maxWidth - 8) * RuntimeEnv.GUIScale;
 
         void OnAnchorTick(float dt)
         {
@@ -327,7 +332,10 @@ namespace Tallybook
                 }
                 else
                 {
-                    composer.AddStaticText(TbText.Fit(font, line.Text, textW), font,
+                    // Same slack as Fits: a truncation measured to the exact edge can still
+                    // wrap in the renderer's judgement, which puts the cut word on top of the
+                    // next line instead of an ellipsis on this one.
+                    composer.AddStaticText(TbText.Fit(font, line.Text, textW - 8), font,
                         ElementBounds.Fixed(tx, ly, textW, LineH));
                 }
 
