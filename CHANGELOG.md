@@ -55,6 +55,10 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **Checkmarks are checkmarks now, not little boxes.** The game's fonts (Montserrat, Lora,
+  Almendra) carry none of ✓ ○ ◑ ✗ ⚒ ▸ — verified against the shipped font files — so every
+  status mark drew as an empty rectangle. All marks now use glyphs the fonts actually have:
+  √ for done, • for partial, · for none, × for a missing tool, ▶ for the chosen recipe.
 - **An NPC's location is recorded only while talking to them** — villagers and traders alike;
   there is no passive radar (Mark). Talking is the backfill: the moment the conversation
   opens, the errand gets their position, and the blue X lands on the map in the same breath.

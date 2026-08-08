@@ -467,7 +467,9 @@ namespace Tallybook
                 shown++;
             }
 
-            string Mark(Pin p) => p.Complete ? "✓" : p.Craftable ? "⚒" : "•";
+            // √/▶/• and never ✓/⚒: the game's fonts carry none of the fancier marks, and a
+            // glyph the font lacks draws as a tofu box (verified against the shipped TTFs).
+            string Mark(Pin p) => p.Complete ? "√" : p.Craftable ? "▶" : "•";
 
             if (config.HudGroupByItem)
             {
@@ -517,7 +519,7 @@ namespace Tallybook
                 {
                     lines.Add(new HudLine
                     {
-                        Text = $"{(t.Present ? "✓" : "•")} {t.DisplayName}",
+                        Text = $"{(t.Present ? "√" : "•")} {t.DisplayName}",
                         Trailing = t.Present ? null : "missing",
                         Color = t.Present ? satisfied : partial,
                         Stacks = t.SampleStacks(capi.World)

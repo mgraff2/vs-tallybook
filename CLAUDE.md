@@ -704,6 +704,13 @@ types), and a throwaway net10.0 console app referencing `VintagestoryAPI.dll` /
   someone tracks food or hides. Anything thrown from a render override kills the client, so
   wrap the draw in try/catch and latch it off — cosmetics are never worth a crash.
   `Bounds.renderX/Y` are the element's live screen coords.
+- **The game's fonts have no ✓ — verify glyph coverage before drawing any special character
+  (found by Mark: every checkmark in the mod rendered as a tofu box).** Montserrat, Lora and
+  Almendra lack ✓ ✔ ○ ◑ ● ✗ ⚒ ▸ ☐ ☑; they DO have √ • · × ▶ — … ← →. Check with WPF's
+  `GlyphTypeface.CharacterToGlyphMap` against the TTFs in `assets/game/fonts/` before using
+  anything outside ASCII; a missing glyph fails silently as a box, on every row, and looks
+  like a rendering bug rather than a font gap. Current vocabulary: √ done, • partial/bullet,
+  · none, × missing, ▶ selected.
 - **HUD anchoring:** `capi.Gui.OpenedGuis` is a `List<GuiDialog>`; any dialog's on-screen
   rect comes from `dlg.Composers.Values` → `composer.Bounds`
   (`absX/absY/OuterWidth/OuterHeight`, in real pixels — divide by `RuntimeEnv.GUIScale` for

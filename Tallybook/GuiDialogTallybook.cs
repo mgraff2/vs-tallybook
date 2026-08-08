@@ -534,7 +534,7 @@ namespace Tallybook
             for (int i = 0; i < choices.Count; i++)
             {
                 string materials = string.IsNullOrEmpty(choices[i].Materials) ? "?" : choices[i].Materials;
-                lines.Add($"{(choices[i] == current ? "▸" : "  ")} {i + 1}. {materials}");
+                lines.Add($"{(choices[i] == current ? "▶" : "  ")} {i + 1}. {materials}");
             }
             return string.Join("\n", lines);
         }
@@ -581,7 +581,12 @@ namespace Tallybook
 
             void Progress(int have, int needed, bool dim)
             {
-                string mark = have >= needed ? "✓" : have > 0 ? "◑" : "○";
+                // Only glyphs the game's fonts actually carry (Montserrat/Lora/Almendra have
+                // no ✓, ○ or ◑ — those drew as tofu boxes, the "little boxes" of Mark's
+                // report; verified against the shipped TTFs' character maps). The radical
+                // sign reads as a check, and faint dot → bullet → check is its own progress
+                // bar.
+                string mark = have >= needed ? "√" : have > 0 ? "•" : "·";
                 var pf = font.Clone().WithColor(dim ? TallybookConfig.ParseColor(config.ColorNone) : StatusColor(have, needed));
                 c.AddStaticText($"{mark} {have}/{needed}", pf, EB(ColProg, ry + 4, 80, 24));
             }
@@ -756,7 +761,7 @@ namespace Tallybook
                     var toolFont = font.Clone().WithColor(color);
                     FittedText(c, tr.Tool.DisplayName + " (tool)", toolFont,
                         EB(nx, ry + 4, NameW(indent), 24), NameW(indent));
-                    c.AddStaticText(tr.Tool.Present ? "✓ carried" : "✗ missing", toolFont, EB(ColProg, y + 4, 100, 24));
+                    c.AddStaticText(tr.Tool.Present ? "√ carried" : "× missing", toolFont, EB(ColProg, y + 4, 100, 24));
                     break;
                 }
 
@@ -1359,7 +1364,7 @@ namespace Tallybook
                     : record.Stage == "completed" ? $"handed in, {when}"
                     : when;
 
-                c.AddStaticText($"{(openQuest ? "•" : "✓")} {record.Name}", line, EB(8, y + 4, 300, 24));
+                c.AddStaticText($"{(openQuest ? "•" : "√")} {record.Name}", line, EB(8, y + 4, 300, 24));
                 c.AddStaticText(detail, quiet, EB(320, y + 4, 220, 24));
 
                 // Keyed by stage as well as quest: the same quest can legitimately appear in
@@ -1495,7 +1500,7 @@ namespace Tallybook
                 var nameFont = font.Clone().WithColor(TallybookConfig.ParseColor(
                     chosen ? config.ColorSatisfied : config.ColorNone));
 
-                c.AddStaticText($"{(chosen ? "▸" : " ")} Makes {choice.OutputQuantity} × {choice.OutputName}",
+                c.AddStaticText($"{(chosen ? "▶" : " ")} Makes {choice.OutputQuantity} × {choice.OutputName}",
                     nameFont, EB(8, y, 320, 24));
 
                 var picked = choice;
