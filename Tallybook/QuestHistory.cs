@@ -49,12 +49,16 @@ namespace Tallybook
 
                 foreach (var chain in chains.Values)
                 {
-                    string stage = StageOf(chain);
+                    // Normalised before comparing: "" is what gets *stored* for a null stage,
+                    // so comparing the raw null against it read as a change on every tick —
+                    // one transiently unreadable variable meant rewriting the save file every
+                    // second until it read back (found by Fable's review).
+                    string stage = StageOf(chain) ?? "";
                     store.ChainStates.TryGetValue(chain.Key, out string previous);
 
                     if (stage != previous)
                     {
-                        store.ChainStates[chain.Key] = stage ?? "";
+                        store.ChainStates[chain.Key] = stage;
                         changed = true;
                     }
                     if (stage != "completed" && stage != "rewarded") continue;

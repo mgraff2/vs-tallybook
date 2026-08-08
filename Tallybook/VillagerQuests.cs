@@ -158,7 +158,14 @@ namespace Tallybook
             // Ruins' salt trader accepts an andesite, basalt or peridotite quern for one
             // errand, each as its own answer line. Adding them all would demand three querns
             // for a task that wants one.
-            var byGate = new Dictionary<string, List<QuestRequirement>>();
+            //
+            // Grouped per *answer line*, then per gate set. The distinction carries the whole
+            // AND/OR logic: conditions on one line must all hold for that answer, so two
+            // inventory conditions on the same line are a shopping list — both required. Two
+            // *lines* sharing a gate set are the same errand written once per acceptable
+            // item — alternatives. Flattening them into one pool read "3 logs AND 5 hides"
+            // as "logs, or hides if you prefer" (found by Fable's review).
+            var byGate = new Dictionary<string, List<List<QuestRequirement>>>();
 
             foreach (var comp in file.components)
             {
@@ -186,19 +193,23 @@ namespace Tallybook
                         .Select(g => $"{g.variable}={g.isValue}/{g.isNotValue}")
                         .OrderBy(s => s, StringComparer.Ordinal));
 
+                    var thisLine = new List<QuestRequirement>();
                     foreach (var w in wanted)
                     {
                         var req = ToRequirement(w);
                         if (req == null) continue;
                         string key = $"{req.Stack.Collectible.Code}|{req.Quantity}";
                         if (!seen.Add(key)) continue;
-
-                        if (!byGate.TryGetValue(gateKey, out var group))
+                        thisLine.Add(req);
+                    }
+                    if (thisLine.Count > 0)
+                    {
+                        if (!byGate.TryGetValue(gateKey, out var lines))
                         {
-                            group = new List<QuestRequirement>();
-                            byGate[gateKey] = group;
+                            lines = new List<List<QuestRequirement>>();
+                            byGate[gateKey] = lines;
                         }
-                        group.Add(req);
+                        lines.Add(thisLine);
                     }
 
                     foreach (var said in Briefing(file, gates))
@@ -210,13 +221,17 @@ namespace Tallybook
 
             offer.Maps.AddRange(MapsGivenBy(file));
 
-            foreach (var group in byGate.Values)
+            foreach (var lines in byGate.Values)
             {
-                offer.Requirements.Add(group[0]);
-                if (group.Count < 2) continue;
+                // Everything the first line wants — a line is a conjunction, so a two-item
+                // line is two requirements, not a choice.
+                offer.Requirements.AddRange(lines[0]);
+                if (lines.Count < 2) continue;
 
-                // Say what else would do, since the row can only name one of them.
-                string note = AlternativesNote + string.Join(", ", group.Select(r => r.Name));
+                // The other lines are the alternatives. The note names every acceptable
+                // option, tracked one included — "any of these" should mean these.
+                string note = AlternativesNote + string.Join(", ",
+                    lines.SelectMany(l => l).Select(r => r.Name).Distinct());
                 if (!offer.Briefing.Contains(note)) offer.Briefing.Add(note);
             }
 
@@ -433,8 +448,16 @@ namespace Tallybook
         /// </summary>
         public List<string> BriefingForChain(string chainKey)
         {
-            var gate = new DlgCond { variable = "player." + chainKey + "started", isValue = "true" };
+            // Memoized, and the empty answer is memoized too — that is the load-bearing half.
+            // This walks and deserializes every dialogue file, its callers run per dialog
+            // recompose and on a 1s tick, and a chain whose text cannot be recovered (a modded
+            // chain with no Lang entries) otherwise re-parses the whole set every second
+            // forever, precisely because it found nothing to store (found by Fable's review).
+            // The files cannot change within a session, so a miss today is a miss tonight.
+            if (briefingsByChain.TryGetValue(chainKey, out var cached)) return cached;
 
+            var gate = new DlgCond { variable = "player." + chainKey + "started", isValue = "true" };
+            var result = new List<string>();
             try
             {
                 foreach (var loc in capi.Assets.GetLocations("config/dialogue/") ?? new List<AssetLocation>())
@@ -445,15 +468,17 @@ namespace Tallybook
                     if (file?.components == null) continue;
 
                     var lines = Briefing(file, new List<DlgCond> { gate });
-                    if (lines.Count > 0) return lines;
+                    if (lines.Count > 0) { result = lines; break; }
                 }
             }
             catch (Exception e)
             {
                 capi.Logger.Warning("[tallybook] could not recover quest text: {0}", e.Message);
             }
-            return new List<string>();
+            return briefingsByChain[chainKey] = result;
         }
+
+        readonly Dictionary<string, List<string>> briefingsByChain = new Dictionary<string, List<string>>();
 
         /// <summary>
         /// Was this text captured before extracts were written as a transcript? Plain
@@ -858,21 +883,32 @@ namespace Tallybook
 
         List<QuestDef> catalogue;
 
-        /// <summary>Drop the catalogue; asset sets differ between servers.</summary>
-        public void InvalidateCatalogue() => catalogue = null;
+        /// <summary>Drop everything derived from the asset set; it differs between servers.</summary>
+        public void InvalidateCatalogue()
+        {
+            catalogue = null;
+            briefingsByChain.Clear();
+        }
 
         /// <summary>
         /// The catalogue entry behind a pin. The giver's name is the strongest signal but the
         /// weakest link — it is recorded from a live entity, so it can be blank, renamed, or
         /// lost — hence the fall back to what was asked for and how much, which is what makes
         /// an errand identifiable at all.
+        ///
+        /// There is deliberately no item-code-only fallback. The quantity passed in is the
+        /// pin's Count, which the player can edit, and once it drifts a bare-code match picks
+        /// whichever quest for that item the catalogue lists first — attaching the wrong
+        /// conversation to the errand and, because the result reads as a finished transcript,
+        /// blocking every future repair (found by Fable's review). No match beats a confident
+        /// wrong one.
         /// </summary>
         public QuestDef DefFor(string giver, string itemCode, int quantity)
         {
             var all = QuestCatalogue();
             return all.FirstOrDefault(d => d.NpcName == giver && d.ItemCode == itemCode && d.Quantity == quantity)
                 ?? all.FirstOrDefault(d => d.ItemCode == itemCode && d.Quantity == quantity)
-                ?? all.FirstOrDefault(d => d.ItemCode == itemCode);
+                ?? all.FirstOrDefault(d => d.NpcName == giver && d.ItemCode == itemCode);
         }
 
         /// <summary>Are this errand's gates satisfied for the player right now? Entity-scope

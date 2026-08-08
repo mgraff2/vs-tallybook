@@ -31,14 +31,6 @@ namespace Tallybook
         /// point you back at them without depending on a map waypoint surviving.</summary>
         public double QuestX, QuestY, QuestZ;
 
-        /// <summary>Where the map that came with this errand points, once we have seen it on
-        /// your map. Remembered for the same reason the giver's position is: a waypoint you
-        /// delete by hand should cost you the marker, not the knowledge of where the errand
-        /// was going.</summary>
-        public double QuestMapX, QuestMapY, QuestMapZ;
-
-        [JsonIgnore] public bool HasMapSite => QuestMapX != 0 || QuestMapY != 0 || QuestMapZ != 0;
-
         /// <summary>What the villager said when they asked, kept so the errand can be re-read
         /// long after the conversation is closed.</summary>
         public List<string> QuestText = new List<string>();
@@ -343,8 +335,16 @@ namespace Tallybook
                 if (pins.Count == 0) BackUpBeforeEmptying(path);
 
                 // Expansion state lives in the tree; serialize it back onto the pin first.
+                //
+                // Only for pins that have actually resolved. An unresolved pin has an empty
+                // tree and no group — its *saved* Expansions and RecipeSignature are the only
+                // copy of that state, and writing the in-memory blanks over them strips a
+                // pin's expansion tree and recipe choice while leaving the pin itself intact
+                // (found by Fable's review: keeping the pins was 0.3.4's fix, but any save
+                // during the unresolved window still lost everything they carried).
                 foreach (var pin in pins)
                 {
+                    if (pin.Stack == null) continue;
                     pin.Expansions = TallyTree.SaveExpansions(pin.RootNodes);
                     pin.RecipeSignature = pin.Group?.Signature;
                 }

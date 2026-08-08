@@ -149,28 +149,41 @@ namespace Tallybook
             // Costs nothing while the flag is clear, which is nearly always.
             handbookWatchId = api.Event.RegisterGameTickListener(_ =>
             {
-                if (HandbookPin.CameFromList)
+                // Guarded like every other tick handler in the mod, for the same reason: an
+                // exception escaping a game callback is fatal, and this one walks matchers
+                // and name getters over arbitrary modded content. It was the only tick in the
+                // codebase without the guard (found by Fable's review) — one modded
+                // collectible throwing from SatisfiesAsIngredient would have taken the client
+                // down once per second.
+                try
                 {
-                    var hb = capi.Gui.LoadedGuis?.OfType<GuiDialogHandbook>().FirstOrDefault();
-                    if (hb == null || !hb.IsOpened()) HandbookPin.CameFromList = false;
-                }
+                    if (HandbookPin.CameFromList)
+                    {
+                        var hb = capi.Gui.LoadedGuis?.OfType<GuiDialogHandbook>().FirstOrDefault();
+                        if (hb == null || !hb.IsOpened()) HandbookPin.CameFromList = false;
+                    }
 
-                // Animal bags are the one source we cannot subscribe to — their contents live
-                // inside an itemstack, so moving something in there raises no slot event we
-                // can hear, and the animal wandering in or out of range changes the answer
-                // with no event at all. Recounting on this tick is the only way those numbers
-                // move; it is opt-in and only runs while one of your animals is actually
-                // nearby, so the event-driven rule still holds everywhere else.
-                if (config.IncludeMountBags && svc.Probe.HasOwnedAnimalNearby(config.MountBagRange))
+                    // Animal bags are the one source we cannot subscribe to — their contents
+                    // live inside an itemstack, so moving something in there raises no slot
+                    // event we can hear, and the animal wandering in or out of range changes
+                    // the answer with no event at all. Recounting on this tick is the only way
+                    // those numbers move; it is opt-in and only runs while one of your animals
+                    // is actually nearby, so the event-driven rule still holds everywhere else.
+                    if (config.IncludeMountBags && svc.Probe.HasOwnedAnimalNearby(config.MountBagRange))
+                    {
+                        svc.RecountAll();
+                    }
+
+                    RecordNearbyNpcs();
+
+                    // Cheap while nothing changes, and this is the only way finishing a quest
+                    // is ever noticed — completing one raises no event we can hear.
+                    questHistory?.Update();
+                }
+                catch (Exception e)
                 {
-                    svc.RecountAll();
+                    capi.Logger.Warning("[tallybook] tick update failed: {0}", e.Message);
                 }
-
-                RecordNearbyNpcs();
-
-                // Cheap while nothing changes, and this is the only way finishing a quest is
-                // ever noticed — completing one raises no event we can hear.
-                questHistory?.Update();
             }, 1000);
         }
 

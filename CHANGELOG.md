@@ -2,6 +2,32 @@
 
 ## 0.3.4 — 2026-08-07
 
+From an adversarial review pass (Fable) over the whole codebase:
+
+- **A pin that had not yet resolved lost its expansion tree and recipe choice on the next
+  save** — the pin survived (that was the wipe fix below), but saving wrote its empty
+  in-memory state over the only copy of what it carried. Unresolved pins are now skipped when
+  serializing derived state.
+- **An errand asking for two things at once was read as offering a choice.** Conditions on one
+  dialogue answer line must all hold — that is an AND — but they were pooled with the
+  alternatives machinery, so "3 logs and 5 hides" tracked the logs and called the hides an
+  acceptable substitute. Vanilla's quests are single-item, so only modded errands were
+  affected.
+- **Editing an errand's count could attach the wrong conversation to it, permanently.** The
+  catalogue lookup fell back to "any quest for this item", and the pin's player-editable count
+  was part of the key; the wrongly attached text then read as a finished transcript and
+  blocked every future repair. The lookup now refuses to guess.
+- **`.tallybook clearmarkers` un-did itself within seconds** — the cleared flags read as
+  "marker missing" to the placement sync, which re-planted every one on the next recount.
+- **Several performance sinks**: the full dialogue asset set was re-parsed on every dialog
+  redraw and — for a quest whose text could not be recovered — once per second forever;
+  briefings are now cached, including the not-found answer. A transiently unreadable quest
+  variable also rewrote the save file every second until it read back.
+- **Hardened recipe merging** against variant recipes authored with the same materials in a
+  permuted grid, which could put one ingredient's variants into another's row; and the one
+  unguarded tick handler now catches, so a modded item throwing from the game's own matcher
+  degrades to a log line instead of a crash-per-second.
+
 - **Fixed silent loss of your whole pin list.** A pin whose item the world could not identify
   at load was deleted, and the deletion was then saved over your file. But "this item does not
   exist" and "this item is not registered *yet*" look identical at that moment, so a load that

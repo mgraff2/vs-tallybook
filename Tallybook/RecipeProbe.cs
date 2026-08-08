@@ -217,6 +217,12 @@ namespace Tallybook
         /// the handbook is where the arrangements themselves belong.</summary>
         public int LayoutCount;
 
+        /// <summary>Built by the collapsed (expansion) grouping, where members are variants of
+        /// one ingredient row and their materials legitimately differ per member. Non-collapsed
+        /// groups carry the material signature in their key instead — which is what makes the
+        /// stricter merge gate in BuildRequirements safe to apply to them and wrong here.</summary>
+        public bool Collapsed;
+
         public List<GridRecipe> Recipes = new List<GridRecipe>();
 
         /// <summary>Stable identity for persistence: which recipe choice the player made.
@@ -472,6 +478,7 @@ namespace Tallybook
                         Width = representative.Width,
                         Height = representative.Height,
                         LayoutCount = g.Select(r => r.IngredientPattern).Distinct().Count(),
+                        Collapsed = collapseOutputs,
                         // Representative first: BuildRequirements takes its shape as the row
                         // template and merges only same-shaped variants into it.
                         Recipes = g.OrderBy(TotalIngredientCount).ToList()
@@ -634,6 +641,19 @@ namespace Tallybook
                 for (int i = 0; i < cells.Count; i++)
                 {
                     if (cells[i].Quantity != reqs[i].Quantity) continue;
+                    // Non-collapsed groups only: same *ingredient*, not just same amount. Cell
+                    // order is grid order while the group key's material signature is sorted,
+                    // so a variant recipe with the same materials in a permuted grid lands
+                    // here misaligned, and merging by index alone puts its resin into the
+                    // plank row — after which the plank row happily counts resin (found by
+                    // Fable's review). Tokens are variant-blind, so thirty woods still merge.
+                    //
+                    // Collapsed (expansion) groups must NOT get this gate: their members are
+                    // variants of one row, separately-authored ones carry different exact
+                    // codes and no name, and refusing those merges would shrink "any clay"
+                    // back to whichever clay the representative uses.
+                    if (!group.Collapsed
+                        && MaterialToken(cells[i].Ingredient) != MaterialToken(reqs[i].Sample)) continue;
                     AddMatcher(reqs[i], cells[i].Ingredient);
                 }
             }

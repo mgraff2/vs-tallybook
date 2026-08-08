@@ -172,89 +172,12 @@ namespace Tallybook
             return layer.Waypoints;
         }
 
-        /// <summary>
-        /// Where the map that came with an errand points, once you have read it.
-        ///
-        /// Reading a locator map is what puts its destination on your map, so the waypoint
-        /// existing *is* the signal that you know where to go — no separate bookkeeping, and
-        /// nothing claimed before you have actually read it. Matched on the distinctive words
-        /// of the map's name ("Devastation"), which is loose by nature: a near miss shows the
-        /// giver instead, which is where the errand ends anyway.
-        /// </summary>
-        /// <summary>
-        /// Where an errand is going, preferring what the map currently shows and falling back
-        /// to what it showed the last time we looked.
-        ///
-        /// The remembered copy is the point: a locator map's destination used to exist only as
-        /// long as its waypoint did, so deleting that waypoint by hand quietly cost the errand
-        /// its destination as well as its marker (found by Mark). Reading is still what
-        /// establishes the site — nothing is claimed before you have read the map — but once
-        /// read, it is ours to keep, exactly as the giver's own position already was.
-        ///
-        /// Remembering is not placing. Nothing here puts a marker back; that stays a
-        /// transition, or something you ask for by hand with `.tallybook markers`.
-        /// </summary>
-        public Vec3d SiteFor(Pin pin)
-        {
-            if (pin == null) return null;
-
-            var found = FindReadMapSite(pin.QuestMaps);
-            if (found != null)
-            {
-                if ((int)pin.QuestMapX != (int)found.X || (int)pin.QuestMapZ != (int)found.Z)
-                {
-                    pin.QuestMapX = found.X;
-                    pin.QuestMapY = found.Y;
-                    pin.QuestMapZ = found.Z;
-                    store.Save();
-                }
-                return found;
-            }
-
-            return pin.HasMapSite ? new Vec3d(pin.QuestMapX, pin.QuestMapY, pin.QuestMapZ) : null;
-        }
-
-        public Vec3d FindReadMapSite(List<string> mapNames)
-        {
-            if (mapNames == null || mapNames.Count == 0) return null;
-
-            try
-            {
-                var list = OwnWaypoints();
-                if (list == null) return null;
-
-                var words = mapNames.SelectMany(Distinctive).ToList();
-                if (words.Count == 0) return null;
-
-                foreach (var wp in list)
-                {
-                    if (wp?.Title == null || wp.Position == null) continue;
-                    if (words.Any(w => wp.Title.IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0))
-                        return wp.Position;
-                }
-            }
-            catch (Exception e)
-            {
-                capi.Logger.Warning("[tallybook] could not look up a quest map site: {0}", e.Message);
-            }
-            return null;
-        }
-
-        /// <summary>The words in a map's name worth matching on — "Map to the Devastation"
-        /// carries exactly one.</summary>
-        static IEnumerable<string> Distinctive(string mapName)
-        {
-            var ignore = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "map", "maps", "to", "the", "of", "a", "an", "and", "location", "locator"
-            };
-
-            foreach (var word in (mapName ?? "").Split(' ', ',', '\'', '"'))
-            {
-                string w = word.Trim();
-                if (w.Length >= 5 && !ignore.Contains(w)) yield return w;
-            }
-        }
+        // NOTE: there is deliberately no "where does the errand's map point" lookup here any
+        // more. Matching waypoints against map names, and remembering the result on the pin,
+        // both existed and were removed with MapTargetFor's simplification — maps are known
+        // per dialogue file, not per errand, so any such tie is invented (see CLAUDE.md). The
+        // removed version also saved the store from inside a GUI compose path, which is not a
+        // pattern to reintroduce.
 
         /// <summary>
         /// Put a marker back on every active errand, whether or not we believe one is already
@@ -353,7 +276,17 @@ namespace Tallybook
                 capi.SendChatMessage($"/waypoint remove {i}", null);
             }
 
-            foreach (var pin in store.Pins) pin.WaypointPlaced = false;
+            // Marked as PLACED, deliberately, even though the markers are now gone. Sync
+            // places wherever an active errand says it has no marker, and it runs on every
+            // recount — flags cleared here were re-planting every marker within seconds of
+            // the player asking for them gone (found by Fable's review). "I removed it on
+            // purpose" and "it exists" want the same thing from Sync: leave it alone.
+            // Re-checking a pin later still gets a marker (uncheck clears the flag), and
+            // `.tallybook markers` remains the explicit way to bring them all back.
+            foreach (var pin in store.Pins)
+            {
+                if (pin.QuestGiver != null && pin.Active) pin.WaypointPlaced = true;
+            }
             return indices.Count;
         }
     }

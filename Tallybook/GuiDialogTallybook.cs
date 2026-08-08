@@ -962,6 +962,9 @@ namespace Tallybook
             // change your mind and want it broken down.
             copy.GatherOnly = true;
             svc.Resolve(copy);
+            // Saved now, not left for the next incidental save: Add() saved before the flag
+            // was set, and a crash between the two would bring the pin back decomposed.
+            svc.Store.Save();
             svc.RecountAll();
 
             notice = $"{copy.DisplayName} x{copy.Count} added to gathering (Items tab).";
