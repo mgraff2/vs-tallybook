@@ -20,6 +20,22 @@ namespace Tallybook
         public string Name => Stack?.GetName() ?? "?";
     }
 
+    /// <summary>
+    /// One fetch errand exactly as the dialogue files describe it — who asks, what for, how
+    /// many, what maps come with it, what gates it, and what was said. Static content, so it
+    /// is available whether or not this player has ever been offered the quest, and whether or
+    /// not anything about it was captured at the time.
+    /// </summary>
+    public class QuestDef
+    {
+        public string NpcName;
+        public string ItemCode;
+        public int Quantity;
+        public List<string> Maps = new List<string>();
+        internal List<QuestScanner.DlgCond> Gates = new List<QuestScanner.DlgCond>();
+        public List<string> Briefing = new List<string>();
+    }
+
     /// <summary>A trackable fetch request from the NPC currently being talked to.</summary>
     public class QuestOffer
     {
@@ -98,7 +114,10 @@ namespace Tallybook
             public StackSpec triggerdata;
         }
         class DlgText { public string value; public string jumpTo; public DlgCond condition; public DlgCond[] conditions; }
-        class DlgCond { public string variable; public string isValue; public string isNotValue; }
+        // Internal rather than private: QuestDef carries a quest's gates so they can be
+        // evaluated later, when the answer can have changed. The rest of the dialogue shape
+        // stays private — it is a parsing detail and nothing outside needs it.
+        internal class DlgCond { public string variable; public string isValue; public string isNotValue; }
         class StackSpec { public string type; public string code; public int stacksize = 1; }
 #pragma warning restore 0649
 
@@ -127,7 +146,9 @@ namespace Tallybook
             var offer = new QuestOffer
             {
                 Npc = npc,
-                NpcName = npc.GetName(),
+                // Never blank: the name ends up as a map marker's title, and a blank title
+                // crashes the client the moment that marker is hovered.
+                NpcName = NonBlank(npc.GetName(), "Villager"),
                 Pos = npc.Pos?.XYZ
             };
 
@@ -195,7 +216,7 @@ namespace Tallybook
                 if (group.Count < 2) continue;
 
                 // Say what else would do, since the row can only name one of them.
-                string note = "Any of these will do: " + string.Join(", ", group.Select(r => r.Name));
+                string note = AlternativesNote + string.Join(", ", group.Select(r => r.Name));
                 if (!offer.Briefing.Contains(note)) offer.Briefing.Add(note);
             }
 
@@ -305,6 +326,11 @@ namespace Tallybook
         }
 
         static bool IsPlayer(DlgComp comp) => comp?.owner == "player";
+
+        /// <summary>Text, or a stand-in when there is none. An entity can be nameless, and a
+        /// nameless quest giver used to travel all the way to a blank map marker.</summary>
+        static string NonBlank(string text, string fallback)
+            => string.IsNullOrWhiteSpace(text) ? fallback : text.Trim();
 
         /// <summary>"gerhardt" → "Gerhardt". The owner field is the speaker.</summary>
         static string SpeakerOf(DlgComp comp)
@@ -434,9 +460,38 @@ namespace Tallybook
         /// paragraphs from an older build are re-derived rather than left looking different
         /// from everything captured since.
         /// </summary>
+        /// Attribution is asked of the set, not of every line: a capture can legitimately carry
+        /// notes that are ours rather than anyone's speech ("Any of these will do: …"), and
+        /// demanding a speaker on those marked every modern capture as stale, so it was
+        /// re-derived at each login and rewritten on top of itself.
+        /// <summary>Our own note among the captured lines — nobody says this, so it must never
+        /// be dressed up as speech.</summary>
+        public const string AlternativesNote = "Any of these will do: ";
+
+        /// <summary>
+        /// A captured line as `Name: "…"`, giving it back its speaker if it lost one.
+        ///
+        /// Errands captured before quotes carried speakers are plain paragraphs, and only the
+        /// NPC's own words were kept then — so the giver is the honest attribution, not a
+        /// guess. It is done here, at the point of drawing, because the repair that runs at
+        /// login can only re-derive text whose dialogue file it can find by the giver's name:
+        /// true of every villager, false of every trader (found by Mark — Gerhardt and
+        /// Agnieszka read correctly while the trader Luxuries did not).
+        /// </summary>
+        public static string Attributed(string line, string giver)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return line;
+            if (line.Contains(": \"")) return line;                       // already a transcript
+            if (line.StartsWith(AlternativesNote, StringComparison.Ordinal)) return line;
+
+            string who = string.IsNullOrWhiteSpace(giver) ? "They" : giver.Trim();
+            return $"{who}: \"{line.Trim()}\"";
+        }
+
         public static bool IsTranscript(List<string> text)
             => text != null && text.Count > 0
-               && text.All(line => line.Contains(": \"") && line.IndexOf('\n') < 0 && line.IndexOf('\r') < 0);
+               && text.Any(line => line.Contains(": \""))
+               && text.All(line => line.IndexOf('\n') < 0 && line.IndexOf('\r') < 0);
 
         /// <summary>Read a player-scope quest flag. Public so the history can ask too.</summary>
         public string PlayerVariable(string name)
@@ -721,6 +776,124 @@ namespace Tallybook
                 }
             }
             return null;
+        }
+
+        /// <summary>
+        /// Every fetch errand the dialogue files describe, whether or not this player has been
+        /// offered it. Built once per session — the files cannot change under us.
+        ///
+        /// This is a *reference* catalogue, and the distinction matters: it is what lets an
+        /// errand the player already has be filled in completely — which maps lead to it, who
+        /// actually takes the goods, what they said — without depending on us having been
+        /// watching when it was accepted, or on state that a lost save took with it.
+        ///
+        /// It must never be used to *offer* anything. Half of what is in here has not been
+        /// offered to this player, and showing it would spoil content the game is deliberately
+        /// withholding. Deciding what is live is <see cref="LiveVillageQuests"/>'s job, and it
+        /// checks gates properly; this one deliberately does not filter by them.
+        /// </summary>
+        public List<QuestDef> QuestCatalogue()
+        {
+            if (catalogue != null) return catalogue;
+            catalogue = new List<QuestDef>();
+
+            List<AssetLocation> files;
+            try { files = capi.Assets.GetLocations("config/dialogue/"); }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not list dialogue files: {0}", e.Message);
+                return catalogue;
+            }
+            if (files == null) return catalogue;
+
+            foreach (var loc in files)
+            {
+                if (!loc.Path.EndsWith(".json")) continue;
+
+                DlgFile file;
+                try { file = capi.Assets.TryGet(loc)?.ToObject<DlgFile>(); }
+                catch { continue; }
+                if (file?.components == null) continue;
+
+                string npc = NpcNameFrom(loc);
+                var maps = MapsGivenBy(file);
+
+                foreach (var comp in file.components)
+                {
+                    if (comp?.text == null) continue;
+                    foreach (var line in comp.text)
+                    {
+                        var conds = AllConditions(line);
+                        var wanted = conds.Where(IsInventoryCondition).ToList();
+                        if (wanted.Count == 0) continue;
+
+                        // Still required: a bare inventory condition with no gate is a *price*,
+                        // not an errand — the game writes "costs one gear" exactly as it writes
+                        // "bring me ten hides". That rule is about what the condition means, so
+                        // it holds here too, unlike gate *satisfaction*, which does not.
+                        var gates = conds.Where(c => !IsInventoryCondition(c)).ToList();
+                        if (gates.Count == 0) continue;
+
+                        foreach (var w in wanted)
+                        {
+                            var req = ToRequirement(w);
+                            string code = req?.Stack?.Collectible?.Code?.ToShortString();
+                            if (code == null) continue;
+
+                            catalogue.Add(new QuestDef
+                            {
+                                NpcName = npc,
+                                ItemCode = code,
+                                Quantity = req.Quantity,
+                                Maps = maps,
+                                Gates = gates,
+                                Briefing = Briefing(file, gates)
+                            });
+                        }
+                    }
+                }
+            }
+            return catalogue;
+        }
+
+        List<QuestDef> catalogue;
+
+        /// <summary>Drop the catalogue; asset sets differ between servers.</summary>
+        public void InvalidateCatalogue() => catalogue = null;
+
+        /// <summary>
+        /// The catalogue entry behind a pin. The giver's name is the strongest signal but the
+        /// weakest link — it is recorded from a live entity, so it can be blank, renamed, or
+        /// lost — hence the fall back to what was asked for and how much, which is what makes
+        /// an errand identifiable at all.
+        /// </summary>
+        public QuestDef DefFor(string giver, string itemCode, int quantity)
+        {
+            var all = QuestCatalogue();
+            return all.FirstOrDefault(d => d.NpcName == giver && d.ItemCode == itemCode && d.Quantity == quantity)
+                ?? all.FirstOrDefault(d => d.ItemCode == itemCode && d.Quantity == quantity)
+                ?? all.FirstOrDefault(d => d.ItemCode == itemCode);
+        }
+
+        /// <summary>Are this errand's gates satisfied for the player right now? Entity-scope
+        /// gates live on an NPC that may not be loaded, so they read as unmet — fail toward
+        /// "no", never toward a claim we cannot support.</summary>
+        public bool DefIsLive(QuestDef def)
+            => def?.Gates != null && def.Gates.Count > 0 && def.Gates.All(g => GateMet(g, null));
+
+        /// <summary>
+        /// The maps this NPC hands out, by name, found from their dialogue file alone.
+        ///
+        /// Needed because the map names are what a re-read locator map is matched against: the
+        /// waypoint reading the map creates is the only record of where the errand goes, and
+        /// without the names there is nothing to recognise it by. An errand tracked before we
+        /// kept them — or one whose names were lost — otherwise stays unmappable forever, no
+        /// matter how many times the player reads the map again (found by Mark).
+        /// </summary>
+        public List<string> MapsFor(string giverName)
+        {
+            var file = LoadDialogueByName(giverName);
+            return file?.components == null ? new List<string>() : MapsGivenBy(file);
         }
 
         /// <summary>

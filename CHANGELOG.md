@@ -1,5 +1,114 @@
 # Changelog
 
+## 0.3.4 — 2026-08-07
+
+- **Fixed silent loss of your whole pin list.** A pin whose item the world could not identify
+  at load was deleted, and the deletion was then saved over your file. But "this item does not
+  exist" and "this item is not registered *yet*" look identical at that moment, so a load that
+  ran a moment too early wiped everything — quietly, and with the quest history in the same
+  file untouched, because nothing resolves that. Pins are now **kept** when they will not
+  resolve and re-tried on every recount, so a registry that was not ready costs a tick instead
+  of your list. Nothing is written before the file has been read at all, and if the list ever
+  does go from full to empty, the previous version is kept beside it as `.bak`.
+- **Fixed a crash: a quest marker with no title took the client down.** A waypoint whose title
+  is blank makes the world map build hover text of zero width, and Cairo refuses to make a
+  surface with no area — so the game died on mouse-move, nowhere near the mod that placed it.
+  A quest giver's name comes from the entity, an entity can be nameless, and the guard before
+  placing only ever checked for null. Names are now never blank at the source, the title is
+  checked again at the moment of placing, and **`.tallybook blankmarkers`** lists any untitled
+  waypoints already on your map (with `remove` to delete them) — whoever made them.
+
+- **Alternative recipes are found automatically, whatever mod added them.** Whether two recipes
+  count as a real choice is now decided by what they take, not by whether the mod's author
+  filled in the optional `recipeGroup` field. Mods that re-add a vanilla item behind a
+  schematic — Better Ruins, the airship mod — mostly leave that field alone, and their recipe
+  was landing in the same bucket as vanilla's, losing the cheapest-recipe contest, and being
+  dropped without a word. It now shows up as the second choice it always was, with no
+  per-mod support code.
+- **The choice says what you must be holding, not just what gets used up.** Two recipes can
+  want identical materials and differ only in demanding a blueprint; without that line they
+  read as identical twins. It also lists what each way is made of at all — before, only the
+  recipe already in use knew, so every other option offered you a "?" to choose between.
+- **Map goes to the person who wants the goods** — reliably, and nowhere else. An earlier
+  attempt sent you to wherever a map the NPC hands out points, on the theory that Tobias
+  giving you a map to the Devastation means that is where his errand takes you. Which maps an
+  NPC hands out is known per dialogue *file*, and a file covers several unrelated quest
+  threads: Agnieszka takes iron ingots at her forge and separately gives you the map to
+  Tobias' cave, so her errand pointed across the world. Nothing in the game's files ties a
+  particular map to a particular fetch request, so no tie is claimed. Reading a locator map
+  still puts its own waypoint on your map, which is where that belongs.
+- **Fixed a map that could not be closed.** Opening the full map while the corner minimap was
+  showing left the map manager holding two dialogs over one slot; the result rendered oversized
+  and its close button did nothing, so only Escape got out.
+- **Errands are read from the game's own dialogue files, not from what was noticed at the
+  time.** Every fetch errand in the world — who asks, for what, how many, which maps come with
+  it — is now known from the content itself, so an errand fills itself in whether or not
+  Tallybook was watching when you accepted it, and whether or not anything about it survived.
+  Recovering the map names is what makes re-reading a locator map put the destination back:
+  before, an errand that never recorded the name could not be pointed anywhere, however many
+  times you read the map. Walking past a quest giver also gives their errand a location
+  immediately rather than only at the moment it was taken on, so an errand with no location is
+  one stroll from having one.
+- **`.tallybook quests`** ties it all out: every errand the world describes, with its item,
+  giver, maps, whether it is open to you and how far along you are. A command rather than a
+  screen, because the full list includes quests you have not been offered.
+- **An errand remembers where its map pointed.** A locator map's destination only existed for
+  as long as its waypoint did, so deleting that waypoint by hand cost the errand its
+  destination as well as its marker. Reading the map is still what establishes the place —
+  nothing is claimed before you have read it — but once read it is kept. Markers themselves
+  are unchanged: nothing puts one back on its own, and `.tallybook markers` is still how you
+  ask for them by hand.
+- **Errand quotes on the Side quests tab read as a transcript**, the way the History tab
+  already showed them: `Gerhardt: "…"` and your own name against the line that prompted it,
+  full width and wrapped over as many lines as they need. Squeezed into the item column they
+  were cut off after a few words — which is exactly where the name and the thing being asked
+  for live, so a quotation came out as a caption.
+- **Quotes captured without a speaker get one back.** Errands from before quotes carried names
+  are re-derived at login, but only for NPCs whose dialogue file is named after them — every
+  villager, no trader. So Gerhardt and Agnieszka read correctly while a trader's errand stayed
+  as bare paragraphs. Those are now attributed to the giver as they are drawn, which is honest:
+  only the NPC's own words were ever kept.
+- **Pages are measured, not counted.** Thirteen rows per page was fine when every row was the
+  same height and wrong the moment a quoted conversation could be a dozen lines tall — the
+  History tab in particular just grew until it ran off the bottom of the screen with no way to
+  reach the rest. Both the list and the archive now fill a page to the height actually
+  available and break there.
+- **Talking to an NPC again now repairs an old quote, not just a missing one.** Errands
+  captured before quotes carried speakers could only be re-derived at login for villagers
+  whose dialogue file is named after them — which is every villager and no trader. Standing
+  in front of a trader is the only chance their words get their speaker back, so it is taken.
+- **`.tallybook recipes`** lists everything your world can make more than one way. Which items
+  offer a choice depends on the recipes your server sent, so it is not a question that can be
+  answered by reading mod files — and it doubles as the check that recipe grouping has not
+  quietly fallen apart, since a healthy world lists dozens of items here, not thousands.
+
+## 0.3.3 — 2026-08-07
+
+- **Expand asks which recipe you mean**, when there is more than one way to make the thing.
+  Each way is listed with what it yields and what it would have you fetch, and you pick one —
+  instead of Tallybook choosing for you and leaving a "1 of 4" cycler to argue with, which
+  answers a different question from the one you had.
+- **Materials now carry their quantities.** The hunter backpack's four recipes differ by *how
+  many* pelts and whether you get one backpack or two; listing bare ingredient names made four
+  distinct recipes read as four identical ones.
+- Items with only one recipe are unaffected — a chooser with a single entry is a dialog that
+  wastes a click.
+
+## 0.3.2 — 2026-08-07
+
+- **Ingredients the recipe does not consume are no longer counted as materials.** They want
+  *one*, present, however many times you craft, exactly as a tool does, so they sit with the
+  tools now. Ingredients that are consumed but hand something back (`returnedStack`) are
+  **not** in that group, though they look as if they should be: what comes back is often a
+  lesser item — the hunter backpack takes a huge pelt and returns a small one — and treating
+  that as a tool would claim one huge pelt makes three backpacks.
+- **The recipe switcher says what each recipe is made of.** "1 of 2" tells you nothing about
+  which one you mean to gather; hovering it now lists every alternative by its materials, with
+  the current one marked.
+
+## 0.3.1 — 2026-08-07 (superseded)
+- Rolled into 0.3.2, which corrects the handling of returned ingredients.
+
 ## 0.3.0 — 2026-08-07
 
 First public release. A crafting shopping list that tracks what you are gathering, the

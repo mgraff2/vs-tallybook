@@ -227,6 +227,13 @@ namespace Tallybook
         /// <summary>Short label for the recipe-choice cycler.</summary>
         public string ChoiceLabel(int perCraftTotal)
             => $"{OutputName} x{OutputQuantity} ({perCraftTotal} items/craft)";
+
+        /// <summary>
+        /// What this recipe is made *of*, for choosing between alternatives. "1 of 2" says
+        /// nothing about which one you mean to gather; "Boards, resin" does. Filled in when
+        /// the group is built, since the requirements are worked out there.
+        /// </summary>
+        public string Materials;
     }
 
     /// <summary>
@@ -423,9 +430,27 @@ namespace Tallybook
                 // a code can still produce different items distinguished only by output
                 // attributes (the four bookshelf shapes), and those are separate handbook
                 // pages — so they must be separate groups here too.
+                //
+                // MaterialSignature is in the key so that "these are two different recipes"
+                // is decided by what they actually take, not by whether an author remembered
+                // to set RecipeGroup. Mods that re-add a vanilla item behind a schematic
+                // (Better Ruins, the airship mod) frequently do not set it, and without this
+                // their recipe lands in the same group as vanilla's, loses the cheapest-layout
+                // contest, and is silently dropped by BuildRequirements' shape gate — the
+                // player is never told the alternative exists.
+                //
+                // It is deliberately absent from the collapsed key, and that asymmetry is the
+                // whole point of the two modes. Above, output identity is fixed to one page,
+                // so differing materials really do mean a different recipe. Collapsed, the
+                // outputs are themselves variants of one ingredient row — a chute section in
+                // twenty metals — and vanilla authors those per variant rather than with a
+                // named wildcard, so each is made of its own metal plate and every one would
+                // score a different signature. That produced twenty identical-looking "ways
+                // to make Chute Section" (found by Mark, 0.3.4). Pattern and size already
+                // separate genuinely different recipes here without splitting variants apart.
                 .GroupBy(r => collapseOutputs
                     ? $"{r.RecipeGroup}|{r.IngredientPattern}|{r.Width}x{r.Height}|{OutputQuantity(r)}"
-                    : $"{OutputIdentity(r)}|{r.RecipeGroup}")
+                    : $"{OutputIdentity(r)}|{r.RecipeGroup}|{MaterialSignature(r)}")
                 .Select(g =>
                 {
                     // Represent the group by its cheapest layout. Layouts producing the same
@@ -457,6 +482,47 @@ namespace Tallybook
         }
 
         /// <summary>
+        /// Every item this client knows more than one genuinely different way to make.
+        ///
+        /// Exists because "which items actually offer a choice" is a question about the recipe
+        /// set the *server* sent, so it cannot be answered by reading mod zips on disk — and
+        /// answering it by hand does not survive the next mod being installed. It also fails
+        /// loudly if grouping ever regresses into per-variant explosion: a healthy world lists
+        /// a few dozen items here, not thousands.
+        ///
+        /// Walks the whole index, so it is a chat-command diagnostic and nothing else.
+        /// </summary>
+        public List<string> MultiRecipeReport(int max = 25)
+        {
+            EnsureIndex();
+
+            var rows = new List<(string Name, int Groups, string Detail)>();
+            foreach (var kv in byOutput)
+            {
+                // One recipe can never be a choice — skip before the expensive part.
+                if (kv.Value.Count < 2) continue;
+
+                var groups = BuildGroups(kv.Value);
+                if (groups.Count < 2) continue;
+
+                foreach (var g in groups.Take(3)) BuildRequirements(g);
+                rows.Add((groups[0].OutputName, groups.Count,
+                    string.Join("   /   ", groups.Take(3).Select(g => g.Materials))));
+            }
+
+            var lines = new List<string>
+            {
+                $"{IndexedRecipeCount} recipes, {byOutput.Count} craftable items, "
+                + $"{rows.Count} with more than one recipe."
+            };
+            foreach (var row in rows.OrderByDescending(r => r.Groups).ThenBy(r => r.Name).Take(max))
+                lines.Add($"{row.Name} ({row.Groups}): {row.Detail}");
+
+            if (rows.Count > max) lines.Add($"...and {rows.Count - max} more.");
+            return lines;
+        }
+
+        /// <summary>
         /// Consumed ingredients for one recipe, merged by matcher so a recipe listing the same
         /// item in seven grid cells reports "7" once rather than "1" seven times.
         ///
@@ -470,6 +536,19 @@ namespace Tallybook
         public List<(CraftingRecipeIngredient Ingredient, int Quantity)> ToolCells(GridRecipe recipe)
             => MergeCells(recipe, wantTools: true);
 
+        /// <summary>
+        /// Is this ingredient kept rather than used up? A tool by the recipe's own flag, or one
+        /// the recipe explicitly does not consume. Either wants *one*, present, however many
+        /// times you craft.
+        ///
+        /// `ReturnedStack` is deliberately **not** included, though it looks like it belongs:
+        /// it means the ingredient is consumed and something is handed back, which is often a
+        /// *different, lesser* item — the hunter backpack takes a huge pelt and returns a small
+        /// one. Treating that as a tool would say one huge pelt makes three backpacks.
+        /// </summary>
+        static bool IsKept(CraftingRecipeIngredient ing)
+            => ing.IsTool || !ing.Consume;
+
         List<(CraftingRecipeIngredient, int)> MergeCells(GridRecipe recipe, bool wantTools)
         {
             var merged = new List<(CraftingRecipeIngredient, int)>();
@@ -477,7 +556,7 @@ namespace Tallybook
 
             foreach (var ing in recipe.ResolvedIngredients)
             {
-                if (ing == null || ing.IsTool != wantTools) continue;
+                if (ing == null || IsKept(ing) != wantTools) continue;
 
                 string key = MatcherKey(ing);
                 int idx = merged.FindIndex(m => MatcherKey(m.Item1) == key);
@@ -495,6 +574,37 @@ namespace Tallybook
         /// </summary>
         static string MatcherKey(CraftingRecipeIngredient ing)
             => $"{ing.Type}|{ing.MatchingType}|{ing.Code}|{ing.Tags}";
+
+        /// <summary>
+        /// What a recipe is made of, blind to wildcard expansion — the test for "is this the
+        /// same recipe or a genuinely different one".
+        ///
+        /// The trick is that an expanded ingredient always carries the author's name for what
+        /// varies ("wood"), because carrying that name is *why* the game expanded it: a bare
+        /// wildcard with no name is left unexpanded. So keying on the name rather than the
+        /// concrete code collapses all thirty woods of one authored recipe into one token,
+        /// while two recipes that really do want different materials keep different tokens.
+        /// This cannot explode into per-variant groups the way keying on the code would.
+        ///
+        /// Kept ingredients (tools, schematics, anything consume:false) are included, without
+        /// a quantity since one is all you ever need. They belong here because "craftable with
+        /// a schematic you have to find" versus "craftable outright" is exactly the difference
+        /// a player needs to be offered rather than have chosen for them.
+        /// </summary>
+        string MaterialSignature(GridRecipe recipe)
+        {
+            var parts = new List<string>();
+            foreach (var (ing, qty) in ConsumedIngredients(recipe)) parts.Add($"I{qty}x{MaterialToken(ing)}");
+            foreach (var (ing, _) in ToolCells(recipe)) parts.Add($"K{MaterialToken(ing)}");
+            parts.Sort(StringComparer.Ordinal);
+            return string.Join(";", parts);
+        }
+
+        /// <summary>Variant-blind identity of one ingredient: the author's word for what varies
+        /// when there is one, else the matcher itself (a bare wildcard, regex or tag condition
+        /// is already variant-blind, so its own key is the right token).</summary>
+        static string MaterialToken(CraftingRecipeIngredient ing)
+            => string.IsNullOrEmpty(ing.Name) ? MatcherKey(ing) : $"{ing.Type}|${ing.Name}";
 
         /// <summary>
         /// Collapse a variant group into one requirement per ingredient row, each accepting
@@ -532,6 +642,27 @@ namespace Tallybook
             {
                 ResolveVariants(req);
                 req.DisplayName = BuildDisplayName(req);
+            }
+
+            // Remember what this recipe takes, so a choice between recipes can be made on
+            // what you would have to go and find rather than on a number.
+            if (!tools && group.Materials == null)
+            {
+                // With quantities: the hunter backpack's recipes differ by *how many* pelts,
+                // not by which, so a list of bare names makes four distinct recipes read as
+                // four identical ones.
+                var summary = string.Join(", ",
+                    reqs.Select(r => $"{r.Quantity} × {StripVariants(r.DisplayName)}"));
+
+                // And what it takes but does not use up. Two recipes can want the same
+                // materials and differ only in demanding a schematic; leaving that out makes
+                // the choice between them look like a choice between identical twins.
+                var kept = BuildRequirements(group, tools: true)
+                    .Select(r => StripVariants(r.DisplayName))
+                    .ToList();
+                if (kept.Count > 0) summary += $" — needs {string.Join(", ", kept)}";
+
+                group.Materials = summary;
             }
             return reqs;
         }
@@ -629,6 +760,15 @@ namespace Tallybook
             return string.IsNullOrEmpty(what)
                 ? $"{name} (any, {variants} variants)"
                 : $"{name} (any {what}, {variants} variants)";
+        }
+
+        /// <summary>"Board (any wood, 12 variants)" → "Board": a materials summary wants the
+        /// thing, not its bookkeeping.</summary>
+        static string StripVariants(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
+            int paren = name.IndexOf(" (");
+            return paren > 0 ? name.Substring(0, paren) : name;
         }
 
         string NameForCode(string shortCode)

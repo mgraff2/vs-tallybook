@@ -7,6 +7,12 @@ no server code — the zip is `modinfo.json` + `Tallybook.dll`.
 Full design in `tallybook-mod-spec.md`. Read it before implementing; the sections below are
 the parts that are easy to get wrong twice.
 
+`docs/vs-mod-playbook.md` is the **generalized** version of those lessons, written to be
+copied into a new Vintage Story mod. When a lesson here turns out not to be about Tallybook
+specifically, move it there too — that file is the one that outlives this project. Both
+scripts in `tools/` are portable verbatim: they discover the project as "the folder holding a
+modinfo.json" and name no mod anywhere, so keep them that way.
+
 ## Build
 
 The system `dotnet` is SDK 9 and refuses the net10.0 game references. Build with the
@@ -30,16 +36,20 @@ Builds the zip into `dist/`, then boots a headless dedicated server
 (`%APPDATA%\Vintagestory\VintagestoryServer.exe --dataPath <temp>`) once per combo — solo,
 +each companion mod, all together — and fails on any `[Error]`/`[Warning]`, a wrong mod
 count/load order, or a violated marker (invariants below). `-SkipBuild` reuses the packaged
-zip. Companion zips are cached in `tools/compat-cache/` (gitignored; sourced live-Mods-
-folder-first, else mod DB API) — delete the cache to re-source. Server data paths are keyed by
+zip. Companion zips are cached in `tools/compat-cache/` (gitignored; sourced live-Mods-folder
+first, then `ModsByServer/` newest-first, else mod DB API) — delete the cache to re-source.
+`ModsByServer/` is where a modded server's own mods land, which is the realistic companion
+pool and usually the only place they exist locally. Server data paths are keyed by
 PID, so a hand-run test and a running sweep no longer delete each other's directory mid-boot
 (that collision reports as "server did not start" and looks like a mod failure).
 
-**Companion set: currently empty.** Grow this set as Tallybook's surface grows — add
-client-side GUI mods that compete for hotkeys, HUD corners, and dialog space, recipe-adding
-content mods once the §8 registry reads land, and HUD-corner mods (e.g. `statushudcont`) once
-the §5 overlay ships. Derive additions from Tallybook's *real* interaction surface; do not
-copy another project's list wholesale.
+**Companion set: `betterruins`.** A recipe-adding content mod — the category the registry
+reads care about. It adds hundreds of grid recipes for items vanilla already crafts, gated
+behind schematics, so it is the mod that proves a server can push a large alternate recipe
+set and Tallybook still says nothing server-side. Grow this set as Tallybook's surface grows —
+add client-side GUI mods that compete for hotkeys, HUD corners, and dialog space, and
+HUD-corner mods (e.g. `statushudcont`) once the §5 overlay ships. Derive additions from
+Tallybook's *real* interaction surface; do not copy another project's list wholesale.
 
 ### 2. Game-version sweep — at the end of every version, before the release commit
 
@@ -148,6 +158,41 @@ Observed on a real modded client (~30,300 grid recipes), not theorised:
   you can definitely build one, whereas showing a larger layout's numbers sends the player
   after materials they may not need. `BuildRequirements` only merges variants whose shape and
   quantities match the representative, so a 5-plank layout never absorbs an 8-plank one.
+- **`RecipeGroup` is optional, so it cannot be the thing that decides what counts as a second
+  recipe (found by Mark, 0.3.4).** Mods that re-add a vanilla item behind a schematic — Better
+  Ruins does this hundreds of times, the airship mod too — mostly leave that field at 0, which
+  put their recipe in the same group as vanilla's, where it lost the cheapest-representative
+  contest and was then dropped by `BuildRequirements`' shape gate without a word. The grouping
+  key now carries `MaterialSignature`: what the recipe takes, keyed on the *ingredient's
+  `Name`* rather than its concrete code.
+
+  That indirection is the whole trick, and it is safe for a non-obvious reason: carrying a
+  name is exactly *why* the game expands a wildcard, so an expanded ingredient always has one
+  and a nameless wildcard is never expanded. Keying on the name therefore collapses all thirty
+  woods of one authored recipe into a single token, while two recipes that genuinely want
+  different materials keep different tokens — it cannot regress into the per-variant explosion
+  that keying on the code would cause. Kept ingredients (tools, `consume: false` schematics)
+  are in the signature too, since "craftable only with a schematic you must find" versus
+  "craftable outright" is precisely the choice a player must be offered rather than have made
+  for them.
+
+  **It belongs only to the non-collapsed key, and that asymmetry is the point (found by Mark,
+  0.3.4 — "Chute Section" offered twenty identical ways to make it).** In the collapsed
+  (expansion) path the outputs are themselves variants of one ingredient row — a chute section
+  in twenty metals — and vanilla authors those per variant rather than with a named wildcard,
+  so each is made of its own metal plate and every one scores a different signature. Pattern
+  and size already separate genuinely different recipes there. The general rule: a signature
+  that distinguishes materials is correct only where output identity is already pinned to one
+  page; wherever grouping is deliberately collapsing across variants, it is the explosion.
+
+  `.tallybook recipes` reports every multi-recipe item in the connected world, and doubles as
+  the explosion alarm: a healthy modded world lists dozens, not thousands. Use it rather than
+  reading mod zips — which recipes exist is a fact about what the *server* sent.
+- **A group only knows its `Materials` once `BuildRequirements` has run on it**, and the only
+  group that happens to is the one in use — so any screen listing *alternatives* must build
+  them first or it prints "?" for every option but the current one. Materials are the entire
+  basis for choosing between recipes; a chooser that cannot state them is worse than no
+  chooser.
 - **The registry holds pseudo-recipes that consume their own output (found by Mark, 0.1.0
   testing).** `slabmode/*.json` recipes exist only to flip a slab's placement attributes:
   1 glass slab → 1 glass slab. Same family: chiseled-block combining, armor repair. They
@@ -228,6 +273,50 @@ Note this is the first `IsModEnabled`-adjacent machinery in the mod. It is not c
 another mod, so the "no conditional compat registration" invariant above still holds — but if
 a handbook integration ever *does* branch on another mod, add the counted log marker described
 there.
+
+## The quest catalogue — read the dialogue files, don't rely on capture
+
+**`QuestScanner.QuestCatalogue()` is the authority on what every fetch errand is, and it
+should be reached for first.** Built once per world from every `config/dialogue/*.json`, it
+holds one `QuestDef` per errand: the NPC who asks for the goods, the item, the quantity, the
+maps that come with it, its gates, and the briefing. It is **static content**, so it is
+available whether or not this client was watching when the errand was accepted, and whether or
+not anything about it survived in the save.
+
+This exists because the alternative kept failing. Everything an errand needs used to come from
+what happened to be captured at accept time — map names, briefing, giver — and each of those
+was lost independently: traders' dialogue files are not named after the trader so the
+name-based lookup missed them; a save that lost its pins lost the map names with them, after
+which re-reading the locator map could never restore the destination because there was nothing
+left to recognise the waypoint by (found by Mark). Derived data belongs to the files. Only
+things the files genuinely cannot know should live on the pin.
+
+- **`DefFor(giver, itemCode, quantity)`** matches a pin to its definition, falling back from
+  giver+item+quantity to item+quantity to item. The giver's name is the strongest signal and
+  the weakest link — it comes from a live entity, so it can be blank, renamed or lost.
+- **The catalogue must never be used to *offer* anything.** It deliberately does not filter by
+  gate satisfaction, so half of it has not been offered to this player and surfacing it would
+  spoil content the game is withholding. Use it to *fill in* an errand the player already has.
+  Deciding what is live stays `LiveVillageQuests()`, which checks gates properly (and requires
+  a positive one — see below). `DefIsLive` reads player scope only and fails toward "not live".
+- **What the files cannot give you: world coordinates.** Dialogue describes *which map* leads
+  somewhere, never where anything is. Positions come from standing next to an NPC
+  (`SaveFile.NpcPlaces`, applied to any position-less quest pin as you walk past) or from the
+  waypoint a read locator map creates, matched by the map's name — which is why the names are
+  worth recovering.
+- **`.tallybook quests`** ties the whole thing out: every errand in the world's dialogue with
+  its item, giver, maps, gate state and tracked status. A command rather than a screen, for the
+  spoiler reason above.
+- **Maps are known per dialogue *file*, never per errand — do not tie them to one (found by
+  Mark, twice).** `MapsGivenBy` reads a file's `triggerdata` handouts, and a file covers
+  several unrelated quest threads: Agnieszka takes iron ingots at her forge and separately
+  gives out the map to Tobias' cave. Attaching a file's maps to its fetch errands sent her
+  errand across the world, and then sent *every* errand to the Devastation. `MapTargetFor`
+  therefore returns **the quest giver, always**, or null when we have never stood next to
+  them. The destination is not lost — reading a locator map puts vanilla's own waypoint on the
+  map, which is where it belongs. The general rule: the catalogue is authoritative about what
+  it actually records; a relationship it does not record must not be inferred because it would
+  be convenient.
 
 ## Villager errands (quest tracking)
 
@@ -312,6 +401,16 @@ asset, and collect `player.inventory` conditions.
   never been offered; surfacing those spoils content the game is deliberately withholding.
   Fail toward "no link", never toward a spoiler. Same reason inverted `player.inventory`
   conditions are ignored — "must NOT be carrying" is a state check, not a shopping list.
+- **A waypoint with a blank title crashes the client (found by Mark, 0.3.4).** Hovering it on
+  the world map makes vanilla build hover text of zero width and hand that to Cairo, which
+  throws `Image surface width and hight must be above 0` from `GuiElementHoverText.Recompose`
+  — a stack trace containing nothing of ours, on mouse-move, arbitrarily long after the
+  marker was placed. `NpcName` comes from `Entity.GetName()`, which can be blank, and the
+  placing guard tested `!= null`. Two lessons: **a null check is not an emptiness check for
+  anything that came from the game**, and text that leaves the mod as a *command argument* is
+  an outward action — sanitise it (`QuestWaypoints.SafeTitle`, trimmed and newline-free,
+  since the title is rest-of-line) the same way you would validate a write. `.tallybook
+  blankmarkers [remove]` finds ones already planted, by us or anything else.
 - **Waypoint syntax** (confirmed working, Mark): `/waypoint addati <icon> <x> <y> <z>
   <pinned> <color> <title>` — icon `x`, **decimal** coords, hex colour (`#ff3f33`), title is
   rest-of-line. Format coords with `InvariantCulture`: a locale writing `131,5` splits one
@@ -378,6 +477,26 @@ asset, and collect `player.inventory` conditions.
   table and persistence are all reused. `Store.Add(..., setCount: true)` raises an existing
   pin to the requested count instead of adding to it — an errand needs exactly 10, and
   pinning it twice must not ask for 20.
+
+## Persistence — the list is the player's work, not our cache
+
+- **Never delete a pin because it failed to resolve (found by Mark, 0.3.4 — the entire list
+  vanished).** `Load` used to `RemoveAll` pins whose code the world did not know, reasoning
+  that an unnameable row is a mystery rather than a reminder. That is right about the row and
+  catastrophic about the file: **"the world does not know this item" and "does not know it
+  *yet*" are indistinguishable at load time**, so one early load deleted everything and the
+  next `Save()` made it permanent. Unresolved pins are now kept and retried from `RecountAll`
+  via `PinStore.RetryUnresolved`; the cost is a row showing a bare item code for a tick.
+  The diagnostic signature of this failure: `Pins: 0` while `QuestHistory`/`OfferedQuests` in
+  the *same file* are intact — nothing resolves those, so only pins were destroyed.
+- **`Save()` refuses to write before `Load()` has run** (`loaded` flag). Quest arrival, history
+  updates and map-site discovery all write, and any of them firing early would persist an empty
+  list over a real one.
+- **Emptying the list keeps a `.bak`.** A player really can clear their list, so it cannot be
+  forbidden — but it is also exactly what a failed load looks like, and one file copy on that
+  rare transition is the difference between an annoyance and unrecoverable loss.
+- **Everything on `Pin` that is derived carries `[JsonIgnore]`.** Adding a computed property
+  without it silently changes the save format.
 
 ## Design invariants — do not "fix" these
 

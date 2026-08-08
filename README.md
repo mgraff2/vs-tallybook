@@ -5,7 +5,7 @@ Pin any item, and Tallybook tells you what you still need to gather — with liv
 inventory tracking and at-a-glance status. The handbook already answers "how do I make X";
 Tallybook answers "what do I still need, and am I done?"
 
-**Version 0.3.0**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
+**Version 0.3.4**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
 and nobody else needs it installed. The design is in
 [tallybook-mod-spec.md](tallybook-mod-spec.md).
 
@@ -139,9 +139,13 @@ Hotkeys (L, K) are rebindable in Settings → Controls like any other key.
 `.tallybook markers` puts one back on every tracked quest giver — useful if you deleted them
 by hand and want them again.
 
+`.tallybook recipes` lists every item your world can make more than one way, and what each way
+would have you fetch. Which items those are depends on the mods your server runs, so it is
+worth a look after adding one.
+
 ## Install
 
-Drop `tallybook_0.3.0.zip` into
+Drop `tallybook_0.3.4.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source

@@ -95,6 +95,50 @@ namespace Tallybook
                             ? $"Placing {placed} quest marker(s)."
                             : "No tracked errands with a known location.");
                     })
+                .EndSubCommand()
+                .BeginSubCommand("quests")
+                    .WithDescription("Tie out every fetch errand in this world's dialogue: item, giver, maps, status")
+                    .HandleWith(_ =>
+                    {
+                        EnsureGui();
+                        foreach (var line in QuestTieOut()) capi.ShowChatMessage(line);
+                        return TextCommandResult.Success("");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("blankmarkers")
+                    .WithDescription("Find map waypoints with no title — hovering one crashes the world map")
+                    .WithArgs(api.ChatCommands.Parsers.OptionalWord("remove"))
+                    .HandleWith(args =>
+                    {
+                        EnsureGui();
+                        if (questWaypoints == null) return TextCommandResult.Error("Tallybook is not ready yet.");
+
+                        bool remove = string.Equals(args[0] as string, "remove", StringComparison.OrdinalIgnoreCase);
+                        var blank = questWaypoints.BlankTitledWaypoints();
+                        if (blank.Count == 0)
+                            return TextCommandResult.Success("No untitled waypoints on your map.");
+
+                        if (!remove)
+                        {
+                            foreach (var line in blank) capi.ShowChatMessage("  " + line);
+                            return TextCommandResult.Success(
+                                $"{blank.Count} untitled waypoint(s) — these crash the world map when hovered. "
+                                + "Their positions are above; '.tallybook blankmarkers remove' deletes them.");
+                        }
+
+                        int gone = questWaypoints.RemoveBlankTitledWaypoints();
+                        return TextCommandResult.Success($"Removing {gone} untitled waypoint(s).");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("recipes")
+                    .WithDescription("List items this world can craft more than one way (slow; reads every recipe)")
+                    .HandleWith(_ =>
+                    {
+                        EnsureGui();
+                        foreach (var line in svc.Probe.MultiRecipeReport())
+                            capi.ShowChatMessage(line);
+                        return TextCommandResult.Success("");
+                    })
                 .EndSubCommand();
 
             api.Event.PlayerJoin += OnPlayerJoin;
@@ -229,6 +273,7 @@ namespace Tallybook
             // Recipes are pushed by the server on join, so any index built against a previous
             // world is stale.
             svc.Probe.InvalidateIndex();
+            quests.InvalidateCatalogue();     // asset sets differ between servers
             SubscribeToCarriedInventories();
             svc.Store.Load(svc.Resolve);
             BackfillQuestText();
@@ -254,13 +299,36 @@ namespace Tallybook
             foreach (var pin in svc.Store.Pins)
             {
                 if (pin.QuestGiver == null) continue;
-                if (QuestScanner.IsTranscript(pin.QuestText)) continue;
 
-                var said = quests.BriefingFor(pin.QuestGiver, pin.Code, pin.Count);
-                if (said == null || said.Count == 0) continue;
+                // The dialogue files describe every errand in full and do not care whether we
+                // were watching when this one was accepted — so they, not what happened to be
+                // captured at the time, are what an incomplete pin is repaired from. Matched
+                // on what was asked for rather than only on the giver's name, because the name
+                // is recorded from a live entity and is the part most likely to be missing.
+                var def = quests.DefFor(pin.QuestGiver, pin.Code, pin.Count);
 
-                pin.QuestText = said;
-                filled = true;
+                if (!QuestScanner.IsTranscript(pin.QuestText))
+                {
+                    var said = quests.BriefingFor(pin.QuestGiver, pin.Code, pin.Count);
+                    if ((said == null || said.Count == 0) && def != null) said = def.Briefing;
+                    if (said != null && said.Count > 0) { pin.QuestText = said; filled = true; }
+                }
+
+                // Deliberately NOT filled in here: which maps an NPC hands out is known per
+                // *file*, not per errand, and an NPC's dialogue covers several unrelated quest
+                // threads. Agnieszka takes iron ingots and separately hands over the map to
+                // Tobias' cave, on a different thread entirely — attaching her file's maps to
+                // her fetch errand sent the player across the world instead of to her forge
+                // (found by Mark). Nothing in the files reliably ties a particular map to a
+                // particular fetch request, so no tie is claimed.
+
+                // And a location, if we have ever stood next to them. Was only ever applied to
+                // freshly recovered errands, so a pin that lost its position kept no way back.
+                if (pin.QuestX == 0 && pin.QuestY == 0 && pin.QuestZ == 0)
+                {
+                    ApplyKnownPlace(pin);
+                    if (pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0) filled = true;
+                }
             }
             if (filled) svc.Store.Save();
         }
@@ -306,6 +374,48 @@ namespace Tallybook
                 $"Tallybook: picked up {adopted} errand(s) you were already on. Press L to see them.");
         }
 
+        /// <summary>
+        /// Every fetch errand this world's dialogue describes, against what we know about it:
+        /// who wants it, how many, which maps lead there, whether its gates are open for this
+        /// player, whether it is tracked, and whether we know where to walk.
+        ///
+        /// A diagnostic, printed on request — deliberately not a screen. The catalogue includes
+        /// quests this player has never been offered, and putting that in the interface would
+        /// spoil content the game is withholding; asking for it by name is a different act from
+        /// being shown it. "live" is player-scope gates only, so a trader errand held on the
+        /// NPC reads as not live rather than as a claim we cannot support.
+        /// </summary>
+        List<string> QuestTieOut()
+        {
+            var defs = quests.QuestCatalogue();
+            var lines = new List<string>
+            {
+                $"{defs.Count} fetch errand(s) described by this world's dialogue files:"
+            };
+
+            foreach (var def in defs.OrderBy(d => d.NpcName).ThenBy(d => d.ItemCode))
+            {
+                var pin = svc.Store.Pins.FirstOrDefault(
+                    p => p.QuestGiver != null && p.Code == def.ItemCode && p.Count == def.Quantity);
+
+                string state = pin == null ? "not tracked"
+                    : !pin.Active ? "parked"
+                    : pin.Complete ? $"READY ({pin.Have}/{pin.Count})"
+                    : $"{pin.Have}/{pin.Count}";
+
+                string where = pin == null ? ""
+                    : pin.QuestX != 0 || pin.QuestZ != 0
+                        ? $", giver at {(int)pin.QuestX},{(int)pin.QuestZ}"
+                        : ", giver location unknown";
+
+                string maps = def.Maps.Count > 0 ? $", maps: {string.Join(", ", def.Maps)}" : "";
+
+                lines.Add($"{def.NpcName}: {def.Quantity} x {def.ItemCode} — {state}"
+                          + $" [{(quests.DefIsLive(def) ? "live" : "not live")}]{where}{maps}");
+            }
+            return lines;
+        }
+
         /// <summary>Give a recovered errand a location if we have ever seen that NPC. Without
         /// one it still tallies; it just cannot be marked on the map yet.</summary>
         void ApplyKnownPlace(Pin pin)
@@ -329,6 +439,8 @@ namespace Tallybook
         /// recovered at load ever get a map marker — at load we know who wants what, but not
         /// where they live unless we have been there.
         /// </summary>
+        bool placesLearned;
+
         void RecordNearbyNpcs()
         {
             var me = capi.World?.Player?.Entity;
@@ -350,10 +462,32 @@ namespace Tallybook
 
                 svc.Store.NpcPlaces[name] = place;
                 changed = true;
+
+                // Give the errand its location the moment we learn it. An errand whose giver
+                // we have never stood next to has no position, and without one there is no
+                // Map button and no marker — so walking past them should be enough, without
+                // having to open a conversation. Only fills a blank: a position recorded when
+                // the errand was taken on is the better one.
+                foreach (var pin in svc.Store.Pins)
+                {
+                    if (pin.QuestGiver != name) continue;
+                    if (pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0) continue;
+
+                    ApplyKnownPlace(pin);
+                    placesLearned = true;
+                }
             }
 
-            // Not saved here: the directory rides along with the next save, and writing the
-            // file every time a villager takes a step would be absurd.
+            // The directory itself rides along with the next save — writing the file every
+            // time a villager takes a step would be absurd. A pin gaining a location is
+            // different: that changes what the list can do, so it is worth a write and a
+            // redraw.
+            if (placesLearned)
+            {
+                placesLearned = false;
+                svc.Store.Save();
+                svc.RecountAll();
+            }
             _ = changed;
         }
 

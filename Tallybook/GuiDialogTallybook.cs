@@ -10,7 +10,7 @@ using Vintagestory.GameContent;
 
 namespace Tallybook
 {
-    enum TbScreen { List, ConfirmClear, Options }
+    enum TbScreen { List, ConfirmClear, Options, ChooseRecipe }
 
     /// <summary>Errands from villagers are a different kind of thing from things you decided
     /// to build, so they get their own tab rather than being mixed in and distinguished only
@@ -111,7 +111,6 @@ namespace Tallybook
     {
         const double DW = 818;                 // content width
         const double RowH = 28;
-        const int PageSize = 13;
 
         // Table columns. Every row type lines up on these, so the eye can run down a single
         // column instead of re-finding each field per row — the whole point of the table.
@@ -252,7 +251,8 @@ namespace Tallybook
                     {
                         foreach (var said in pin.QuestText ?? new List<string>())
                         {
-                            allRows.Add(new InfoRow { Text = said, Full = said, Indent = 1 });
+                            string line = QuestScanner.Attributed(said, pin.QuestGiver);
+                            allRows.Add(new InfoRow { Text = line, Full = line, Indent = 1 });
                         }
 
                         // The place attached to the errand, when one came with it.
@@ -281,14 +281,68 @@ namespace Tallybook
             foreach (var tool in node.Tools) allRows.Add(new ToolRow { Tool = tool, Indent = depth + 1 });
         }
 
-        int MaxPage => Math.Max(0, (allRows.Count - 1) / PageSize);
+        List<int> pageStarts = new List<int> { 0 };
+
+        int MaxPage => pageStarts.Count - 1;
+
+        /// <summary>What is left for rows once the window's own furniture is accounted for:
+        /// title, tabs and column heads above; pager and buttons below; padding around.</summary>
+        double PageBudget => Math.Max(200, capi.Render.FrameHeight / RuntimeEnv.GUIScale - 260);
+
+        /// <summary>
+        /// How tall a row draws. Nearly all of them are one RowH, but an errand's quoted line
+        /// wraps to as many lines as it needs — which is what makes counting rows per page
+        /// wrong, and why pages are measured instead.
+        /// </summary>
+        double RowHeight(Row row)
+        {
+            if (!(row is InfoRow ir)) return RowH;
+
+            double w = DW - (ColName + row.Indent * IndentW) - 16;
+            return TbText.Wrap(CairoFont.WhiteSmallText(), ir.Full ?? ir.Text, w).Count * 22 + 6;
+        }
+
+        /// <summary>
+        /// The row index each page starts at, filled to a height budget rather than a count.
+        /// A page never breaks before its own first row, so a single row taller than the whole
+        /// budget cannot produce an empty page and an endless list of them.
+        /// </summary>
+        /// <summary>The rows the current page draws. One definition, because composing and
+        /// restoring inputs must agree exactly — asking the composer for a control it never
+        /// composed is unhealthy whether or not it throws.</summary>
+        List<Row> VisibleRows()
+        {
+            int p = Math.Min(Math.Max(page, 0), MaxPage);
+            int from = pageStarts[p];
+            int upto = p + 1 < pageStarts.Count ? pageStarts[p + 1] : allRows.Count;
+            return allRows.GetRange(from, Math.Max(0, upto - from));
+        }
+
+        List<int> PageStarts(List<Row> rows)
+        {
+            var starts = new List<int> { 0 };
+            double used = 0, budget = PageBudget;
+
+            for (int i = 0; i < rows.Count; i++)
+            {
+                double h = RowHeight(rows[i]);
+                if (used > 0 && used + h > budget) { starts.Add(i); used = 0; }
+                used += h;
+            }
+            return starts;
+        }
 
         // ------------------------------------------------------------------ composing
 
         void Recompose()
         {
             BuildRows();
-            page = Math.Min(page, MaxPage);
+            pageStarts = PageStarts(allRows);
+
+            // The History tab has no pins behind it, so allRows describes a different tab
+            // entirely and its page count says nothing about the archive. ComposeHistory
+            // clamps against its own pages instead.
+            if (tab != TbTab.History) page = Math.Min(page, MaxPage);
 
             var dialogBounds = ElementStdBounds.AutosizedMainDialog.WithAlignment(EnumDialogArea.CenterMiddle);
             var bgBounds = ElementBounds.Fill.WithFixedPadding(GuiStyle.ElementToDialogPadding);
@@ -305,6 +359,7 @@ namespace Tallybook
                 case TbScreen.List: ComposeList(composer); break;
                 case TbScreen.ConfirmClear: ComposeConfirmClear(composer); break;
                 case TbScreen.Options: ComposeOptions(composer); break;
+                case TbScreen.ChooseRecipe: ComposeChooseRecipe(composer); break;
             }
 
             var replaced = SingleComposer;
@@ -324,6 +379,7 @@ namespace Tallybook
             // These screens keep a qualifier — there it says which screen you are on.
             TbScreen.ConfirmClear => "Tallybook — Clear list",
             TbScreen.Options => "Tallybook — Options",
+            TbScreen.ChooseRecipe => "Tallybook — How do you want to make it?",
             _ => "Tallybook",
         };
 
@@ -428,8 +484,7 @@ namespace Tallybook
             c.AddGameOverlay(EB(0, y, DW, 2), GuiStyle.DialogBorderColor);
             y += 6;
 
-            var visible = allRows.Skip(page * PageSize).Take(PageSize).ToList();
-            foreach (var row in visible)
+            foreach (var row in VisibleRows())
             {
                 ComposeRow(c, row, ref y);
             }
@@ -454,6 +509,23 @@ namespace Tallybook
             }
 
             c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+        }
+
+        /// <summary>
+        /// Every way of making this thing, with the current one marked — so choosing between
+        /// them is a choice about what you would go and gather, which is the actual question,
+        /// rather than about the number on a button.
+        /// </summary>
+        static string RecipeChoiceHelp(List<RecipeVariantGroup> choices, RecipeVariantGroup current)
+        {
+            var lines = new List<string> { "Ways to make this — click to change:" };
+
+            for (int i = 0; i < choices.Count; i++)
+            {
+                string materials = string.IsNullOrEmpty(choices[i].Materials) ? "?" : choices[i].Materials;
+                lines.Add($"{(choices[i] == current ? "▸" : "  ")} {i + 1}. {materials}");
+            }
+            return string.Join("\n", lines);
         }
 
         /// <summary>Name column width at this indent, leaving the progress column clear.</summary>
@@ -555,14 +627,14 @@ namespace Tallybook
                             + "The errand keeps its own row and count.",
                             font, 260, EB(ColAct1, y, 80, 26));
 
-                        var site = waypoints?.FindReadMapSite(pin.QuestMaps);
-                        if (site != null || pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0)
+                        // Shown whenever there is anywhere to go — and it says which of the
+                        // errand's two places it means, since "go to the Devastation" and "go
+                        // back to Tobias" are opposite directions.
+                        if (MapTargetFor(pin) != null)
                         {
                             c.AddSmallButton("Map", () => ShowOnMap(pin),
                                 EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
-                            c.AddHoverText(site != null
-                                    ? $"Open the map where {string.Join(", ", pin.QuestMaps)} points."
-                                    : $"Open the map centred on {pin.QuestGiver}.",
+                            c.AddHoverText($"Open the map centred on {pin.QuestGiver}.",
                                 font, 240, EB(ColAct2, y, 40, 26));
                         }
                     }
@@ -574,7 +646,9 @@ namespace Tallybook
                         // starts (Mark) — a recipe existing is not a reason to assume the
                         // player intends to craft rather than gather.
                         c.AddSmallButton(pin.GatherOnly ? "Expand" : "Collapse",
-                            () => { svc.ToggleGatherOnly(pin); return true; },
+                            () => pin.GatherOnly
+                                ? ExpandOrChoose(pin, null, pin.Groups)
+                                : Collapse(pin),
                             EB(ColAct1, y, 80, 26), EnumButtonStyle.Small);
 
                         c.AddHoverText(pin.GatherOnly
@@ -585,8 +659,11 @@ namespace Tallybook
                         if (!pin.GatherOnly && pin.Groups.Count > 1)
                         {
                             c.AddSmallButton($"{pin.Groups.IndexOf(pin.Group) + 1}/{pin.Groups.Count}",
-                                () => { svc.CyclePinRecipe(pin); return true; },
+                                () => ExpandOrChoose(pin, null, pin.Groups),
                                 EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
+
+                            c.AddHoverText(RecipeChoiceHelp(pin.Groups, pin.Group),
+                                font, 320, EB(ColAct2, y, 40, 26));
                         }
                     }
 
@@ -622,15 +699,18 @@ namespace Tallybook
                         {
                             int idx = node.Choices.IndexOf(node.Choice) + 1;
                             c.AddSmallButton($"{idx}/{node.Choices.Count}",
-                                () => { svc.CycleNodeRecipe(nr.Pin, node); return true; },
+                                () => ExpandOrChoose(nr.Pin, node, node.Choices),
                                 EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
+
+                            c.AddHoverText(RecipeChoiceHelp(node.Choices, node.Choice),
+                                font, 320, EB(ColAct2, y, 40, 26));
                         }
                     }
                     else if (svc.HasExpansion(node))
                     {
                         // Only craftable rows carry the affordance (spec §2a); raw materials
                         // get no button rather than one that scolds when clicked.
-                        c.AddSmallButton("Expand", () => { TryExpand(nr.Pin, node); return true; },
+                        c.AddSmallButton("Expand", () => TryExpand(nr.Pin, node),
                             EB(ColAct1, y, 80, 26), EnumButtonStyle.Small);
                     }
                     break;
@@ -651,17 +731,24 @@ namespace Tallybook
 
                 case InfoRow ir:
                 {
+                    // Read as the transcript it is — the same shape the History page uses:
+                    // full width, wrapped over as many lines as it takes. Squeezed into the
+                    // name column it was cut at the first few words, which is where the
+                    // speaker's name and the thing they asked for both live, so the quote
+                    // stopped being a quote and became a caption.
                     var infoFont = font.Clone().WithColor(GuiStyle.ColorParchment);
-                    double infoW = ColAct1 - nx;
-                    string shown = TbText.Fit(infoFont, ir.Text, infoW);
-                    c.AddStaticText(shown, infoFont, EB(nx, ry + 4, infoW, 24));
+                    double infoW = DW - nx - 16;
+                    var lines = TbText.Wrap(infoFont, ir.Full ?? ir.Text, infoW);
+                    if (lines.Count == 0) break;
 
-                    string full = ir.Full ?? ir.Text;
-                    if (shown != ir.Text || full != ir.Text)
+                    foreach (var wrapped in lines)
                     {
-                        c.AddHoverText(full, font, 420, EB(nx, ry + 4, infoW, 24));
+                        c.AddStaticText(wrapped, infoFont, EB(nx, y, infoW, 22));
+                        y += 22;
                     }
-                    break;
+                    // A gap between speakers, so a two-sided exchange reads as two turns.
+                    y += 6;
+                    return;
                 }
             }
             y += RowH;
@@ -705,7 +792,7 @@ namespace Tallybook
 
                 // Visible pins only: inputs exist just for the composed page, and asking the
                 // composer for a key it never composed is unhealthy whether it throws or not.
-                foreach (var row in allRows.Skip(page * PageSize).Take(PageSize).OfType<PinRow>())
+                foreach (var row in VisibleRows().OfType<PinRow>())
                 {
                     SingleComposer.GetTextInput("cnt-" + row.Pin.Key)
                         ?.SetValue(row.Pin.Count.ToString(CultureInfo.InvariantCulture));
@@ -896,25 +983,70 @@ namespace Tallybook
                 return true;
             }
 
-            // Where the errand is *going*, when a map came with it and you have read it —
-            // the lens is in the Devastation, and that is the walk you are about to make.
-            // The giver already carries their own marker for the way back.
-            var site = waypoints?.FindReadMapSite(pin.QuestMaps);
+            var target = MapTargetFor(pin);
+            if (target == null)
+            {
+                notice = $"No location known for {pin.QuestGiver} yet — walk past them once.";
+                Recompose();
+                return true;
+            }
 
             TryClose();
 
-            // The minimap counts as "opened", so asking IsOpened alone would leave it showing
-            // and we would pan the corner minimap instead of the map you asked for.
+            // Opening the full map while the corner minimap is showing leaves the map manager
+            // holding two dialogs of different types over one set of state: the result renders
+            // oversized and its close button does nothing, so only Escape gets out (found by
+            // Mark). ToggleMap is a *toggle* over a single slot, not an "open this size" call —
+            // so put back whatever is showing before asking for the size we want, and let the
+            // game do the opening from a clean state.
+            //
+            // The minimap also counts as "opened", so IsOpened alone is not the question; the
+            // question is which type is showing.
             var dlg = maps.worldMapDlg;
-            bool fullMapShowing = dlg != null && dlg.IsOpened() && dlg.DialogType == EnumDialogType.Dialog;
-            if (!fullMapShowing) maps.ToggleMap(EnumDialogType.Dialog);
+            bool showing = dlg != null && dlg.IsOpened();
+            var showingType = showing ? dlg.DialogType : (EnumDialogType?)null;
 
-            var target = site != null
-                ? new BlockPos((int)site.X, (int)site.Y, (int)site.Z, 0)
-                : new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0);
-            capi.World.RegisterCallback(_ => Centre(maps, target), 250);
-            capi.World.RegisterCallback(_ => Centre(maps, target), 600);
+            if (showingType == EnumDialogType.Dialog)
+            {
+                // Already the map we want — centre it and change nothing else.
+                capi.World.RegisterCallback(_ => Centre(maps, target), 100);
+                return true;
+            }
+
+            if (showing) maps.ToggleMap(showingType.Value);      // close the minimap first
+            maps.ToggleMap(EnumDialogType.Dialog);
+
+            // Once, after it has had time to compose. Repeating the centre was a hedge against
+            // it not being ready; it is also a second chance to fight whatever the player has
+            // done in the meantime, so it happens once and is allowed to fail.
+            capi.World.RegisterCallback(_ => Centre(maps, target), 400);
             return true;
+        }
+
+        /// <summary>
+        /// Where the Map button goes: **the quest giver, always**. Null when we have never
+        /// stood next to them, in which case the row says so rather than offering a button
+        /// that guesses.
+        ///
+        /// It used to prefer the destination of a map that came with the errand — Tobias hands
+        /// over a map to the Devastation, so "go to the Devastation, then come back" reads
+        /// well. It does not survive contact with the data. Which maps an NPC hands out is
+        /// known per dialogue *file*, and a file covers several unrelated quest threads:
+        /// Agnieszka takes iron ingots at her forge and separately gives the map to Tobias'
+        /// cave, so her errand pointed across the world (found by Mark, twice — the second
+        /// time every errand pointed at the Devastation). Nothing in the files ties a
+        /// particular map to a particular fetch request, so the tie was invented, and an
+        /// invented tie sends the player on a long walk to the wrong place.
+        ///
+        /// The destination is not lost by this: reading a locator map puts vanilla's own
+        /// waypoint on the map, which is where that information belongs, and the row still
+        /// says which map came with the errand. What this button answers is "who wants this
+        /// and where are they" — one question, answered correctly.
+        /// </summary>
+        BlockPos MapTargetFor(Pin pin)
+        {
+            if (pin.QuestX == 0 && pin.QuestY == 0 && pin.QuestZ == 0) return null;
+            return new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0);
         }
 
         /// <summary>
@@ -990,7 +1122,13 @@ namespace Tallybook
             }
         }
 
-        void TryExpand(Pin pin, TallyNode node)
+        bool Collapse(Pin pin)
+        {
+            svc.ToggleGatherOnly(pin);
+            return true;
+        }
+
+        bool TryExpand(Pin pin, TallyNode node)
         {
             if (!svc.CanExpand(pin, node, out string reason))
             {
@@ -998,10 +1136,10 @@ namespace Tallybook
                 // silently doing nothing (spec §2a: disallow with a visible reason).
                 notice = $"Cannot expand {node.Req.DisplayName}: {reason}";
                 Recompose();
-                return;
+                return true;
             }
             notice = "";
-            svc.ExpandNode(pin, node);
+            return ExpandOrChoose(pin, node, node.Choices);
         }
 
         // ------------------------------------------------------------------ confirm screens
@@ -1011,6 +1149,63 @@ namespace Tallybook
         /// that was already done the first time Tallybook looked, which cannot be dated and
         /// is ordered by how deep into the story it sits instead.
         /// </summary>
+        static string SectionOf(QuestRecord r)
+            => r.Stage == "open" || r.Stage == "awaiting" ? "open"
+               : r.Day.HasValue ? "dated"
+               : "undated";
+
+        /// <summary>How tall this record draws, heading included when it opens a section.</summary>
+        double HistoryRecordHeight(QuestRecord r, CairoFont quiet, ref string section)
+        {
+            double h = 0;
+            string wants = SectionOf(r);
+            if (wants != section) { section = wants; h += 24; }
+            h += RowH;
+
+            if (r.Text != null && expandedRecords.Contains(r.Chain + "|" + r.Stage))
+            {
+                foreach (var said in r.Text) h += TbText.Wrap(quiet, said, DW - 48).Count * 22 + 6;
+                h += 4;
+            }
+            return h;
+        }
+
+        /// <summary>
+        /// The index each page starts at, for the current expansion state. Recomputed per
+        /// compose because opening one record re-flows every page after it — which is exactly
+        /// why a fixed records-per-page could not work here.
+        /// </summary>
+        List<int> HistoryPageStarts(List<QuestRecord> done, CairoFont quiet)
+        {
+            // What is left for rows after the window's own furniture: title, tabs, column
+            // heads above; pager, Journal and Close below; dialog padding around all of it.
+            double budget = Math.Max(200, capi.Render.FrameHeight / RuntimeEnv.GUIScale - 260);
+
+            var starts = new List<int> { 0 };
+            double used = 0;
+            string section = null;
+
+            for (int i = 0; i < done.Count; i++)
+            {
+                string sectionIfKept = section;
+                double h = HistoryRecordHeight(done[i], quiet, ref sectionIfKept);
+
+                // Never break before the first record of a page: one record taller than the
+                // whole budget would otherwise start an empty page and loop forever.
+                if (used > 0 && used + h > budget)
+                {
+                    starts.Add(i);
+                    used = 0;
+                    section = null;
+                    h = HistoryRecordHeight(done[i], quiet, ref section);   // its heading returns
+                }
+                else section = sectionIfKept;
+
+                used += h;
+            }
+            return starts;
+        }
+
         void ComposeHistory(GuiComposer c, List<QuestRecord> done, ref double y)
         {
             var font = CairoFont.WhiteSmallText();
@@ -1027,15 +1222,24 @@ namespace Tallybook
                 return;
             }
 
+            // Pages are worked out by height, not by counting records: a record that is open
+            // for reading is a whole conversation tall, so thirteen of those ran off the
+            // bottom of the screen with no way to reach them (found by Mark). Walking the
+            // list against a height budget is the only honest page boundary when rows are not
+            // a fixed size.
+            var starts = HistoryPageStarts(done, quiet);
+            this.page = Math.Min(Math.Max(this.page, 0), starts.Count - 1);
+
+            int from = starts[this.page];
+            int upto = this.page + 1 < starts.Count ? starts[this.page + 1] : done.Count;
+
             string section = null;
-            var page = done.Skip(this.page * PageSize).Take(PageSize).ToList();
+            var page = done.GetRange(from, upto - from);
 
             foreach (var record in page)
             {
                 bool openQuest = record.Stage == "open" || record.Stage == "awaiting";
-                string wants = openQuest ? "open"
-                    : record.Day.HasValue ? "dated"
-                    : "undated";
+                string wants = SectionOf(record);
 
                 if (wants != section)
                 {
@@ -1096,7 +1300,7 @@ namespace Tallybook
             }
 
             y += 12;
-            int pages = Math.Max(0, (done.Count - 1) / PageSize);
+            int pages = starts.Count - 1;
             if (pages > 0)
             {
                 c.AddSmallButton("< Prev", () => { if (this.page > 0) { this.page--; Recompose(); } return true; },
@@ -1151,6 +1355,96 @@ namespace Tallybook
 
                 capi.ShowChatMessage("Tallybook: could not open the journal — try its own key.");
             }, 0);
+            return true;
+        }
+
+        Pin choosingFor;
+        TallyNode choosingNode;
+
+        /// <summary>
+        /// Pick a recipe before unfolding anything.
+        ///
+        /// Expanding used to choose for you and leave a "1/4" cycler to argue with afterwards,
+        /// which is not the same question: what you want to know is what each way would have
+        /// you go and fetch. Each way is listed with its materials and what it yields — the
+        /// hunter backpack's four ways differ by *how many* pelts and whether you get one
+        /// backpack or two, which a bare list of ingredient names hides completely.
+        /// </summary>
+        void ComposeChooseRecipe(GuiComposer c)
+        {
+            var font = CairoFont.WhiteSmallText();
+            var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
+            double y = 40;
+
+            var choices = choosingNode?.Choices ?? choosingFor?.Groups ?? new List<RecipeVariantGroup>();
+            var current = choosingNode != null ? choosingNode.Choice : choosingFor?.Group;
+
+            // A group only learns what it is made of when its requirements are built, and the
+            // only group that ever happens to is the one already in use. Every other choice
+            // reached this screen with nothing to say and printed "?" — which is the one thing
+            // a chooser must never do, since materials are the entire basis for choosing.
+            foreach (var g in choices)
+            {
+                if (g.Materials == null) svc.Probe.BuildRequirements(g);
+            }
+
+            string what = choosingNode?.Req?.DisplayName ?? choosingFor?.DisplayName ?? "this";
+            c.AddStaticText($"{choices.Count} ways to make {what}:", font, EB(8, y, DW - 16, 26));
+            y += 34;
+
+            for (int i = 0; i < choices.Count; i++)
+            {
+                var choice = choices[i];
+                bool chosen = choice == current;
+
+                var nameFont = font.Clone().WithColor(TallybookConfig.ParseColor(
+                    chosen ? config.ColorSatisfied : config.ColorNone));
+
+                c.AddStaticText($"{(chosen ? "▸" : " ")} Makes {choice.OutputQuantity} × {choice.OutputName}",
+                    nameFont, EB(8, y, 320, 24));
+
+                var picked = choice;
+                c.AddSmallButton(chosen ? "In use" : "Use this",
+                    () => { UseRecipe(picked); return true; },
+                    EB(DW - 120, y - 2, 104, 26), EnumButtonStyle.Small);
+                y += 24;
+
+                string materials = string.IsNullOrEmpty(choice.Materials) ? "?" : choice.Materials;
+                FittedText(c, materials, quiet, EB(28, y, DW - 160, 22), DW - 160);
+                y += 28;
+            }
+
+            y += 8;
+            c.AddSmallButton("Back", () => { BackToList(); return true; }, EB(8, y, 90, 30));
+        }
+
+        void UseRecipe(RecipeVariantGroup choice)
+        {
+            if (choosingNode != null) svc.ChooseNodeRecipe(choosingFor, choosingNode, choice);
+            else if (choosingFor != null) svc.ChoosePinRecipe(choosingFor, choice);
+
+            choosingFor = null;
+            choosingNode = null;
+            BackToList();
+        }
+
+        /// <summary>Ask which recipe when there is more than one way; just unfold when there
+        /// is only one, since a chooser with a single entry is a dialog that wastes a click.</summary>
+        bool ExpandOrChoose(Pin pin, TallyNode node, List<RecipeVariantGroup> choices)
+        {
+            if (choices == null || choices.Count == 0) return true;
+
+            if (choices.Count > 1)
+            {
+                choosingFor = pin;
+                choosingNode = node;
+                screen = TbScreen.ChooseRecipe;
+                Recompose();
+                return true;
+            }
+
+            if (node != null) svc.ChooseNodeRecipe(pin, node, choices[0]);
+            else svc.ToggleGatherOnly(pin);
             return true;
         }
 

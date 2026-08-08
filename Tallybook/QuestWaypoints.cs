@@ -84,6 +84,28 @@ namespace Tallybook
 
         static bool HasPosition(Pin pin) => pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0;
 
+        /// <summary>
+        /// The marker's title, guaranteed to be something the map can actually draw.
+        ///
+        /// A waypoint with a blank title crashes the game outright, and not where you would
+        /// look for it: hovering it makes vanilla's world map build hover text of zero width
+        /// and hand that to Cairo, which refuses a surface with no area and takes the client
+        /// with it (found by Mark, 0.3.4). The name comes from the entity, an entity can be
+        /// nameless, and the placing guard only ever checked for null — so an unnamed quest
+        /// giver planted a live landmine on the player's map.
+        ///
+        /// Newlines go too: the waypoint command takes the title as rest-of-line, so an
+        /// embedded break would silently truncate it back to nothing.
+        /// </summary>
+        static string SafeTitle(Pin pin)
+        {
+            string title = (pin?.QuestGiver ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (title.Length > 0) return title;
+
+            title = (pin?.DisplayName ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            return title.Length > 0 ? $"Errand: {title}" : "Errand";
+        }
+
         void Place(Pin pin)
         {
             // Recorded before sending: if the command fails we would rather have no marker
@@ -98,7 +120,7 @@ namespace Tallybook
                 $"/waypoint addati {config.QuestWaypointIcon} " +
                 $"{C(pin.QuestX)} {C(pin.QuestY)} {C(pin.QuestZ)} " +
                 $"{(config.QuestWaypointPinned ? "true" : "false")} " +
-                $"{config.QuestWaypointColor} {pin.QuestGiver}",
+                $"{config.QuestWaypointColor} {SafeTitle(pin)}",
                 null);
         }
 
@@ -106,7 +128,7 @@ namespace Tallybook
         {
             pin.WaypointPlaced = false;
 
-            int index = FindIndex(pin.QuestGiver, pin.QuestX, pin.QuestY, pin.QuestZ);
+            int index = FindIndex(SafeTitle(pin), pin.QuestX, pin.QuestY, pin.QuestZ);
             if (index < 0) return;      // already gone, or we cannot see the list — leave it be
 
             capi.SendChatMessage($"/waypoint remove {index}", null);
@@ -159,6 +181,39 @@ namespace Tallybook
         /// of the map's name ("Devastation"), which is loose by nature: a near miss shows the
         /// giver instead, which is where the errand ends anyway.
         /// </summary>
+        /// <summary>
+        /// Where an errand is going, preferring what the map currently shows and falling back
+        /// to what it showed the last time we looked.
+        ///
+        /// The remembered copy is the point: a locator map's destination used to exist only as
+        /// long as its waypoint did, so deleting that waypoint by hand quietly cost the errand
+        /// its destination as well as its marker (found by Mark). Reading is still what
+        /// establishes the site — nothing is claimed before you have read the map — but once
+        /// read, it is ours to keep, exactly as the giver's own position already was.
+        ///
+        /// Remembering is not placing. Nothing here puts a marker back; that stays a
+        /// transition, or something you ask for by hand with `.tallybook markers`.
+        /// </summary>
+        public Vec3d SiteFor(Pin pin)
+        {
+            if (pin == null) return null;
+
+            var found = FindReadMapSite(pin.QuestMaps);
+            if (found != null)
+            {
+                if ((int)pin.QuestMapX != (int)found.X || (int)pin.QuestMapZ != (int)found.Z)
+                {
+                    pin.QuestMapX = found.X;
+                    pin.QuestMapY = found.Y;
+                    pin.QuestMapZ = found.Z;
+                    store.Save();
+                }
+                return found;
+            }
+
+            return pin.HasMapSite ? new Vec3d(pin.QuestMapX, pin.QuestMapY, pin.QuestMapZ) : null;
+        }
+
         public Vec3d FindReadMapSite(List<string> mapNames)
         {
             if (mapNames == null || mapNames.Count == 0) return null;
@@ -226,6 +281,51 @@ namespace Tallybook
         }
 
         /// <summary>
+        /// Every waypoint on the map with a blank title, as "index at x, z" lines.
+        ///
+        /// These crash the client when hovered on the world map — vanilla builds hover text of
+        /// zero width and Cairo will not make a surface with no area — so finding them is
+        /// worth a command even though any mod, or the player, can have made one. Reported
+        /// rather than removed on sight: they are the player's waypoints, not ours, and only
+        /// their positions are worth anything once the title is gone.
+        /// </summary>
+        public List<string> BlankTitledWaypoints()
+        {
+            var found = new List<string>();
+            var list = OwnWaypoints();
+            if (list == null) return found;
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                var wp = list[i];
+                if (wp == null || !string.IsNullOrWhiteSpace(wp.Title)) continue;
+                found.Add(wp.Position == null
+                    ? $"{i}: (no position)"
+                    : $"{i}: {(int)wp.Position.X}, {(int)wp.Position.Z}");
+            }
+            return found;
+        }
+
+        /// <summary>Delete them, highest index first so removals cannot shift each other.</summary>
+        public int RemoveBlankTitledWaypoints()
+        {
+            var list = OwnWaypoints();
+            if (list == null) return 0;
+
+            var indices = new List<int>();
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i] != null && string.IsNullOrWhiteSpace(list[i].Title)) indices.Add(i);
+            }
+
+            foreach (int i in Enumerable.Reverse(indices))
+            {
+                capi.SendChatMessage($"/waypoint remove {i}", null);
+            }
+            return indices.Count;
+        }
+
+        /// <summary>
         /// Remove every marker we can identify as one of ours — the way out of a map full of
         /// duplicates. Highest index first, so removing one never shifts the index of another
         /// still to be removed.
@@ -233,7 +333,7 @@ namespace Tallybook
         public int RemoveAllQuestMarkers()
         {
             var givers = new HashSet<string>(
-                store.Pins.Where(p => p.QuestGiver != null).Select(p => p.QuestGiver));
+                store.Pins.Where(p => p.QuestGiver != null).Select(SafeTitle));
             if (givers.Count == 0) return 0;
 
             var list = OwnWaypoints();

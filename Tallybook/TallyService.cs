@@ -154,6 +154,27 @@ namespace Tallybook
             Store.Changed();
         }
 
+        /// <summary>Use this recipe for a pin, and show its ingredients.</summary>
+        public void ChoosePinRecipe(Pin pin, RecipeVariantGroup group)
+        {
+            if (group == null) return;
+
+            pin.Expansions = new List<SavedExpansion>();
+            pin.GatherOnly = false;
+            SetGroup(pin, group, rememberPref: true);
+            Store.Changed();
+        }
+
+        /// <summary>Unfold an ingredient row using this recipe.</summary>
+        public void ChooseNodeRecipe(Pin pin, TallyNode node, RecipeVariantGroup group)
+        {
+            if (group == null) return;
+
+            TallyTree.Expand(node, group, BuildRows, BuildTools);
+            if (group.OutputCode != null) Store.RecipePrefs[group.OutputCode] = group.Signature;
+            Store.Changed();
+        }
+
         /// <summary>Cycle a pin to its next recipe choice. Expansion state is discarded — the
         /// old tree described a different recipe's ingredients.</summary>
         public void CyclePinRecipe(Pin pin)
@@ -261,6 +282,10 @@ namespace Tallybook
         /// visible number moved so open surfaces know to redraw.</summary>
         public void RecountAll()
         {
+            // Anything the world could not identify at load gets another chance here, so a
+            // registry that simply was not ready yet costs a tick rather than the pin.
+            Store.RetryUnresolved(Resolve);
+
             var snapshot = new InventorySnapshot(
                 Probe.CarriedInventories(),
                 config.IncludeMountBags ? Probe.OwnedAnimalBagStacks(config.MountBagRange) : null);

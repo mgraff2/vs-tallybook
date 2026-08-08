@@ -87,11 +87,17 @@ namespace Tallybook
                 // Talking to them again is also the chance to fill in words we never captured
                 // — an errand tracked before we kept them, or one whose dialogue file the
                 // name-based lookup could not find.
+                //
+                // Text that predates the named-transcript format is replaced too, not just
+                // missing text. The login backfill can only re-derive what it can find a
+                // dialogue file for, which is villagers named after their file — traders are
+                // exactly the ones it misses, so standing in front of one is the only chance
+                // their old unattributed paragraphs ever get their speaker back.
                 if (offer.Briefing.Count > 0)
                 {
                     foreach (var pin in svc.Store.Pins)
                     {
-                        if (pin.QuestGiver == offer.NpcName && (pin.QuestText == null || pin.QuestText.Count == 0))
+                        if (pin.QuestGiver == offer.NpcName && !QuestScanner.IsTranscript(pin.QuestText))
                         {
                             pin.QuestText = offer.Briefing.ToList();
                         }

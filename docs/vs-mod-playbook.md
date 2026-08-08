@@ -1,0 +1,286 @@
+# Vintage Story mod playbook
+
+Transferable lessons from building Tallybook. Everything here is generalized: nothing depends
+on what that mod does. Copy the relevant sections into a new mod's `CLAUDE.md`, adjust the
+specifics, and delete what does not apply.
+
+Each rule earned its place by costing something. Where a rule looks fussy, the failure it
+prevents is stated — that is the part worth keeping, because a rule without its failure gets
+"cleaned up" by the next person.
+
+---
+
+## 1. What to copy on day one
+
+| From | To | Notes |
+| --- | --- | --- |
+| `tools/compat-test.ps1` | `tools/` | Portable as-is. Only the companion set needs editing. |
+| `tools/version-sweep.ps1` | `tools/` | Portable as-is. Update the `-Versions` default. |
+| `.gitignore` entries for `tools/compat-cache/`, `tools/server-cache/`, `dist/` | | Both caches are large and re-derivable. |
+| Sections 2–9 below | `CLAUDE.md` | Trim to what the mod actually does. |
+
+Both scripts discover the project as "the folder under the repo root containing a
+`modinfo.json`" and read the modid, version and assembly name from there. They do not name a
+mod anywhere.
+
+---
+
+## 2. Build
+
+The system `dotnet` may be an older SDK that refuses the game's `net10.0` references. Build
+with the user-scoped SDK:
+
+```
+& "$env:USERPROFILE\.dotnet\dotnet.exe" build <Project>\<Project>.csproj -c Release
+```
+
+Game references resolve from `%APPDATA%\Vintagestory`.
+
+---
+
+## 3. Testing — two gates, both mandatory
+
+### Gate 1: compat matrix, after any code change, before any commit
+
+```
+.\tools\compat-test.ps1
+```
+
+Builds the zip, then boots a headless dedicated server once per mod combination (solo, +each
+companion, all together) and fails on any `[Error]`/`[Warning]`, a wrong mod count or load
+order, or a violated marker.
+
+### Gate 2: game-version sweep, before every release
+
+```
+.\tools\version-sweep.ps1
+```
+
+`modinfo.json` declares a `game` version, and that is a promise to every player on every patch
+release in that line. The sweep builds the zip **once** and runs the whole matrix against a
+real server for each patch version, downloaded and cached. One artifact, N servers — that is
+the claim being tested.
+
+When a new patch ships, append it to the `-Versions` default. The CDN 404s on versions that do
+not exist, which is how you find the current latest.
+
+### Things that made these gates lie, and the fixes
+
+- **`exit 0` at the end of `compat-test.ps1` is load-bearing.** The sweep reads
+  `$LASTEXITCODE`, which only native commands and `exit` set. Without it, a `-SkipBuild` run
+  that never invokes dotnet leaves a stale code behind and a fully passing matrix is reported
+  as all-FAIL. (This happened: per-version logs said PASSED while the summary said FAIL.)
+- **`SETUP` is not `FAIL`.** Distinguish "the mod failed" from "this version could not be
+  tested". A half-extracted server package boots without its worldgen assets, floods the log
+  with `[Error]`s that have nothing to do with you, and looks exactly like a broken mod.
+- **Verify extraction against the archive's own entry count** and leave a completion stamp, so
+  a partial or interrupted extract is never silently reused. Do not use `Expand-Archive` — it
+  was caught truncating a ~9600-file archive to ~1400 files without raising an error.
+- **Key temp data paths by `$PID`.** A hand-run test and a running sweep otherwise delete each
+  other's directory mid-boot, which reports as "server did not start" and looks like a mod
+  failure.
+- **A transient failure must be re-run, not assumed.** If a combo fails with an empty log and
+  passes on re-run, say so out loud rather than quietly re-rolling until green.
+
+### Choosing companions
+
+Derive the set from the mod's *real* interaction surface — hotkeys, HUD corners, dialog space,
+per-world data files, the registries it reads — not from another project's list. A
+recipe-adding content mod is the right companion for anything that reads recipes; a HUD mod is
+the right companion for anything that draws in a screen corner.
+
+Source companion zips from the live `Mods` folder first, then `ModsByServer/`, then the mod DB
+API. `ModsByServer/` is where a modded server's own mods land and is usually the only place
+they exist locally — it is the realistic companion pool.
+
+### What the headless test cannot see
+
+Everything client-side: registry reads, input events, GUI, rendering. For a client-side mod
+that is nearly all of it. Keep a **manual checklist in README.md** and run it before any
+release that touches those areas. A green matrix is necessary and nowhere near sufficient.
+
+---
+
+## 4. Compat invariants worth pinning
+
+- **Side discipline.** A client-side mod must contribute *exactly one* line to
+  `server-main.log`: its entry in the `Mods, sorted by dependency:` line. A second mention
+  means server-side code started running — `ShouldLoad(EnumAppSide.Client)` or
+  `"side": "Client"` was weakened. Pin this as an exact count, not a "should not appear",
+  because path echoes will fool a naive match.
+- **The assembly must still load server-side** even when it never runs there:
+  `server-debug.log` must show `[<modid>] Loaded assembly` and
+  `Instantiate mod systems for <modid>`. This is what catches an assembly that no longer loads
+  against a new game version — the single most likely way a patch release breaks a mod.
+- **Prefer dynamic, nameless cross-mod support.** Read whatever the server pushed into the
+  client's registries and content mods work with zero compat patches. If you ever must add an
+  `api.ModLoader.IsModEnabled(...)` branch, also add an **exact-count** log line at the
+  registration site (`"[<modid>] X detected: N somethings registered"`) and pin it in the
+  compat test as a `require` marker for combos with X and a `forbid` marker for combos
+  without. An upstream change that silently breaks the integration then changes the count and
+  fails the test.
+- **Cross-mod grid recipes must not go in `recipes/grid/`** — the vanilla loader logs an
+  `[Error]` when an ingredient's mod is missing. Register them from code, gated on
+  `IsModEnabled`, with a count marker as above.
+
+---
+
+## 5. API discipline
+
+**Verify against the real assemblies at implementation time. Never trust memory, and never
+trust notes like these, for API shape.**
+
+`VintagestoryAPI.xml` next to the game DLLs carries doc comments but only member *names*, and
+only for documented members — absence there proves nothing. To get full signatures, use a
+throwaway `net10.0` console app referencing `VintagestoryAPI.dll` / `VSSurvivalMod.dll` that
+calls `Assembly.LoadFrom` and `GetMembers`. Note:
+
+- `Assembly.Load` by simple name does not work; use `LoadFrom` with a full path.
+- PowerShell cannot do this — no `MetadataLoadContext`, and it cannot load the assemblies.
+- Use `BindingFlags.Public | Instance` **without** `DeclaredOnly` when you care about
+  inherited members; a base class often holds the property you are looking for.
+
+### Durable API facts (re-verify, but these held across 1.22.0–1.22.6)
+
+- **Client commands are invoked with a leading `.`, not `/`.** Register the name with no
+  prefix. A `/` prefix routes to the server, which for a client-only mod replies "No such
+  command exists" — a message that looks exactly like the mod failing to load. Before chasing
+  that, check `client-debug.log` for `Loaded assembly` and `Starting system:`.
+- **Never gate on `args.ArgCount`.** Parsers consume the raw arguments while parsing, so
+  `ArgCount` reads 0 inside a handler even when `args[0]` holds a value. Gating on it silently
+  drops every argument.
+- **`capi.Event.PlayerJoin` fires for other players too** — compare `PlayerUID` against
+  `capi.World.Player.PlayerUID`.
+- **Harmony ships with both the game and the dedicated server**, so a patch is available even
+  where there is no registration hook. Prefer a postfix that only *appends* to what the game
+  returned, catch and log a failure to apply, and never patch something whose failure costs
+  the player progress that cannot be recovered.
+
+---
+
+## 6. GUI lessons
+
+- **Never align a HUD dialog with `EnumDialogArea` corner alignments.** Vanilla's overlays
+  re-stack themselves below the first other corner-aligned composer on a timer, and the two
+  chase each other forever. Position absolutely (`EnumDialogArea.None` + `WithFixedPosition`)
+  and re-anchor on frame/scale change.
+- **Dodge every open HUD-type dialog in your column, not just the one you know about.**
+  Vanilla stacks several.
+- **Dispose a replaced `SingleComposer` on a short delayed callback**, not inline — the old
+  composer may still be mid-iteration in the event loop that triggered the recompose.
+- **Set `ignoreNextKeyPress = true` in `OnGuiOpened`**, or the opening hotkey's own char event
+  lands in the first text input.
+- **A recompose steals focus.** If the dialog rebuilds on live data, defer recomposes briefly
+  while a field is being typed in — and guard the `SetValue`→callback feedback loop, or every
+  recompose looks like typing and defers the next update forever.
+- **Item icons need `new DummySlot(stack, new DummyInventory(capi))`.** A bare `DummySlot`
+  crashes the client on a *perishable* item: drawing it makes the renderer ask for transition
+  state, which dereferences `slot.Inventory`. Non-perishable items never hit that path, so it
+  is invisible until someone tracks food. Anything thrown from a render override kills the
+  client — wrap the draw in try/catch and latch it off. Cosmetics are never worth a crash.
+- **Paginate by measured height, not by row count.** The moment any row can wrap to a variable
+  number of lines, "N rows per page" silently runs off the bottom of the screen with no way to
+  reach the rest. Walk the list against a height budget derived from
+  `capi.Render.FrameHeight / RuntimeEnv.GUIScale`, and never break before a page's first row
+  or one oversized row produces an endless list of empty pages.
+- **One definition of "what is on this page".** Composing and any later input-restore pass must
+  agree exactly; asking the composer for a control it never composed is unhealthy whether or
+  not it throws.
+
+---
+
+## 7. Persistence — the save file is the player's work
+
+This section exists because ignoring it destroyed a user's data.
+
+- **Never delete a saved entry because it failed to resolve.** "The world does not know this
+  item" and "does not know it *yet*" are indistinguishable at load time. Deleting on that basis
+  wiped an entire list, and the next save made it permanent — silently, because the failure
+  path returned `false` rather than throwing. Keep unresolved entries, show what you can
+  (a bare code is fine), and retry on a later tick.
+- **Refuse to write before the file has been read.** Any number of code paths write; if one
+  fires early it persists an empty in-memory state over a real file. A single `loaded` flag
+  prevents the whole class.
+- **Back up on the full→empty transition.** Emptying really is something a user does, so it
+  cannot be forbidden — but it is also exactly what a failed load looks like. One file copy is
+  the difference between an annoyance and unrecoverable loss.
+- **Mark every derived member `[JsonIgnore]`.** Adding a computed property without it silently
+  changes the save format.
+- **Diagnostic signature of this failure class:** one collection empty while the others in the
+  *same file* are intact. The intact ones are the ones nothing "resolves".
+
+---
+
+## 8. Outward actions
+
+Anything that leaves the mod — a chat command, a marker, a message, a write — is an outward
+action and needs different rules from an internal computation.
+
+- **Never drive a repeatable outward action from a check that can fail quietly, on a
+  schedule.** A reconcile loop asked the map which markers existed and added the missing ones
+  on a timer; the read came back empty, so "missing" was always true and it planted a marker
+  every few seconds until there were fifty. Drive outward actions from **transitions**, and
+  record that they happened in persisted state. A flag that flips once cannot spam even when
+  every read fails.
+- **Sanitise anything that becomes a command argument.** A blank waypoint title crashed the
+  client on hover (zero-width hover text → Cairo refuses a zero-area surface), from a stack
+  trace containing nothing of the mod's, arbitrarily long after the marker was placed. Trim,
+  strip newlines, require non-empty with a fallback.
+- **A null check is not an emptiness check** for anything the game handed you.
+  `Entity.GetName()` returns blank for a nameless entity.
+- **Record the state before sending, not after.** If the command fails you would rather have
+  no marker than retry forever.
+- **Removal by current index, never a remembered one** — indices shift as other items come and
+  go. Match on identity at the moment of removal, and remove highest-index-first so removals
+  cannot shift each other.
+- **"Did it work?" must not be answerable trivially.** A check of "does the view contain the
+  target" passes instantly on a zoomed-out map, so every retry is skipped. Compare something
+  that actually distinguishes success.
+
+---
+
+## 9. Product principles that generalize
+
+- **Never write to the player's inventory or act for them.** Read-only means the worst bug is a
+  wrong number; a bug that writes scatters or loses items. Automated inventory manipulation is
+  also what anti-cheat tooling looks for on someone else's server. Finding that something is
+  *possible* is not a reason to do it.
+- **Answer the question actually asked.** Answering a different question dishonestly is worse
+  than not answering.
+- **Fail toward saying nothing, never toward a spoiler.** If a condition cannot be evaluated,
+  treat it as unmet. Surfacing content the game is deliberately withholding is a bug with no
+  error message.
+- **Prefer a deliberate action to a clever guess.** Automatic recursion, auto-expansion and
+  auto-selection all hit cycles, explosions and silent wrong answers. Every one of those makes
+  the output lie, and a tool that lies occasionally is worse than one that asks.
+- **Never present a raw registry object to the player.** Group it into what a player would call
+  one thing, and never render a raw wildcard, code or key as a name.
+- **Event-driven, not polled.** Coalesce bursts into one deferred recompute — moving one stack
+  raises several events, and recomputing per event both wastes work and briefly displays a
+  number that was never true. Reserve polling for the one or two paths that genuinely have no
+  event, and gate those on cheap preconditions.
+- **A destructive-looking diagnostic should report first and act on request.** List what would
+  be removed, with enough detail to undo it, and take a `remove` argument to actually do it.
+- **Derive from the game's content files; do not rely on having been watching.** If the assets
+  describe something fully — quests, recipes, prices, structures — build the model from them
+  once per world and match existing records to it. Capture-time data has as many failure modes
+  as there are ways to miss the moment, and every one of them is silent. Keep on your own
+  records only what the files genuinely cannot know (world coordinates, player progress). Two
+  guards: match on substance rather than only on a name, since names come from live entities
+  and go missing; and never use such a catalogue to *offer* or display content the player has
+  not reached, because it contains everything, including what the game is deliberately
+  withholding. Expose the tie-out as a command, not a screen.
+
+---
+
+## 10. Release flow
+
+1. Run both gates.
+2. Stage `dist/<modid>_X.Y.Z.zip` into `%APPDATA%\VintagestoryData\Mods\` (removing older
+   copies) for local testing.
+3. Publish only on explicit go-ahead: dated CHANGELOG entry, README version refs, commit, tag
+   `vX.Y.Z`, push, `gh release create`.
+4. Mod DB upload is manual.
+
+Keep the CHANGELOG in the user's vocabulary, not the code's — if the game calls the item a
+"blueprint" and the code calls it a "schematic", the changelog says blueprint.

@@ -31,6 +31,14 @@ namespace Tallybook
         /// point you back at them without depending on a map waypoint surviving.</summary>
         public double QuestX, QuestY, QuestZ;
 
+        /// <summary>Where the map that came with this errand points, once we have seen it on
+        /// your map. Remembered for the same reason the giver's position is: a waypoint you
+        /// delete by hand should cost you the marker, not the knowledge of where the errand
+        /// was going.</summary>
+        public double QuestMapX, QuestMapY, QuestMapZ;
+
+        [JsonIgnore] public bool HasMapSite => QuestMapX != 0 || QuestMapY != 0 || QuestMapZ != 0;
+
         /// <summary>What the villager said when they asked, kept so the errand can be re-read
         /// long after the conversation is closed.</summary>
         public List<string> QuestText = new List<string>();
@@ -310,12 +318,29 @@ namespace Tallybook
             }
         }
 
+        /// <summary>
+        /// Has this world's file been read yet? Nothing is written before it has.
+        ///
+        /// Every path that writes — a quest arriving, the history updating, a map site being
+        /// noticed — can fire early, and writing the in-memory list before it has been filled
+        /// means writing an empty list over a real one. The list is the player's own record of
+        /// what they are doing; losing it is the worst thing this mod can do, and it cannot
+        /// undo it afterwards.
+        /// </summary>
+        bool loaded;
+
         public void Save()
         {
             try
             {
                 string path = SavePath;
                 if (path == null) return;
+                if (!loaded) return;
+
+                // Emptying the list is a real thing a player does — but it is also what a
+                // failed load looks like, so keep a copy of what was there. Costs one file
+                // write on the rare transition from "had pins" to "has none".
+                if (pins.Count == 0) BackUpBeforeEmptying(path);
 
                 // Expansion state lives in the tree; serialize it back onto the pin first.
                 foreach (var pin in pins)
@@ -337,6 +362,27 @@ namespace Tallybook
             catch (Exception e)
             {
                 capi.Logger.Warning("[tallybook] could not save pin list: {0}", e.Message);
+            }
+        }
+
+        /// <summary>Keep the last version that still had pins, next to the save as .bak.</summary>
+        void BackUpBeforeEmptying(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return;
+
+                var previous = JsonConvert.DeserializeObject<SaveFile>(File.ReadAllText(path));
+                if (previous?.Pins == null || previous.Pins.Count == 0) return;
+
+                File.Copy(path, path + ".bak", overwrite: true);
+                capi.Logger.Warning(
+                    "[tallybook] pin list is now empty; previous {0} pin(s) kept in {1}.bak",
+                    previous.Pins.Count, Path.GetFileName(path));
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not back up the pin list: {0}", e.Message);
             }
         }
 
@@ -366,20 +412,51 @@ namespace Tallybook
                 RecipePrefs = new Dictionary<string, string>();
             }
 
-            // Drop pins whose item no longer exists at all — a row we cannot name or count is
-            // not a useful reminder, it is a mystery. A pin that throws on resolve goes the
-            // same way: one bad entry must not abort the load and leave the surfaces with
-            // nothing, which looks exactly like the mod having failed to start.
-            pins.RemoveAll(p =>
+            // Pins that will not resolve are KEPT, not dropped.
+            //
+            // They used to be deleted here on the reasoning that a row we cannot name or count
+            // is a mystery rather than a reminder. That reasoning is sound about the row and
+            // catastrophic about the file: "the world does not know this item" and "the world
+            // does not know this item *yet*" are indistinguishable at this moment, and the
+            // second one deleted a player's entire list and then saved the deletion over their
+            // save (found by Mark, 0.3.4 — every pin gone, silently, while the quest history
+            // in the same file survived untouched because nothing resolves that).
+            //
+            // Keeping them costs a row showing a bare item code until it resolves; dropping
+            // them costs work that cannot be got back. RetryUnresolved re-tries on every
+            // recount, so a registry that was not ready fixes itself within a tick.
+            int unresolved = 0;
+            foreach (var pin in pins)
             {
-                try { return !resolve(p); }
+                try { if (!resolve(pin)) unresolved++; }
                 catch (Exception e)
                 {
-                    capi.Logger.Warning("[tallybook] dropping unreadable pin {0}: {1}", p.Code, e.Message);
-                    return true;
+                    unresolved++;
+                    capi.Logger.Warning("[tallybook] pin {0} could not be read: {1}", pin.Code, e.Message);
                 }
-            });
+            }
+            if (unresolved > 0)
+            {
+                capi.Logger.Warning(
+                    "[tallybook] {0} of {1} pin(s) did not resolve on load — keeping them and retrying",
+                    unresolved, pins.Count);
+            }
+
+            loaded = true;
             OnChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Try again on anything the world could not identify at load. Cheap: it only touches
+        /// pins that are still unresolved, which is normally none at all.
+        /// </summary>
+        public void RetryUnresolved(System.Func<Pin, bool> resolve)
+        {
+            foreach (var pin in pins)
+            {
+                if (pin.Stack != null) continue;
+                try { resolve(pin); } catch { /* still not ready; try again next recount */ }
+            }
         }
     }
 }
