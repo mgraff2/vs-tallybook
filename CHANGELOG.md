@@ -80,7 +80,9 @@ From an adversarial review pass (Fable) over the whole codebase:
 - **Side quest rows line up.** The transcript-toggle column is reserved on every errand row,
   so a quest with no captured conversation no longer starts its name further left than its
   neighbours; and fitted text keeps a few pixels of slack, because "fits exactly" sometimes
-  lost to the renderer's own wrap decision and bled the last word into the row below.
+  lost to the renderer's own wrap decision and bled the last word into the row below. The
+  HUD's lines had the same defect at the same boundary — "Raw hide (Small) for" with
+  "Gerhardt" overprinting the next errand — and get the same slack.
 - **Quest markers land on the quest givers now.** The waypoint command takes spawn-relative
   coordinates — the numbers your coordinate HUD shows — while entity positions are absolute
   world coordinates, so every marker was offset by the entire spawn position: a cluster of
