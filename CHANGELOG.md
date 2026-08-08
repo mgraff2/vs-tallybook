@@ -55,6 +55,11 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **A waypoint that names the quest giver counts as knowing where they are.** Reading "Map to
+  Tobias' cave" drops the game's own waypoint at his cave, and a title carrying his name is
+  the game saying whose place it is — so Tobias gets a Map button before you have ever stood
+  next to him. Read live from your waypoints, so deleting one honestly returns the answer to
+  "unknown".
 - **Map goes to the person who wants the goods** — reliably, and nowhere else. An earlier
   attempt sent you to wherever a map the NPC hands out points, on the theory that Tobias
   giving you a map to the Devastation means that is where his errand takes you. Which maps an
