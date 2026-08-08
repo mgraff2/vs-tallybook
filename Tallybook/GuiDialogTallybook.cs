@@ -785,6 +785,37 @@ namespace Tallybook
             y += RowH;
         }
 
+        long optionsFontChangedMs;
+        bool optionsRecomposeQueued;
+
+        /// <summary>
+        /// Recompose the Options screen once the slider has settled, never mid-drag.
+        ///
+        /// The options text follows the size slider, but a recompose rebuilds the slider
+        /// element itself — doing that per drag-notch snatches the handle out from under the
+        /// cursor, which is precisely the interference this screen promises not to have. Same
+        /// pattern as the count-field typing grace: note when the value last moved, recompose
+        /// only after a quiet moment.
+        /// </summary>
+        void QueueOptionsRecompose()
+        {
+            optionsFontChangedMs = capi.ElapsedMilliseconds;
+            if (optionsRecomposeQueued) return;
+            optionsRecomposeQueued = true;
+            capi.Event.RegisterCallback(CheckOptionsRecompose, 650);
+        }
+
+        void CheckOptionsRecompose(float _)
+        {
+            if (capi.ElapsedMilliseconds - optionsFontChangedMs < 550)
+            {
+                capi.Event.RegisterCallback(CheckOptionsRecompose, 300);
+                return;
+            }
+            optionsRecomposeQueued = false;
+            if (IsOpened() && screen == TbScreen.Options) Recompose();
+        }
+
         /// <summary>Switches compose in the off state; setting On directly fires no callback.</summary>
         void RestoreOptionSwitches()
         {
@@ -1121,7 +1152,12 @@ namespace Tallybook
         static void Centre(WorldMapManager maps, BlockPos target)
         {
             var dlg = maps?.worldMapDlg;
-            if (dlg == null) return;
+
+            // Only while the big map is actually the thing on screen. This runs on a delay,
+            // and the player can close the map before it fires — at which point the only
+            // widget left to pan is the corner minimap, which must never be steered by a
+            // stale click from half a second ago.
+            if (dlg == null || !dlg.IsOpened() || dlg.DialogType != EnumDialogType.Dialog) return;
 
             foreach (var composer in dlg.Composers.Values)
             {
@@ -1513,7 +1549,14 @@ namespace Tallybook
         /// </summary>
         void ComposeOptions(GuiComposer c)
         {
-            var font = CairoFont.WhiteSmallText();
+            // The options text follows the size slider too — but ONLY the glyphs. Every box,
+            // row and control keeps its fixed bounds regardless of font, so the window (sized
+            // from its children) cannot resize under the cursor and the slider never moves
+            // while being dragged (Mark: "don't let the window resize... so I can shrink and
+            // grow it without interference"). A big font in a fixed box truncates with an
+            // ellipsis; that costs a label its tail, where reflowing would cost the player
+            // their grip on the slider.
+            var font = TableFont();
             var hint = font.Clone().WithColor(GuiStyle.ColorParchment);
             double y = 40;
 
@@ -1550,14 +1593,15 @@ namespace Tallybook
             }
 
             Slider("opt-hudfont", "Text size (HUD and this window)",
-                "One size for everything Tallybook draws — the HUD and this window's table. "
-                + "Smaller text fits more on screen; the rows close up to match. The HUD "
-                + "moves as you drag; this window follows when you leave Options.",
+                "One size for everything Tallybook draws — the HUD, this window's table, and "
+                + "these options. The HUD moves as you drag; this text follows the moment you "
+                + "pause, so the slider never shifts under your hand.",
                 v =>
                 {
                     config.HudFontSize = v;
                     capi.StoreModConfig(config, "tallybook.json");
                     onHudChanged?.Invoke();
+                    QueueOptionsRecompose();
                 });
 
             Option("opt-hud", config.HudVisible,
