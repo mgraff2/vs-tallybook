@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.4 — 2026-08-07
+## 0.3.4 — 2026-08-08
 
 From an adversarial review pass (Fable) over the whole codebase:
 
