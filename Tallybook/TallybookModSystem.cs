@@ -434,7 +434,17 @@ namespace Tallybook
         void ApplyKnownPlace(Pin pin)
         {
             if (pin.QuestGiver == null) return;
-            if (!svc.Store.NpcPlaces.TryGetValue(pin.QuestGiver, out string place)) return;
+
+            // Case-insensitive on miss: the giver's name has two sources — the dialogue
+            // *filename* for errands recovered at login, the live entity for everything
+            // else — and they are only coincidentally identical. An exact-only match makes
+            // the Map button quietly depend on that coincidence.
+            if (!svc.Store.NpcPlaces.TryGetValue(pin.QuestGiver, out string place))
+            {
+                place = svc.Store.NpcPlaces.FirstOrDefault(
+                    kv => string.Equals(kv.Key, pin.QuestGiver, StringComparison.OrdinalIgnoreCase)).Value;
+                if (place == null) return;
+            }
 
             var parts = place.Split(',');
             if (parts.Length != 3) return;
@@ -483,7 +493,7 @@ namespace Tallybook
                 // the errand was taken on is the better one.
                 foreach (var pin in svc.Store.Pins)
                 {
-                    if (pin.QuestGiver != name) continue;
+                    if (!string.Equals(pin.QuestGiver, name, StringComparison.OrdinalIgnoreCase)) continue;
                     if (pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0) continue;
 
                     ApplyKnownPlace(pin);
