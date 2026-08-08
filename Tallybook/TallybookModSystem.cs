@@ -105,6 +105,19 @@ namespace Tallybook
                         return TextCommandResult.Success("");
                     })
                 .EndSubCommand()
+                .BeginSubCommand("relearn")
+                    .WithDescription("Forget all learned quest-giver positions and markers, then relearn them fresh")
+                    .HandleWith(_ =>
+                    {
+                        EnsureGui();
+                        int removed = questWaypoints?.Relearn() ?? 0;
+                        svc.RecountAll();
+                        return TextCommandResult.Success(
+                            $"Forgot all quest places and removed {removed} marker(s). "
+                            + "Walk past your quest givers (or open the map once, for places "
+                            + "your own waypoints name) and everything relearns.");
+                    })
+                .EndSubCommand()
                 .BeginSubCommand("waypoints")
                     .WithDescription("List the waypoints this client can currently read — ground truth for a missing Map button")
                     .HandleWith(_ =>

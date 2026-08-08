@@ -420,7 +420,20 @@ asset, and collect `player.inventory` conditions.
 - **Waypoint syntax** (confirmed working, Mark): `/waypoint addati <icon> <x> <y> <z>
   <pinned> <color> <title>` — icon `x`, **decimal** coords, hex colour (`#ff3f33`), title is
   rest-of-line. Format coords with `InvariantCulture`: a locale writing `131,5` splits one
-  argument into two and shifts every argument after it. A client-only mod cannot write
+  argument into two and shifts every argument after it.
+  **X/Z are SPAWN-RELATIVE — the numbers the coordinate HUD shows — not absolute world
+  coordinates (found by Mark, by hand-marking the real villagers and comparing).** Entity
+  positions are absolute (map middle ≈ half a million); subtract
+  `capi.World.DefaultSpawnPosition.XYZ` X/Z before sending (Y stays as-is). Sending absolute
+  offsets every marker by the whole spawn position — and the misplaced markers were then
+  *captured back* by the position resolver as where the NPCs "are", laundering the error into
+  the save. Two standing rules from that: any command echoing coordinates to the player
+  prints spawn-relative (`.tallybook waypoints` exists to be compared against the HUD), and
+  the resolver never captures our own markers back (`IsOurs`: exact title + our icon) —
+  reading back something you yourself placed is a feedback loop, not knowledge.
+  `.tallybook relearn` is the recovery from poisoned positions: forget, remove markers,
+  relearn through the fixed paths. Note the waypoint list is also empty until the world map
+  has been opened once per session — capture, don't re-read. A client-only mod cannot write
   waypoints directly (`WaypointMapLayer.AddWaypoint` needs an `IServerPlayer`), so the chat
   command is the route; the NPC position is also stored on the pin so losing the waypoint
   never loses the way back.

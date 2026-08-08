@@ -116,9 +116,19 @@ namespace Tallybook
             // one argument into two and every argument after it shifts.
             string C(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
 
+            // The command wants SPAWN-RELATIVE X/Z — the numbers the coordinate HUD shows —
+            // while entity positions are absolute world coordinates, map middle around half a
+            // million. Sending absolute into a relative-taking command offset every marker by
+            // the whole spawn position: a cluster of blue x's nowhere near the villagers,
+            // which the resolver then captured back as their "positions" (found by Mark, by
+            // marking the real villagers by hand and comparing). Y stays as-is; only X/Z are
+            // spawn-relative in the game's convention.
+            var spawn = capi.World?.DefaultSpawnPosition?.XYZ;
+            double sx = spawn?.X ?? 0, sz = spawn?.Z ?? 0;
+
             capi.SendChatMessage(
                 $"/waypoint addati {config.QuestWaypointIcon} " +
-                $"{C(pin.QuestX)} {C(pin.QuestY)} {C(pin.QuestZ)} " +
+                $"{C(pin.QuestX - sx)} {C(pin.QuestY)} {C(pin.QuestZ - sz)} " +
                 $"{(config.QuestWaypointPinned ? "true" : "false")} " +
                 $"{config.QuestWaypointColor} {SafeTitle(pin)}",
                 null);
@@ -251,6 +261,13 @@ namespace Tallybook
                 foreach (var wp in list)
                 {
                     if (wp?.Title == null || wp.Position == null) continue;
+                    // Never our own quest markers. They are titled exactly the giver's name
+                    // with our icon, and they are placed FROM the position being resolved —
+                    // capturing one back is a feedback loop, and when a marker had been
+                    // misplaced, the loop laundered the bad position into "knowledge"
+                    // (found by Mark). A player's own "Tobias' cave" is not exact-titled,
+                    // so the genuine use survives.
+                    if (IsOurs(wp, person)) continue;
                     if (wp.Title.IndexOf(person, StringComparison.OrdinalIgnoreCase) >= 0)
                         return wp.Position;
                 }
@@ -261,6 +278,10 @@ namespace Tallybook
             }
             return null;
         }
+
+        bool IsOurs(Waypoint wp, string title)
+            => string.Equals(wp.Title?.Trim(), title?.Trim(), StringComparison.OrdinalIgnoreCase)
+               && string.Equals(wp.Icon, config.QuestWaypointIcon, StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
         /// Put a marker back on every active errand, whether or not we believe one is already
@@ -343,6 +364,12 @@ namespace Tallybook
             var list = OwnWaypoints();
             if (list == null) return lines;
 
+            // Spawn-relative, because that is what the player's coordinate HUD shows — this
+            // list exists to be compared against it, and absolute world coordinates read as
+            // gibberish next to it.
+            var spawn = capi.World?.DefaultSpawnPosition?.XYZ;
+            double sx = spawn?.X ?? 0, sz = spawn?.Z ?? 0;
+
             for (int i = 0; i < list.Count; i++)
             {
                 var wp = list[i];
@@ -350,9 +377,32 @@ namespace Tallybook
                 string title = string.IsNullOrWhiteSpace(wp.Title) ? "(untitled)" : wp.Title;
                 lines.Add(wp.Position == null
                     ? $"{i}: {title} (no position)"
-                    : $"{i}: {title} at {(int)wp.Position.X}, {(int)wp.Position.Z}");
+                    : $"{i}: {title} at {(int)(wp.Position.X - sx)}, {(int)(wp.Position.Z - sz)}");
             }
             return lines;
+        }
+
+        /// <summary>
+        /// Forget every learned quest place and start over: our markers removed, positions
+        /// and destinations zeroed. The way out of poisoned knowledge — positions captured
+        /// while placement was broken are wrong *in the save*, and nothing re-asks about a
+        /// position it believes it has. Walking past the NPCs and the tick resolver relearn
+        /// everything from scratch, through the fixed paths.
+        /// </summary>
+        public int Relearn()
+        {
+            int markers = RemoveAllQuestMarkers();
+
+            foreach (var pin in store.Pins)
+            {
+                if (pin.QuestGiver == null) continue;
+                pin.QuestX = pin.QuestY = pin.QuestZ = 0;
+                pin.SiteX = pin.SiteY = pin.SiteZ = 0;
+                pin.WaypointPlaced = false;
+            }
+            store.NpcPlaces.Clear();
+            store.Save();
+            return markers;
         }
 
         /// <summary>

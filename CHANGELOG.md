@@ -55,6 +55,14 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **Quest markers land on the quest givers now.** The waypoint command takes spawn-relative
+  coordinates — the numbers your coordinate HUD shows — while entity positions are absolute
+  world coordinates, so every marker was offset by the entire spawn position: a cluster of
+  blue x's nowhere near the villagers. Worse, the position resolver then captured our own
+  misplaced markers back as where the NPCs "are". Fixed both: coordinates are converted
+  before sending, and the resolver never reads our own markers back. **`.tallybook relearn`**
+  forgets all learned positions and markers so a poisoned map heals in one command —
+  walk through the village and everything re-places itself correctly.
 - **Map buttons no longer flicker out of existence.** They were driven by reading the client's
   waypoint list live, at draw time — and that read is known to come back empty at random (it
   is what once planted fifty duplicate markers). Successful reads are now captured into the
