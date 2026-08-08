@@ -105,6 +105,40 @@ namespace Tallybook
                         return TextCommandResult.Success("");
                     })
                 .EndSubCommand()
+                .BeginSubCommand("here")
+                    .WithDescription("Set a quest giver's location to where you are standing: .tallybook here Agnieszka")
+                    .WithArgs(api.ChatCommands.Parsers.All("giver"))
+                    .HandleWith(args =>
+                    {
+                        EnsureGui();
+                        string who = (args[0] as string)?.Trim();
+                        if (string.IsNullOrEmpty(who))
+                            return TextCommandResult.Error("Say who: .tallybook here Agnieszka");
+
+                        var me = capi.World?.Player?.Entity?.Pos;
+                        if (me == null) return TextCommandResult.Error("No position available.");
+
+                        // The player asserting "they live here" outranks anything learned —
+                        // it is the one source that cannot be a stale capture.
+                        var matched = svc.Store.Pins.Where(p =>
+                            p.QuestGiver != null
+                            && p.QuestGiver.IndexOf(who, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+                        if (matched.Count == 0)
+                            return TextCommandResult.Error($"No tracked errand has a giver matching '{who}'.");
+
+                        foreach (var pin in matched)
+                        {
+                            pin.QuestX = me.X; pin.QuestY = me.Y; pin.QuestZ = me.Z;
+                        }
+                        svc.Store.NpcPlaces[matched[0].QuestGiver] = string.Format(
+                            CultureInfo.InvariantCulture, "{0:0.0},{1:0.0},{2:0.0}", me.X, me.Y, me.Z);
+                        svc.Store.Save();
+                        svc.RecountAll();
+
+                        return TextCommandResult.Success(
+                            $"{matched[0].QuestGiver} placed here. Map on their errand(s) now comes to this spot.");
+                    })
+                .EndSubCommand()
                 .BeginSubCommand("relearn")
                     .WithDescription("Forget all learned quest-giver positions and markers, then relearn them fresh")
                     .HandleWith(_ =>
