@@ -55,6 +55,11 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **The Map button opens the world map through the game's own hotkey handler**, exactly as
+  pressing M does, instead of driving the map manager by hand — hand-driving it produced a
+  map that could not be closed once, and is the prime suspect for the map opening at the
+  wrong size. A stray errand with a blank quest giver — "(for )" — is also repaired at load
+  into an ordinary pin.
 - **Handed-in errands notice they are finished.** Handing goods over sets variables in your
   own player state (`agnieszkaquestcompleted`, Tobias' `gavelens`, Better Ruins'
   `gaveironpickaxe`), and the catalogue now knows which belong to each errand — so a

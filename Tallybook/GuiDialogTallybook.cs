@@ -1010,28 +1010,33 @@ namespace Tallybook
 
             TryClose();
 
-            // Opening the full map while the corner minimap is showing leaves the map manager
-            // holding two dialogs of different types over one set of state: the result renders
-            // oversized and its close button does nothing, so only Escape gets out (found by
-            // Mark). ToggleMap is a *toggle* over a single slot, not an "open this size" call —
-            // so put back whatever is showing before asking for the size we want, and let the
-            // game do the opening from a clean state.
-            //
             // The minimap also counts as "opened", so IsOpened alone is not the question; the
             // question is which type is showing.
             var dlg = maps.worldMapDlg;
-            bool showing = dlg != null && dlg.IsOpened();
-            var showingType = showing ? dlg.DialogType : (EnumDialogType?)null;
-
-            if (showingType == EnumDialogType.Dialog)
+            if (dlg != null && dlg.IsOpened() && dlg.DialogType == EnumDialogType.Dialog)
             {
                 // Already the map we want — centre it and change nothing else.
                 capi.World.RegisterCallback(_ => Centre(maps, target), 100);
                 return true;
             }
 
-            if (showing) maps.ToggleMap(showingType.Value);      // close the minimap first
-            maps.ToggleMap(EnumDialogType.Dialog);
+            // Open it the way the player's own M key does, by invoking vanilla's hotkey
+            // handler — not by driving ToggleMap by hand. Manual toggling has produced two
+            // distinct messes: with the minimap open it left two dialogs on one slot (a map
+            // that only Escape could close), and closing the minimap first skipped whatever
+            // state the real handler keeps, which is the prime suspect for the map coming up
+            // wrongly sized (Mark). The game knows how to open its own map; the whole job
+            // here is to ask it and then centre.
+            try
+            {
+                HarmonyLib.AccessTools.Method(maps.GetType(), "OnHotKeyWorldMapDlg")
+                    ?.Invoke(maps, new object[] { new KeyCombination() });
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] map hotkey handler failed, falling back: {0}", e.Message);
+                maps.ToggleMap(EnumDialogType.Dialog);
+            }
 
             // Once, after it has had time to compose. Repeating the centre was a hedge against
             // it not being ready; it is also a second chance to fight whatever the player has

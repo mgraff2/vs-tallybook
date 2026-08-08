@@ -409,6 +409,16 @@ namespace Tallybook
                 {
                     var loaded = JsonConvert.DeserializeObject<SaveFile>(File.ReadAllText(path));
                     if (loaded?.Pins != null) pins.AddRange(loaded.Pins.Where(p => p != null && p.Code != null));
+
+                    // A blank-but-not-null giver is a broken identity from an old capture: it
+                    // renders as "(for )", keys as "code|for:", and no NPC can ever match it
+                    // to repair or complete it. Normalising to a personal pin keeps the count
+                    // and loses only the claim nobody can back.
+                    foreach (var pin in pins)
+                    {
+                        if (pin.QuestGiver != null && pin.QuestGiver.Trim().Length == 0)
+                            pin.QuestGiver = null;
+                    }
                     if (loaded?.RecipePrefs != null) RecipePrefs = loaded.RecipePrefs;
                     if (loaded?.OfferedQuests != null) OfferedQuests = new HashSet<string>(loaded.OfferedQuests);
                     if (loaded?.NpcPlaces != null) NpcPlaces = loaded.NpcPlaces;
