@@ -632,10 +632,9 @@ namespace Tallybook
                         // back to Tobias" are opposite directions.
                         if (MapTargetFor(pin) != null)
                         {
-                            bool toSite = MapSiteFor(pin) != null;
                             c.AddSmallButton("Map", () => ShowOnMap(pin),
                                 EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
-                            c.AddHoverText(toSite
+                            c.AddHoverText(GoingToSite(pin)
                                     ? $"Open the map where {string.Join(", ", pin.QuestMaps)} points."
                                       + $" Once you have the goods, this points back to {pin.QuestGiver}."
                                     : $"Open the map centred on {pin.QuestGiver}.",
@@ -1057,21 +1056,24 @@ namespace Tallybook
         /// </summary>
         BlockPos MapTargetFor(Pin pin)
         {
-            var site = MapSiteFor(pin);
-            if (site != null) return new BlockPos((int)site.X, (int)site.Y, (int)site.Z, 0);
+            // Persisted pin fields only — never a live waypoint read. The waypoint list is
+            // known to read back empty at random (the fifty-marker incident was that), and a
+            // button driven by the live read vanished whenever the read failed. The resolver
+            // on the 1s tick captures successful reads into the pin; by the time anything is
+            // drawn, the knowledge is ours.
+            if (GoingToSite(pin))
+                return new BlockPos((int)pin.SiteX, (int)pin.SiteY, (int)pin.SiteZ, 0);
 
             if (pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0)
                 return new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0);
 
-            var named = waypoints?.WaypointNamed(pin.QuestGiver);
-            return named == null ? null : new BlockPos((int)named.X, (int)named.Y, (int)named.Z, 0);
+            return null;
         }
 
-        /// <summary>The destination of this errand's own map, while it still matters —
-        /// pointing there after the goods are in hand sends the player the wrong way down a
-        /// very long road.</summary>
-        Vintagestory.API.MathTools.Vec3d MapSiteFor(Pin pin)
-            => pin.Complete ? null : waypoints?.WaypointForMaps(pin.QuestMaps);
+        /// <summary>The destination leg of the errand, while it still matters — pointing
+        /// there after the goods are in hand sends the player the wrong way down a very
+        /// long road.</summary>
+        static bool GoingToSite(Pin pin) => !pin.Complete && pin.HasSite;
 
         /// <summary>
         /// Point every map widget the dialog owns at a spot.

@@ -287,6 +287,75 @@ namespace Tallybook
         }
 
         /// <summary>
+        /// Fill in anything the map can tell us about quest pins that do not know it yet:
+        /// a giver's position from a waypoint naming them, an errand's destination from the
+        /// waypoint its own map created. Captured into persisted pin fields the moment a
+        /// read succeeds, because the read itself is known to fail intermittently — the
+        /// fifty-marker incident was this very list coming back empty. Once captured, a
+        /// later failed read costs nothing: the dialog draws from the pin, never from here.
+        ///
+        /// Runs on the tick, and is cheap by construction: it asks the map only when some
+        /// pin is actually missing something, which after the first success is never.
+        /// </summary>
+        public bool ResolveQuestPlaces()
+        {
+            bool changed = false;
+            try
+            {
+                foreach (var pin in store.Pins)
+                {
+                    if (pin.QuestGiver == null || !pin.Active) continue;
+
+                    if (pin.QuestX == 0 && pin.QuestY == 0 && pin.QuestZ == 0)
+                    {
+                        var named = WaypointNamed(pin.QuestGiver);
+                        if (named != null)
+                        {
+                            pin.QuestX = named.X; pin.QuestY = named.Y; pin.QuestZ = named.Z;
+                            changed = true;
+                        }
+                    }
+
+                    if (!pin.HasSite && pin.QuestMaps?.Count > 0)
+                    {
+                        var site = WaypointForMaps(pin.QuestMaps);
+                        if (site != null)
+                        {
+                            pin.SiteX = site.X; pin.SiteY = site.Y; pin.SiteZ = site.Z;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] quest place resolution failed: {0}", e.Message);
+            }
+            return changed;
+        }
+
+        /// <summary>What the client can currently read off its own waypoint list — the ground
+        /// truth for "why is there no Map button". The read fails intermittently, which is
+        /// exactly why this exists as a command: run it twice and compare.</summary>
+        public List<string> ReadableWaypoints()
+        {
+            var lines = new List<string>();
+            var list = OwnWaypoints();
+            if (list == null) return lines;
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                var wp = list[i];
+                if (wp == null) continue;
+                string title = string.IsNullOrWhiteSpace(wp.Title) ? "(untitled)" : wp.Title;
+                lines.Add(wp.Position == null
+                    ? $"{i}: {title} (no position)"
+                    : $"{i}: {title} at {(int)wp.Position.X}, {(int)wp.Position.Z}");
+            }
+            return lines;
+        }
+
+        /// <summary>
         /// Every waypoint on the map with a blank title, as "index at x, z" lines.
         ///
         /// These crash the client when hovered on the world map — vanilla builds hover text of

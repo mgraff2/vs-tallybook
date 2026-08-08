@@ -105,6 +105,20 @@ namespace Tallybook
                         return TextCommandResult.Success("");
                     })
                 .EndSubCommand()
+                .BeginSubCommand("waypoints")
+                    .WithDescription("List the waypoints this client can currently read — ground truth for a missing Map button")
+                    .HandleWith(_ =>
+                    {
+                        EnsureGui();
+                        var lines = questWaypoints?.ReadableWaypoints() ?? new List<string>();
+                        if (lines.Count == 0)
+                            return TextCommandResult.Success(
+                                "The waypoint list reads back empty right now. This read fails "
+                                + "intermittently — captured positions on quest pins survive it.");
+                        foreach (var line in lines) capi.ShowChatMessage("  " + line);
+                        return TextCommandResult.Success($"{lines.Count} waypoint(s) readable.");
+                    })
+                .EndSubCommand()
                 .BeginSubCommand("blankmarkers")
                     .WithDescription("Find map waypoints with no title — hovering one crashes the world map")
                     .WithArgs(api.ChatCommands.Parsers.OptionalWord("remove"))
@@ -175,6 +189,17 @@ namespace Tallybook
                     }
 
                     RecordNearbyNpcs();
+
+                    // Capture what the map can tell us about quest pins into the pins
+                    // themselves, so the Map button never depends on a live waypoint read —
+                    // which is known to come back empty at random. A successful capture is
+                    // worth a save (it survives the session) and a recount (the button
+                    // appears now, not at the next unrelated change).
+                    if (questWaypoints?.ResolveQuestPlaces() == true)
+                    {
+                        svc.Store.Save();
+                        svc.RecountAll();
+                    }
 
                     // Cheap while nothing changes, and this is the only way finishing a quest
                     // is ever noticed — completing one raises no event we can hear.

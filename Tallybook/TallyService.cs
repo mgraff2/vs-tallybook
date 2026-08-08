@@ -326,6 +326,10 @@ namespace Tallybook
                   .Append('/').Append(pin.Have)
                   .Append(pin.Active ? 'A' : 'a')
                   .Append(pin.Craftable ? '+' : '-')
+                  // Where the Map button can point is a visible fact: learning a giver's
+                  // position or a map destination must redraw the row it puts a button on.
+                  .Append((int)pin.QuestX).Append(',').Append((int)pin.QuestZ)
+                  .Append('~').Append((int)pin.SiteX).Append(',').Append((int)pin.SiteZ)
                   .Append(pin.Group?.Signature).Append(';');
                 foreach (var node in Walk(pin))
                 {

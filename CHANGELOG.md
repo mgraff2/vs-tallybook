@@ -55,6 +55,12 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **Map buttons no longer flicker out of existence.** They were driven by reading the client's
+  waypoint list live, at draw time — and that read is known to come back empty at random (it
+  is what once planted fifty duplicate markers). Successful reads are now captured into the
+  pin and saved; the button draws from what the pin knows, so once a place is learned it stays
+  learned, across relogs and regardless of what the waypoint list says today. `.tallybook
+  waypoints` shows what the client can read right now, for when things look wrong.
 - **An errand that comes with a map points at the map's destination while you are still
   fetching, then back to the giver.** The tie is the game's own: the dialogue line that hands
   Tobias' Devastation map is gated on the same quest variable as the lens turn-in, and a

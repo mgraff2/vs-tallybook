@@ -443,6 +443,18 @@ asset, and collect `player.inventory` conditions.
   collectibles the matcher accepts (wildcard-match the *code* first: the block list is tens of
   thousands and building each stack to ask properly is far slower), keeps up to 30 for icons
   and the true count for the label. Done once per row; the answer cannot change mid-session.
+- **Reading the client's waypoint list fails intermittently, so nothing user-visible may
+  depend on a live read (found by Mark, twice: the fifty markers, then Map buttons that
+  vanished).** The rule has two halves. *Outward actions* driven by a failed read spam — that
+  is the fifty-marker incident. *Display* driven by a failed read flickers out — that was the
+  Map button reading waypoints at draw time. The pattern for both:
+  `QuestWaypoints.ResolveQuestPlaces` runs on the 1s tick, captures successful reads into
+  **persisted pin fields** (`QuestX/Y/Z` for the giver, `SiteX/Y/Z` for the errand's map
+  destination), and everything visible draws from the pin, never from the map. Asks only
+  while something is missing, so after first success it costs nothing. The map fields are in
+  `TallyService.Signature()` — learning a place must redraw the row it puts a button on.
+  `.tallybook waypoints` prints what the client can read *right now*; run it twice to see the
+  intermittency yourself.
 - **Waypoints act on transitions and are remembered on the pin — never reconciled, never on a
   tick.** `Pin.WaypointPlaced` (persisted) is the *only* thing that decides whether a marker
   gets placed. The first version instead asked the map which markers existed and added the

@@ -31,6 +31,17 @@ namespace Tallybook
         /// point you back at them without depending on a map waypoint surviving.</summary>
         public double QuestX, QuestY, QuestZ;
 
+        /// <summary>
+        /// Where this errand's own map points, captured from the waypoint reading it created
+        /// and kept. Persisted because the live waypoint read this comes from is *known* to
+        /// fail intermittently (the fifty-marker incident was that read coming back empty) —
+        /// a Map button driven by the live read vanished whenever the read did. Resolved on
+        /// the tick, never at draw time; the dialog only ever looks at these fields.
+        /// </summary>
+        public double SiteX, SiteY, SiteZ;
+
+        [JsonIgnore] public bool HasSite => SiteX != 0 || SiteY != 0 || SiteZ != 0;
+
         /// <summary>What the villager said when they asked, kept so the errand can be re-read
         /// long after the conversation is closed.</summary>
         public List<string> QuestText = new List<string>();
