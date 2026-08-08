@@ -385,7 +385,15 @@ namespace Tallybook
                     if (b == null) continue;
                     double top = b.absY / scale;
                     double bot = (b.absY + b.OuterHeight) / scale;
-                    if (top > screenH * 0.5 || bot > screenH * 0.6) continue;
+                    // Corner residents only: starts near the top, ends well above mid-screen,
+                    // and is compact — the minimap, coordinates and clock all are. A tall
+                    // panel (prospecting readouts and the like, which can also stay "open"
+                    // with full bounds while visually collapsed) is a neighbour to sit beside,
+                    // not a stack to sit under: taking its bottom edge dragged this HUD to
+                    // mid-screen, far below the coordinates hug that is the whole point
+                    // (Mark, from a screenshot). Height is the discriminator that lets both
+                    // rules hold at once.
+                    if (top > screenH * 0.4 || bot > screenH * 0.6 || bot - top > screenH * 0.35) continue;
                     double cx0 = b.absX / scale, cx1 = (b.absX + b.OuterWidth) / scale;
                     if (cx1 < x0 || cx0 > x1) continue;
                     bottom = Math.Max(bottom, bot);
