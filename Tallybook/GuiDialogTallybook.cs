@@ -1353,8 +1353,12 @@ namespace Tallybook
                     y += 24;
                 }
 
-                var line = font.Clone().WithColor(TallybookConfig.ParseColor(
-                    openQuest ? config.ColorPartial : config.ColorSatisfied));
+                // Same title face as the pin rows on the other tabs (base size + 2): a record
+                // here IS that quest's row, and drawing it a step smaller made the whole tab
+                // read like fine print next to Items and Side quests (Mark).
+                var line = CairoFont.WhiteSmallishText().WithFontSize((float)(TablePx + 2))
+                    .WithColor(TallybookConfig.ParseColor(
+                        openQuest ? config.ColorPartial : config.ColorSatisfied));
 
                 string when = record.Day.HasValue ? $"day {(int)record.Day.Value}" : "earlier";
                 string detail =
@@ -1364,7 +1368,7 @@ namespace Tallybook
                     : record.Stage == "completed" ? $"handed in, {when}"
                     : when;
 
-                c.AddStaticText($"{(openQuest ? "•" : "√")} {record.Name}", line, EB(8, y + 4, 300, 24));
+                FittedText(c, $"{(openQuest ? "•" : "√")} {record.Name}", line, EB(8, y + 4, 300, 24), 300);
                 c.AddStaticText(detail, quiet, EB(320, y + 4, 220, 24));
 
                 // Keyed by stage as well as quest: the same quest can legitimately appear in
