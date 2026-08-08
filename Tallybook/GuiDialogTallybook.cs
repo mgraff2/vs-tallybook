@@ -1027,9 +1027,11 @@ namespace Tallybook
         }
 
         /// <summary>
-        /// Where the Map button goes: **the quest giver, always**. Null when we have never
-        /// stood next to them, in which case the row says so rather than offering a button
-        /// that guesses.
+        /// Where the Map button goes: **the quest giver, always**. A recorded position first;
+        /// failing that, a waypoint that names them — reading "Map to Tobias' cave" is how
+        /// you learn where Tobias is before you have ever stood next to him. Null when
+        /// neither exists, in which case the row says so rather than offering a button that
+        /// guesses.
         ///
         /// It used to prefer the destination of a map that came with the errand — Tobias hands
         /// over a map to the Devastation, so "go to the Devastation, then come back" reads
@@ -1048,8 +1050,11 @@ namespace Tallybook
         /// </summary>
         BlockPos MapTargetFor(Pin pin)
         {
-            if (pin.QuestX == 0 && pin.QuestY == 0 && pin.QuestZ == 0) return null;
-            return new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0);
+            if (pin.QuestX != 0 || pin.QuestY != 0 || pin.QuestZ != 0)
+                return new BlockPos((int)pin.QuestX, (int)pin.QuestY, (int)pin.QuestZ, 0);
+
+            var named = waypoints?.WaypointNamed(pin.QuestGiver);
+            return named == null ? null : new BlockPos((int)named.X, (int)named.Y, (int)named.Z, 0);
         }
 
         /// <summary>

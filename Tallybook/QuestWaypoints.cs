@@ -177,7 +177,45 @@ namespace Tallybook
         // both existed and were removed with MapTargetFor's simplification — maps are known
         // per dialogue file, not per errand, so any such tie is invented (see CLAUDE.md). The
         // removed version also saved the store from inside a GUI compose path, which is not a
-        // pattern to reintroduce.
+        // pattern to reintroduce. WaypointNamed below is the narrow exception that IS sound:
+        // it ties a waypoint to a *person*, and only by that person's own name.
+
+        /// <summary>
+        /// A waypoint whose title names this person — "Tobias' cave" for Tobias — or null.
+        ///
+        /// This is how a giver you have never stood next to can still get a Map button:
+        /// reading "Map to Tobias' cave" drops vanilla's waypoint at his cave, and the title
+        /// carrying his name is the game's own statement that the place is his. Matching a
+        /// waypoint to a *person* by name is sound where matching one to an *errand* was
+        /// invented — a name in the title is a claim about whose place it is, which is
+        /// exactly the question the Map button answers.
+        ///
+        /// Read live, never persisted: if the player deletes the waypoint the answer honestly
+        /// becomes "unknown" again, and nothing here acts outward, so a failed read costs a
+        /// button rather than planting anything.
+        /// </summary>
+        public Vec3d WaypointNamed(string person)
+        {
+            if (string.IsNullOrWhiteSpace(person)) return null;
+
+            try
+            {
+                var list = OwnWaypoints();
+                if (list == null) return null;
+
+                foreach (var wp in list)
+                {
+                    if (wp?.Title == null || wp.Position == null) continue;
+                    if (wp.Title.IndexOf(person, StringComparison.OrdinalIgnoreCase) >= 0)
+                        return wp.Position;
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not read waypoints: {0}", e.Message);
+            }
+            return null;
+        }
 
         /// <summary>
         /// Put a marker back on every active errand, whether or not we believe one is already
