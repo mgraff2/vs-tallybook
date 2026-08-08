@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.5 — 2026-08-08
+
+- **History reads at the same size as the other tabs.** Its record names were drawn at the
+  secondary-text size while Items and Side quests use the larger title face, so the whole tab
+  looked like fine print. Long quest names truncate with an ellipsis rather than wrapping into
+  the date column.
+
 ## 0.3.4 — 2026-08-08
 
 From an adversarial review pass (Fable) over the whole codebase:

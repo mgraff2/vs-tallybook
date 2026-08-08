@@ -2,9 +2,9 @@
 
 ## Short summary (under 100 characters)
 
-Crafting shopping list with live inventory counts + villager quest tracker. Fully client-side.
+Crafting shopping list with live counts + villager quest tracker with map pins. Client-side.
 
-(94 characters)
+(92 characters)
 
 ---
 
@@ -57,7 +57,7 @@ clock and coordinates rather than fighting them, and disappears when your list i
 **History.** Everything you've finished, including quests completed before Tallybook was
 installed, with the conversation transcripts preserved and story milestones (villages found,
 lore heard) recorded alongside. Undated finishes are ordered by story prerequisites rather
-than guessed dates.
+than guessed dates. One click away from your journal for the lore you collected en route.
 
 **Everything updates live.** Counting is event-driven off your carried inventory — hotbar
 and backpacks, with an opt-in for saddlebags on animals you own. No polling, no nearby-chest
@@ -90,7 +90,7 @@ rebindable under Settings → Controls.
 
 ## Changelog — first ModDB release
 
-**Tallybook 0.3.4 — for Vintage Story 1.22.x**
+**Tallybook 0.3.5 — for Vintage Story 1.22.x**
 
 Initial ModDB release.
 
@@ -113,5 +113,7 @@ Initial ModDB release.
   milestones, ordered by prerequisites where dates are unknowable.
 - Options screen with live text-size slider governing HUD and window, mount-bag counting
   opt-in, quest marker and glow settings — each option explained by a hover ?.
+- Status marks drawn only with glyphs the game's fonts actually carry, so checks are checks
+  everywhere rather than empty boxes.
 - Fully client-side; works with every content mod's recipes and errands with zero compat
   patches. Tested against Vintage Story 1.22.0–1.22.6.
