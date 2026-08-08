@@ -34,6 +34,15 @@ namespace Tallybook
         public List<string> Maps = new List<string>();
         internal List<QuestScanner.DlgCond> Gates = new List<QuestScanner.DlgCond>();
         public List<string> Briefing = new List<string>();
+
+        /// <summary>
+        /// Variables the hand-over sets — what "this errand is finished" looks like in the
+        /// player's own state. Collected by walking forward from the turn-in line into the
+        /// components it leads to (Agnieszka's `workaccept` flows into `workcomplete`, which
+        /// sets `agnieszkaquestcompleted`). Any one of them reading true means the goods were
+        /// handed over, whether or not this mod was watching at the time.
+        /// </summary>
+        internal List<QuestScanner.DlgCond> Done = new List<QuestScanner.DlgCond>();
     }
 
     /// <summary>A trackable fetch request from the NPC currently being talked to.</summary>
@@ -306,6 +315,40 @@ namespace Tallybook
         /// Names come from the item itself — "locatormap-devastationarea" is not something to
         /// show anybody, and the game already has a proper name for it.
         /// </summary>
+        /// <summary>
+        /// What handing the goods over *sets* — the completion signature of a turn-in line.
+        /// Walks forward from the line's jumpTo target through the component chain (explicit
+        /// jumpTo, else file-order fallthrough, the same convention the dialogue runner uses),
+        /// a few steps only, collecting every setVariables along the way. Agnieszka's take
+        /// step flows into `workcomplete`, which sets `agnieszkaquestcompleted=true`; Tobias'
+        /// `lens` sets `gavelens=true` directly. Bounded so an errand can never claim a
+        /// variable set half a conversation away.
+        /// </summary>
+        List<DlgCond> DoneSetters(DlgFile file, DlgText turnInLine)
+        {
+            var result = new List<DlgCond>();
+            string cur = turnInLine?.jumpTo;
+
+            for (int hop = 0; hop < 4 && cur != null; hop++)
+            {
+                int idx = Array.FindIndex(file.components, c => c?.code == cur);
+                if (idx < 0) break;
+                var comp = file.components[idx];
+
+                if (comp.setVariables != null)
+                {
+                    foreach (var kv in comp.setVariables)
+                    {
+                        result.Add(new DlgCond { variable = kv.Key, isValue = kv.Value });
+                    }
+                }
+
+                cur = comp.jumpTo
+                      ?? (idx + 1 < file.components.Length ? file.components[idx + 1]?.code : null);
+            }
+            return result;
+        }
+
         List<string> MapsForGates(DlgFile file, IEnumerable<DlgCond> gates)
         {
             var names = new List<string>();
@@ -915,7 +958,8 @@ namespace Tallybook
                                 // everything the file hands out.
                                 Maps = MapsForGates(file, gates),
                                 Gates = gates,
-                                Briefing = Briefing(file, gates)
+                                Briefing = Briefing(file, gates),
+                                Done = DoneSetters(file, line)
                             });
                         }
                     }
@@ -959,6 +1003,14 @@ namespace Tallybook
         /// "no", never toward a claim we cannot support.</summary>
         public bool DefIsLive(QuestDef def)
             => def?.Gates != null && def.Gates.Count > 0 && def.Gates.All(g => GateMet(g, null));
+
+        /// <summary>Has this errand's hand-over already happened? Any completion variable
+        /// reading its set value is a yes — the state outlives the conversation, so this is
+        /// answerable long after, and for player-scope variables without any NPC nearby.
+        /// Entity-scope completion needs the NPC (pass them while conversing); absent that it
+        /// reads as not-done, failing toward "still open" rather than archiving a live errand.</summary>
+        internal bool DefIsDone(QuestDef def, Entity npc = null)
+            => def?.Done != null && def.Done.Count > 0 && def.Done.Any(d => GateMet(d, npc));
 
         /// <summary>
         /// A villager's dialogue file found from their name — vanilla names the files after

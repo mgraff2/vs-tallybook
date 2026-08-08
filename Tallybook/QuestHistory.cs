@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Vintagestory.API.Client;
+using Vintagestory.API.Common.Entities;
 
 namespace Tallybook
 {
@@ -119,6 +120,73 @@ namespace Tallybook
             catch (Exception e)
             {
                 capi.Logger.Warning("[tallybook] quest history update failed: {0}", e.Message);
+            }
+        }
+
+        /// <summary>
+        /// Notice tracked errands whose hand-over has already happened, archive them, and
+        /// park their pins.
+        ///
+        /// "Done" is read from the player's own state: handing goods over sets variables
+        /// (`agnieszkaquestcompleted`, `gavelens`, Better Ruins' `gaveironpickaxe`), the
+        /// catalogue knows which ones belong to each errand, and player-scope variables are
+        /// synced — so completion is knowable at login, not just mid-conversation. Without
+        /// this, a handed-in errand looked *less* finished afterwards: the goods left the
+        /// inventory, so 8/8 fell back to 0/8 on a quest that was over.
+        ///
+        /// The pin is parked, never unpinned — unpinning is the player's act. Parked exactly
+        /// once, when the record is first written: re-checking the pin afterwards is a player
+        /// choice this must not fight every second. Errands whose completion variable is the
+        /// `…questcompleted` of a vanilla chain get no record of their own — the chain pass
+        /// above already records those properly, with stages.
+        ///
+        /// Entity-scope completion (vanilla traders keep quest state on the NPC) is only
+        /// readable while standing with them — pass the NPC from the conversation watcher;
+        /// with none, those errands read as still open rather than getting archived on a
+        /// guess.
+        /// </summary>
+        public void CheckErrandCompletion(Entity npc = null)
+        {
+            try
+            {
+                bool changed = false;
+                foreach (var pin in store.Pins.ToList())
+                {
+                    if (pin.QuestGiver == null) continue;
+
+                    // The once-guard is ChainStates, not the record: chain-owned errands add
+                    // no record of their own, and guarding on the record alone would re-park
+                    // those every second — fighting a player who deliberately re-checked.
+                    string key = $"errand:{pin.QuestGiver}:{pin.Code}";
+                    if (store.ChainStates.ContainsKey(key)) continue;
+
+                    var def = scanner.DefFor(pin.QuestGiver, pin.Code, pin.Count);
+                    if (def == null || !scanner.DefIsDone(def, npc)) continue;
+
+                    store.ChainStates[key] = "done";
+
+                    bool chainOwned = def.Done.Any(d =>
+                        d.variable != null && d.variable.EndsWith("questcompleted", StringComparison.OrdinalIgnoreCase));
+                    if (!chainOwned)
+                    {
+                        store.QuestHistory.Add(new QuestRecord
+                        {
+                            Chain = key,
+                            Name = $"{pin.DisplayName} for {pin.QuestGiver}",
+                            Stage = "completed",
+                            Day = capi.World.Calendar?.TotalDays,
+                            Text = pin.QuestText?.ToList() ?? new List<string>()
+                        });
+                    }
+
+                    if (pin.Active) pin.Active = false;
+                    changed = true;
+                }
+                if (changed) store.Save();
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] errand completion check failed: {0}", e.Message);
             }
         }
 

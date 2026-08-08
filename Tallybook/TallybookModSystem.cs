@@ -219,6 +219,7 @@ namespace Tallybook
                     // Cheap while nothing changes, and this is the only way finishing a quest
                     // is ever noticed — completing one raises no event we can hear.
                     questHistory?.Update();
+                    questHistory?.CheckErrandCompletion();
                 }
                 catch (Exception e)
                 {
@@ -238,6 +239,7 @@ namespace Tallybook
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
             questGlow = new QuestReadyGlow(capi, config, svc);
             questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);
+            questWatcher.History = questHistory;
             // Checking and unchecking come through the recount; unpinning has to be caught as
             // it happens, while the pin can still tell us it had a marker.
             svc.OnCountsChanged += questWaypoints.Sync;

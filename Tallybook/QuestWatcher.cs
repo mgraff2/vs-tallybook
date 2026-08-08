@@ -39,6 +39,12 @@ namespace Tallybook
         readonly TallyService svc;
         readonly QuestScanner scanner;
         readonly Action<QuestOffer> onAccepted;
+
+        /// <summary>Set once the history exists. While conversing is the one moment
+        /// entity-scope completion state (vanilla traders keep it on the NPC) can be read, so
+        /// the watcher hands the NPC over for a completion sweep each poll.</summary>
+        public QuestHistory History;
+
         long tickId;
 
         // Scoped to the conversation in progress, and dropped the moment it ends.
@@ -80,6 +86,10 @@ namespace Tallybook
                     offeredThisChat.Clear();
                     if (npc == null) return;
                 }
+
+                // While standing with them, their entity-scope state is readable — the only
+                // moment a vanilla trader's held completion can be noticed at all.
+                History?.CheckErrandCompletion(npc);
 
                 var offer = scanner.Scan(npc);
                 if (offer == null) return;

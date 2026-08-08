@@ -55,6 +55,15 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **Handed-in errands notice they are finished.** Handing goods over sets variables in your
+  own player state (`agnieszkaquestcompleted`, Tobias' `gavelens`, Better Ruins'
+  `gaveironpickaxe`), and the catalogue now knows which belong to each errand — so a
+  completed errand is archived into History and its pin parked, at login or the moment it
+  happens, whether or not Tallybook was watching. Before this, a handed-in errand looked
+  *less* finished afterwards: the goods left your inventory, so 8/8 fell back to 0/8 on a
+  quest that was over. Vanilla traders keep completion on the NPC, so theirs is noticed while
+  you stand with them; Better Ruins uses player state, so its errands settle at login. Parked
+  once, never re-fought: re-check the pin and it stays.
 - **A "not carrying the map" condition no longer ties every map to every errand.** Quest
   turn-in lines and map handout lines both routinely carry that condition, and the map tie
   saw `player.inventory` on both sides as a shared quest variable — Better Ruins' iron

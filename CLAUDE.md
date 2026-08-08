@@ -307,6 +307,17 @@ things the files genuinely cannot know should live on the pin.
 - **`.tallybook quests`** ties the whole thing out: every errand in the world's dialogue with
   its item, giver, maps, gate state and tracked status. A command rather than a screen, for the
   spoiler reason above.
+- **Completion is read from what the hand-over *sets*** (`QuestDef.Done`, via `DoneSetters` —
+  a bounded forward walk from the turn-in line's jumpTo through explicit-jump-else-fallthrough,
+  the dialogue runner's own convention). `QuestHistory.CheckErrandCompletion` archives and
+  parks finished errands: on the 1s tick with player scope (BR traders use player-scope flags,
+  so their completions settle at login), and per conversation poll with the NPC for entity
+  scope. Guards that matter: the once-guard is **ChainStates** (`errand:<giver>:<code>`), not
+  the history record — chain-owned errands (`…questcompleted`) add no record of their own, and
+  guarding on the record would re-park those every second, fighting a player who deliberately
+  re-checked; parking is once-ever, unpinning stays the player's act; and without the errand
+  this fixes, a handed-in quest looked *less* done afterwards — the goods leave the inventory,
+  so 8/8 fell to 0/8 on a finished quest.
 - **A map belongs to an errand only via a shared gate variable — never via the file (found by
   Mark, twice; the sound tie found on the third pass).** A dialogue file covers several
   unrelated quest threads: Agnieszka takes iron ingots at her forge and separately hands out
