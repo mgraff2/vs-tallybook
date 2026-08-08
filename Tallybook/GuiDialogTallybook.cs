@@ -539,7 +539,13 @@ namespace Tallybook
         /// </summary>
         void FittedText(GuiComposer c, string text, CairoFont font, ElementBounds bounds, double maxW)
         {
-            string shown = TbText.Fit(font, text, maxW);
+            // Fitted a little inside the box, not exactly to it. Fit's measurement and the
+            // element's own wrap decision can disagree by a pixel, and when "fits exactly"
+            // loses, the last word wraps onto the row below and overdraws it — the screenshot
+            // form of this was "(for" on one line and a lone "G" bleeding into the next
+            // (Mark). A few units of slack costs an ellipsis a moment earlier; a wrap costs
+            // a legible table.
+            string shown = TbText.Fit(font, text, maxW - 8);
             c.AddStaticText(shown, font, bounds);
             if (shown == text) return;
 
@@ -579,7 +585,13 @@ namespace Tallybook
 
                     // Errands carry their conversation; a leading toggle opens it, in the
                     // place a tree control belongs rather than in the crowded action columns.
-                    double nameX = nx;
+                    //
+                    // The column is reserved on every quest row, toggle or not: a row whose
+                    // errand has no captured text otherwise started its name a toggle-width
+                    // to the left of its neighbours, and a column that only sometimes exists
+                    // reads as a mess rather than a column (Mark, from a screenshot where
+                    // every quest row began at a different x).
+                    double nameX = pin.QuestGiver != null ? nx + 28 : nx;
                     if (pin.QuestGiver != null && pin.QuestText?.Count > 0)
                     {
                         c.AddSmallButton(pin.QuestTextExpanded ? "−" : "+", () =>
@@ -592,7 +604,6 @@ namespace Tallybook
 
                         c.AddHoverText(pin.QuestTextExpanded ? "Hide what was said." : "Read what was said.",
                             font, 200, EB(nx, y, 24, 26));
-                        nameX = nx + 28;
                     }
 
                     var titleFont = CairoFont.WhiteSmallishText();

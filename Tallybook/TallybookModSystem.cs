@@ -111,6 +111,8 @@ namespace Tallybook
                     {
                         EnsureGui();
                         int removed = questWaypoints?.Relearn() ?? 0;
+                        quests.InvalidateCatalogue();
+                        BackfillQuestText();     // re-derive maps and text from the files now
                         svc.RecountAll();
                         return TextCommandResult.Success(
                             $"Forgot all quest places and removed {removed} marker(s). "

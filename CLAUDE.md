@@ -317,7 +317,15 @@ things the files genuinely cannot know should live on the pin.
   the game's own statement that two threads are one quest; `QuestScanner.MapsForGates`
   attaches on exactly that, one hop, and unconditioned handout entries attach nothing
   (verified against the 1.22.6 files: lens→devastation attaches; Gerhardt's and Agnieszka's
-  handouts, gated on their own letter/map variables, attach to no errand). `MapTargetFor` then
+  handouts, gated on their own letter/map variables, attach to no errand).
+  Two hardenings, both found by Mark against Better Ruins' Luxuries trader: **exclude
+  `player.inventory` from the shared-variable set** — "not carrying the map" rides on the
+  turn-in line AND on every handout line as the same pseudo-variable, which tied the iron
+  pickaxe fetch to the Sunrift Experiment map; and **require the same expected value on both
+  sides**, so a handout gated on quest-DONE (`gaveironpickaxe=true`, a reward map) never
+  attaches to an errand gated on quest-OPEN (`requestironpickaxe=true`). Note BR traders use
+  *player*-scope request flags, unlike vanilla traders' entity scope — so their errands are
+  picked up retroactively at login too, not just in conversation. `MapTargetFor` then
   goes: errand's tied map destination while incomplete → giver's recorded position → a
   waypoint *naming* the giver ("Tobias' cave" names Tobias — a person-tie, also sound) → null,
   and says so. The general rule stands: the files are authoritative about what they record; a

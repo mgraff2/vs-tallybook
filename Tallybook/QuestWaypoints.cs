@@ -398,6 +398,10 @@ namespace Tallybook
                 if (pin.QuestGiver == null) continue;
                 pin.QuestX = pin.QuestY = pin.QuestZ = 0;
                 pin.SiteX = pin.SiteY = pin.SiteZ = 0;
+                // Which maps belong to this errand is also learned data — and it has been
+                // wrong before (a mis-tied map is exactly what sends Map to the wrong ruin).
+                // The catalogue re-derives it immediately after.
+                pin.QuestMaps = new List<string>();
                 pin.WaypointPlaced = false;
             }
             store.NpcPlaces.Clear();

@@ -309,9 +309,26 @@ namespace Tallybook
         List<string> MapsForGates(DlgFile file, IEnumerable<DlgCond> gates)
         {
             var names = new List<string>();
-            var gateVars = new HashSet<string>(
-                gates.Where(g => g?.variable != null).Select(g => g.variable));
-            if (gateVars.Count == 0) return names;
+
+            // Real state variables only, matched with their expected value. Inventory
+            // conditions are excluded even though they ride in the gate list: "not carrying
+            // the map" appears on the turn-in line AND on every map handout line as the same
+            // pseudo-variable `player.inventory`, which made *any* map handout look tied to
+            // *any* errand — Better Ruins' pickaxe fetch got the Sunrift Experiment map
+            // attached that way and sent the player to a ruin instead of back to the trader
+            // (found by Mark). Value-compatibility guards the other direction: a handout
+            // gated on quest-DONE must not attach to the errand gated on quest-OPEN, or the
+            // reward map masquerades as the errand's destination.
+            var gateWants = gates
+                .Where(g => g?.variable != null && g.variable != "player.inventory")
+                .GroupBy(g => g.variable)
+                .ToDictionary(g => g.Key, g => g.First());
+            if (gateWants.Count == 0) return names;
+
+            bool Compatible(DlgCond c)
+                => c?.variable != null
+                   && gateWants.TryGetValue(c.variable, out var want)
+                   && c.isValue == want.isValue && c.isNotValue == want.isNotValue;
 
             foreach (var comp in file.components)
             {
@@ -320,8 +337,7 @@ namespace Tallybook
 
                 bool tied = file.components.Any(other =>
                     other?.text != null && other.text.Any(line =>
-                        line?.jumpTo == comp.code
-                        && AllConditions(line).Any(c => c?.variable != null && gateVars.Contains(c.variable))));
+                        line?.jumpTo == comp.code && AllConditions(line).Any(Compatible)));
                 if (!tied) continue;
 
                 var item = capi.World.GetItem(new AssetLocation(code));

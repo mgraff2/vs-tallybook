@@ -55,6 +55,18 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **A "not carrying the map" condition no longer ties every map to every errand.** Quest
+  turn-in lines and map handout lines both routinely carry that condition, and the map tie
+  saw `player.inventory` on both sides as a shared quest variable — Better Ruins' iron
+  pickaxe fetch got the Sunrift Experiment map attached that way and sent you to a ruin
+  instead of back to the trader. Ties now require a real state variable with the same
+  expected value on both sides, so a reward map handed out after completion can never
+  masquerade as the errand's destination. Tobias' lens → Devastation is unaffected — that
+  tie is genuine and stays.
+- **Side quest rows line up.** The transcript-toggle column is reserved on every errand row,
+  so a quest with no captured conversation no longer starts its name further left than its
+  neighbours; and fitted text keeps a few pixels of slack, because "fits exactly" sometimes
+  lost to the renderer's own wrap decision and bled the last word into the row below.
 - **Quest markers land on the quest givers now.** The waypoint command takes spawn-relative
   coordinates — the numbers your coordinate HUD shows — while entity positions are absolute
   world coordinates, so every marker was offset by the entire spawn position: a cluster of
