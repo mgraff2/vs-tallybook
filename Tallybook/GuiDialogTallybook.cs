@@ -110,7 +110,18 @@ namespace Tallybook
     public class GuiDialogTallybook : GuiDialog
     {
         const double DW = 818;                 // content width
-        const double RowH = 28;
+
+        /// <summary>One text size for the whole mod: the HUD's slider also governs the table
+        /// (Mark — "just link their font sizes together"). The right size is the one that
+        /// looks right, and it does not look right in one place and wrong in the other.</summary>
+        double TablePx => config.HudFontSize > 0 ? config.HudFontSize : DefaultHudFontSize;
+
+        /// <summary>Row and wrapped-line heights follow the text — a bigger font in fixed
+        /// rows overdraws, a smaller one saves no space.</summary>
+        double RowH => Math.Max(28, TablePx + 11);
+        double LineStep => Math.Round(TablePx + 8);
+
+        CairoFont TableFont() => CairoFont.WhiteSmallText().WithFontSize((float)TablePx);
 
         // Table columns. Every row type lines up on these, so the eye can run down a single
         // column instead of re-finding each field per row — the whole point of the table.
@@ -299,7 +310,7 @@ namespace Tallybook
             if (!(row is InfoRow ir)) return RowH;
 
             double w = DW - (ColName + row.Indent * IndentW) - 16;
-            return TbText.Wrap(CairoFont.WhiteSmallText(), ir.Full ?? ir.Text, w).Count * 22 + 6;
+            return TbText.Wrap(TableFont(), ir.Full ?? ir.Text, w).Count * LineStep + 6;
         }
 
         /// <summary>
@@ -416,7 +427,7 @@ namespace Tallybook
         void ComposeList(GuiComposer c)
         {
             unpinButtonBounds.Clear();
-            var font = CairoFont.WhiteSmallText();
+            var font = TableFont();
             double y = 34;
 
             int itemCount = PinsForTab(TbTab.Items).Count();
@@ -557,7 +568,7 @@ namespace Tallybook
 
         void ComposeRow(GuiComposer c, Row row, ref double y)
         {
-            var font = CairoFont.WhiteSmallText();
+            var font = TableFont();
             double indent = row.Indent * IndentW;
             double nx = ColName + indent;
             double ry = y;                     // local copies cannot capture the ref parameter
@@ -606,7 +617,7 @@ namespace Tallybook
                             font, 200, EB(nx, y, 24, 26));
                     }
 
-                    var titleFont = CairoFont.WhiteSmallishText();
+                    var titleFont = CairoFont.WhiteSmallishText().WithFontSize((float)(TablePx + 2));
                     if (!pin.Active) titleFont = titleFont.WithColor(TallybookConfig.ParseColor(config.ColorNone));
                     else if (pin.Complete || pin.Craftable) titleFont = titleFont.WithColor(TallybookConfig.ParseColor(config.ColorSatisfied));
 
@@ -638,19 +649,24 @@ namespace Tallybook
                             + "The errand keeps its own row and count.",
                             font, 260, EB(ColAct1, y, 80, 26));
 
-                        // Shown whenever there is anywhere to go — and it says which of the
-                        // errand's two places it means, since "go to the Devastation" and "go
-                        // back to Tobias" are opposite directions.
-                        if (MapTargetFor(pin) != null)
-                        {
-                            c.AddSmallButton("Map", () => ShowOnMap(pin),
-                                EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
-                            c.AddHoverText(GoingToSite(pin)
+                        // Always present, and it says which of the errand's places it means —
+                        // "go to the Devastation" and "go back to Tobias" are opposite
+                        // directions. With no location known it still shows, and clicking
+                        // explains what would teach us one: a button that silently is not
+                        // there reads as broken, not as "walk past them once" (Mark —
+                        // Agnieszka's row after a relearn, before re-walking the village).
+                        bool anywhere = MapTargetFor(pin) != null;
+                        c.AddSmallButton("Map", () => ShowOnMap(pin),
+                            EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
+                        c.AddHoverText(
+                            !anywhere
+                                ? $"No location known for {pin.QuestGiver} yet — walk past them "
+                                  + "once, or name a map waypoint after them."
+                                : GoingToSite(pin)
                                     ? $"Open the map where {string.Join(", ", pin.QuestMaps)} points."
                                       + $" Once you have the goods, this points back to {pin.QuestGiver}."
                                     : $"Open the map centred on {pin.QuestGiver}.",
-                                font, 260, EB(ColAct2, y, 40, 26));
-                        }
+                            font, 260, EB(ColAct2, y, 40, 26));
                     }
                     else if (pin.Groups.Count > 0)
                     {
@@ -757,8 +773,8 @@ namespace Tallybook
 
                     foreach (var wrapped in lines)
                     {
-                        c.AddStaticText(wrapped, infoFont, EB(nx, y, infoW, 22));
-                        y += 22;
+                        c.AddStaticText(wrapped, infoFont, EB(nx, y, infoW, LineStep));
+                        y += LineStep;
                     }
                     // A gap between speakers, so a two-sided exchange reads as two turns.
                     y += 6;
@@ -1206,7 +1222,7 @@ namespace Tallybook
 
             if (r.Text != null && expandedRecords.Contains(r.Chain + "|" + r.Stage))
             {
-                foreach (var said in r.Text) h += TbText.Wrap(quiet, said, DW - 48).Count * 22 + 6;
+                foreach (var said in r.Text) h += TbText.Wrap(quiet, said, DW - 48).Count * LineStep + 6;
                 h += 4;
             }
             return h;
@@ -1250,7 +1266,7 @@ namespace Tallybook
 
         void ComposeHistory(GuiComposer c, List<QuestRecord> done, ref double y)
         {
-            var font = CairoFont.WhiteSmallText();
+            var font = TableFont();
             var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
 
             if (done.Count == 0)
@@ -1333,8 +1349,8 @@ namespace Tallybook
                 {
                     foreach (var wrapped in TbText.Wrap(quiet, said, DW - 48))
                     {
-                        c.AddStaticText(wrapped, quiet, EB(28, y, DW - 48, 22));
-                        y += 22;
+                        c.AddStaticText(wrapped, quiet, EB(28, y, DW - 48, LineStep));
+                        y += LineStep;
                     }
                     y += 6;
                 }
@@ -1414,7 +1430,7 @@ namespace Tallybook
         /// </summary>
         void ComposeChooseRecipe(GuiComposer c)
         {
-            var font = CairoFont.WhiteSmallText();
+            var font = TableFont();
             var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
             double y = 40;
 
@@ -1532,9 +1548,10 @@ namespace Tallybook
                 y += 32;
             }
 
-            Slider("opt-hudfont", "HUD text size",
-                "Smaller text fits more on screen; the rows close up to match. The slider "
-                + "moves the HUD as you drag it, so pick what looks right rather than a number.",
+            Slider("opt-hudfont", "Text size (HUD and this window)",
+                "One size for everything Tallybook draws — the HUD and this window's table. "
+                + "Smaller text fits more on screen; the rows close up to match. The HUD "
+                + "moves as you drag; this window follows when you leave Options.",
                 v =>
                 {
                     config.HudFontSize = v;

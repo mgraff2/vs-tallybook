@@ -55,6 +55,12 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **One text-size slider for everything.** The HUD's size slider now governs the Tallybook
+  window's table too — rows, quotes, history and the recipe chooser follow it, and row
+  heights close up or open out with the text. One size that looks right, everywhere.
+- **The Map button is always on an errand row.** With no location known it says what would
+  teach us one — walk past the giver, or name a map waypoint after them — instead of silently
+  not existing, which read as broken.
 - **The Map button opens the world map through the game's own hotkey handler**, exactly as
   pressing M does, instead of driving the map manager by hand — hand-driving it produced a
   map that could not be closed once, and is the prime suspect for the map opening at the
