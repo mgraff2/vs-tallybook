@@ -55,6 +55,13 @@ From an adversarial review pass (Fable) over the whole codebase:
   want identical materials and differ only in demanding a blueprint; without that line they
   read as identical twins. It also lists what each way is made of at all — before, only the
   recipe already in use knew, so every other option offered you a "?" to choose between.
+- **Walking past a quest giver actually records where they live now.** The nearby-NPC query
+  had returned nothing since the feature existed — the entity-partition lookup came back
+  empty while the conversation path's entity walk worked all along, so position learning
+  silently depended on waypoints alone. Recording now uses the proven path. **`.tallybook
+  here <name>`** sets a giver's location to where you stand — you asserting "she lives here"
+  outranks anything learned — and **`.tallybook npcs`** lists nearby conversable NPCs with
+  their exact names, so a name mismatch is visible instead of guessed at.
 - **One text-size slider for everything.** The HUD's size slider now governs the Tallybook
   window's table too — rows, quotes, history and the recipe chooser follow it, and row
   heights close up or open out with the text. One size that looks right, everywhere.
