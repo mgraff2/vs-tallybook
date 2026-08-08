@@ -660,9 +660,9 @@ namespace Tallybook
                             EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
                         c.AddHoverText(
                             !anywhere
-                                ? $"No location known for {pin.QuestGiver} yet — talk to them, "
-                                  + "stand there and use .tallybook here, or name a map "
-                                  + "waypoint after them. Villagers are noted on sight."
+                                ? $"No location known for {pin.QuestGiver} yet — talk to them "
+                                  + "once, stand there and use .tallybook here, or name a map "
+                                  + "waypoint after them."
                                 : GoingToSite(pin)
                                     ? $"Open the map where {string.Join(", ", pin.QuestMaps)} points."
                                       + $" Once you have the goods, this points back to {pin.QuestGiver}."

@@ -261,8 +261,6 @@ namespace Tallybook
                         svc.RecountAll();
                     }
 
-                    RecordNearbyVillagers();
-
                     // Capture what the map can tell us about quest pins into the pins
                     // themselves, so the Map button never depends on a live waypoint read —
                     // which is known to come back empty at random. A successful capture is
@@ -566,13 +564,16 @@ namespace Tallybook
         /// where they live unless we have been there.
         /// </summary>
         /// <summary>
-        /// Remember where an NPC is. Two sources, by kind (Mark's rule): *villagers* — fixed
-        /// residents with a base-game dialogue file of their own — are noted whenever they
-        /// are loaded nearby, because where they live is stable public knowledge; *traders*
-        /// (everyone else) only while actually talking to them — they are met, not tracked.
-        /// There is no third source: a client-side mod cannot ask the server where an
-        /// unloaded entity or block is, so "look them up at the server" is bounded by what
-        /// is loaded around the player.
+        /// Remember where an NPC is because you are TALKING to them — the only automatic
+        /// position source, for villagers and traders alike (Mark: "I don't want to save
+        /// them unless we talk to them"). An on-sight villager recorder was built and
+        /// removed twice over; do not bring it back. Positions are knowledge you earn in
+        /// person — or assert with `.tallybook here`, or lend via a waypoint naming them.
+        ///
+        /// The chain on first contact: position lands on every position-less pin from this
+        /// giver → save → recount → the signature (which carries QuestX) changes →
+        /// OnCountsChanged → QuestWaypoints.Sync places the blue X. Talking to them IS the
+        /// backfill, marker included.
         ///
         /// The directory entry updates freely (it rides along with the next save); a pin
         /// *gaining* a position is worth an immediate save and redraw, since it changes what
@@ -603,26 +604,6 @@ namespace Tallybook
             }
         }
 
-        /// <summary>Villagers only — see RecordNpcPlace for the rule. LoadedEntities, not
-        /// GetEntitiesAround: the partition query returned nothing, ever (found by Mark —
-        /// NpcPlaces stayed empty across a whole session in the village), while the
-        /// conversation path's LoadedEntities walk has worked all along.</summary>
-        void RecordNearbyVillagers()
-        {
-            var me = capi.World?.Player?.Entity;
-            var entities = capi.World?.LoadedEntities;
-            if (me?.Pos == null || entities == null) return;
-
-            foreach (var e in entities.Values)
-            {
-                if (e == null || e == me) continue;
-                if (e.Pos == null || e.Pos.XYZ.SquareDistanceTo(me.Pos.XYZ) > 60 * 60) continue;
-                if (e.GetBehavior<EntityBehaviorConversable>() == null) continue;
-                if (!quests.IsVillagerName(e.GetName())) continue;
-
-                RecordNpcPlace(e);
-            }
-        }
 
         void OnLeaveWorld()
         {

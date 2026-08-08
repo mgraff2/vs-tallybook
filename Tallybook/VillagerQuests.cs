@@ -130,40 +130,6 @@ namespace Tallybook
         class StackSpec { public string type; public string code; public int stacksize = 1; }
 #pragma warning restore 0649
 
-        /// <summary>
-        /// Is this the name of a story villager — someone with a base-game dialogue file
-        /// named after them? That is the distinction Mark drew for position recording:
-        /// villagers are fixed residents whose whereabouts are fair to note whenever they are
-        /// loaded, traders are met, not tracked. The filename test draws exactly that line:
-        /// agnieszka/gerhardt/tobias match their entities' names; trader.json and
-        /// treasurehunter.json never match a live trader's display name, and modded traders'
-        /// files are not in the game domain.
-        /// </summary>
-        public bool IsVillagerName(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name)) return false;
-
-            if (villagerNames == null)
-            {
-                villagerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                try
-                {
-                    foreach (var loc in capi.Assets.GetLocations("config/dialogue/") ?? new List<AssetLocation>())
-                    {
-                        if (loc.Domain != "game" || !loc.Path.EndsWith(".json")) continue;
-                        villagerNames.Add(NpcNameFrom(loc));
-                    }
-                }
-                catch (Exception e)
-                {
-                    capi.Logger.Warning("[tallybook] could not list villager names: {0}", e.Message);
-                }
-            }
-            return villagerNames.Contains(name.Trim());
-        }
-
-        HashSet<string> villagerNames;
-
         /// <summary>The NPC whose conversation window is open, or null.</summary>
         public Entity FindTalkingNpc()
         {
@@ -1009,7 +975,6 @@ namespace Tallybook
         {
             catalogue = null;
             briefingsByChain.Clear();
-            villagerNames = null;
         }
 
         /// <summary>
