@@ -7,6 +7,11 @@ no server code — the zip is `modinfo.json` + `Tallybook.dll`.
 Full design in `tallybook-mod-spec.md`. Read it before implementing; the sections below are
 the parts that are easy to get wrong twice.
 
+`docs/story-progression-1.22.md` is the authoritative, file-verified order of the vanilla
+1.22 story (trader map → treasure hunter → archives → lazaret → village → devastation →
+Tobias). Read it before touching anything story-related; it also lists which steps are
+detectable client-side and which have no variable at all.
+
 `docs/vs-mod-playbook.md` is the **generalized** version of those lessons, written to be
 copied into a new Vintage Story mod. When a lesson here turns out not to be about Tallybook
 specifically, move it there too — that file is the one that outlives this project. Both
@@ -538,6 +543,40 @@ asset, and collect `player.inventory` conditions.
   pin to the requested count instead of adding to it — an errand needs exactly 10, and
   pinning it twice must not ask for 20.
 
+## Story stepping (`StoryProgress`) — reveal gates are the product
+
+`StoryProgress` walks the player through the vanilla story chain. Its step list is authored
+from `docs/story-progression-1.22.md` (file-verified, not remembered) — when a game update
+touches the story, re-verify against the new files before touching the steps.
+
+- **Two gates per step, and the reveal gate is the spoiler policy.** *Done* = the step
+  provably happened. *Reveal* = the game has already told the player this much (their own
+  variables, an item in their hands, a waypoint their map-reading created, entity state
+  observed in conversation). A step is shown only between reveal and done, only one at a
+  time, and reveal additionally requires the predecessor done — so the surface can never run
+  ahead of play. `.tallybook story` obeys the same rule: hidden steps appear only as a count.
+  The lens errand appearing on a brand-new world (pre-0.3.0 bug) is exactly the failure this
+  structure exists to prevent — its reveal gate is `readnote`, the note that names the
+  Devastation.
+- **Progress is monotonic and persisted** (`SaveFile.StoryStates`: `seen:`/`done:`/`obs:` +
+  pin guards). Half the signals are transient — maps get handed over, the lens leaves the
+  inventory at the turn-in, waypoint reads fail intermittently — so a signal observed once is
+  recorded forever, and an unreadable signal is "don't know", never "undone". Downward
+  closure (a later step done marks all earlier done) is what catches mid-story installs.
+- **Entity-scope story state** (`requestbronze`, `heardlazaret`, `offeredelk` — the treasure
+  hunter keeps half the early story on himself) is only readable in conversation;
+  `ObserveConversation` records it via the same `obs:` mechanism, chained off
+  `QuestWatcher.OnConversing`.
+- **Auto-pins are once-ever and parked, not removed**, same contract as adopted errands:
+  `pinned:`/`parked:` guards in StoryStates, `GatherOnly`, parked when the *parking* step
+  completes (the lens parks at the hand-over, not while it still reads 1/1 in the bag).
+- **Worlds without story content get total silence** — enablement requires the story
+  dialogue files to actually be present in this world's assets, cached per world and
+  invalidated on join.
+- The story block rides the shared change signature (`TallyService.ExtraSignature`), so a
+  step change redraws surfaces exactly like a count change; the dialog's pager subtracts the
+  block's measured height on the Quests tab (`StoryBlockHeight`).
+
 ## Persistence — the list is the player's work, not our cache
 
 - **Never delete a pin because it failed to resolve (found by Mark, 0.3.4 — the entire list
@@ -682,6 +721,22 @@ types), and a throwaway net10.0 console app referencing `VintagestoryAPI.dll` /
   giver (`…|for:Agnieszka`) so an errand and a personal goal can coexist as separate rows,
   and passing it to the handbook silently opens nothing (found by Mark). `OpenDetailPageFor`
   returns a bool; honour it rather than assuming the page exists.
+- **Opening the handbook for a stack takes a provider hop first (verified in 1.22 decompile,
+  0.3.7).** Vanilla's own flow — the H-with-item hotkey and every itemstack link inside
+  handbook pages — is `collectible.GetCollectibleInterface<IHandBookPageCodeProvider>()
+  ?.HandbookPageCodeForStack(world, stack) ?? PageCodeForStack(stack)`, then a bare-collectible
+  retry. Classes like BlockMeal implement the provider to name the page that *represents* the
+  stack (a meal's recipe page), and mod classes do the same; asking with raw `PageCodeForStack`
+  for those names a page the index never held and the handbook sits at its root.
+  `RecipeProbe.HandbookPageCode` is the open-with code; `PageCode` stays pin identity — the
+  provider maps many stacks to one page, and keying pins on it would merge distinct variants.
+- **`GuiDialogCommandHandbook` derives from `GuiDialogHandbook`** (the vanilla Command
+  Handbook), so `LoadedGuis.OfType<GuiDialogHandbook>().FirstOrDefault()` returns whichever
+  book the player opened first — and an item page sent to the command handbook opens the
+  wrong book at its root, silently. `HandbookPin.FindDialog` therefore asks
+  `ModSystemSurvivalHandbook`'s private `dialog` field *first* and filters the command
+  handbook out of the LoadedGuis fallback. `.tallybook pages` prints every pin's page code
+  against the live index when a Handbook button misbehaves.
 - **The handbook is missing from `Gui.LoadedGuis` until first opened** (found by Mark: Book
   failed with "handbook is not available" until H had been pressed once). That list holds
   dialogs registered with the GUI manager, and the handbook is not wired in until its first

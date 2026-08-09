@@ -180,11 +180,13 @@ namespace Tallybook
         readonly Action<bool> setHudVisible;
         readonly Action onHudChanged;
         readonly QuestWaypoints waypoints;
+        readonly StoryProgress story;
 
         static double DefaultHudFontSize => CairoFont.WhiteSmallText().UnscaledFontsize;
 
         public GuiDialogTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc,
                                   QuestHistory history, QuestWaypoints waypoints,
+                                  StoryProgress story,
                                   Action<bool> setHudVisible, Action onHudChanged)
             : base(capi)
         {
@@ -193,6 +195,7 @@ namespace Tallybook
             this.svc = svc;
             this.history = history;
             this.waypoints = waypoints;
+            this.story = story;
             this.setHudVisible = setHudVisible;
             // OnCountsChanged is the single redraw signal: every store mutation funnels
             // through TallyService.RecountAll, whose signature covers structure and numbers.
@@ -329,10 +332,34 @@ namespace Tallybook
             return allRows.GetRange(from, Math.Max(0, upto - from));
         }
 
+        /// <summary>How much of the page the story block will take, measured the same way it
+        /// composes — the pager must know the table starts lower on the Quests tab.</summary>
+        double StoryBlockHeight()
+        {
+            if (story == null || !story.Enabled || !story.AnyRevealed) return 0;
+
+            var quiet = TableFont();
+            double h = 28;
+            var step = story.Current;
+            var paragraphs = new List<string>();
+            if (step == null) paragraphs.Add("x");
+            else
+            {
+                paragraphs.Add(step.Text);
+                string detail = null;
+                try { detail = step.Detail?.Invoke(); } catch { }
+                if (!string.IsNullOrEmpty(detail)) paragraphs.Add(detail);
+            }
+            foreach (var para in paragraphs)
+                h += TbText.Wrap(quiet, para, DW - 40).Count * LineStep + 4;
+            return h + 8;
+        }
+
         List<int> PageStarts(List<Row> rows)
         {
             var starts = new List<int> { 0 };
-            double used = 0, budget = PageBudget;
+            double used = 0, budget = Math.Max(120,
+                PageBudget - (tab == TbTab.Quests ? StoryBlockHeight() : 0));
 
             for (int i = 0; i < rows.Count; i++)
             {
@@ -453,6 +480,8 @@ namespace Tallybook
 
             if (tab == TbTab.History) { ComposeHistory(c, done, ref y); return; }
 
+            if (tab == TbTab.Quests) ComposeStoryBlock(c, ref y);
+
             if (!PinsForTab(tab).Any())
             {
                 string empty = tab == TbTab.Quests
@@ -520,6 +549,52 @@ namespace Tallybook
             }
 
             c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+        }
+
+        /// <summary>
+        /// The story's current step, above the errand table. Shows exactly one step — the one
+        /// the player is on — and only once the game itself has revealed it (the tracker's
+        /// reveal gates); before the story finds the player, this draws nothing at all, so
+        /// the tab cannot become a table of contents for unplayed content.
+        /// </summary>
+        void ComposeStoryBlock(GuiComposer c, ref double y)
+        {
+            if (story == null || !story.Enabled || !story.AnyRevealed) return;
+
+            var step = story.Current;
+            var titleFont = CairoFont.WhiteSmallishText().WithFontSize((float)(TablePx + 2));
+            string title = step != null ? $"The story so far — {step.Title}" : "The story so far";
+            c.AddStaticText(title, titleFont, EB(8, y, DW - 16, 26));
+            y += 28;
+
+            var quiet = TableFont().Clone().WithColor(GuiStyle.ColorParchment);
+            var paragraphs = new List<string>();
+            if (step == null)
+            {
+                paragraphs.Add(story.AllDone
+                    ? "You have followed the story to its end — for now."
+                    : "The story waits on what you do next.");
+            }
+            else
+            {
+                paragraphs.Add(step.Text);
+                string detail = null;
+                try { detail = step.Detail?.Invoke(); } catch { }
+                if (!string.IsNullOrEmpty(detail)) paragraphs.Add(detail);
+            }
+
+            foreach (var para in paragraphs)
+            {
+                foreach (var line in TbText.Wrap(quiet, para, DW - 40))
+                {
+                    c.AddStaticText(line, quiet, EB(16, y, DW - 24, 22));
+                    y += LineStep;
+                }
+                y += 4;
+            }
+
+            c.AddGameOverlay(EB(0, y, DW, 2), GuiStyle.DialogBorderColor);
+            y += 8;
         }
 
         /// <summary>
@@ -1174,8 +1249,11 @@ namespace Tallybook
         {
             // Derive the page from the stack, NOT from pin.Key: a key carries the quest giver
             // ("…|for:Agnieszka") so an errand and your own goal can be separate rows, and the
-            // handbook has never heard of that suffix.
-            string page = RecipeProbe.PageCode(pin.Stack);
+            // handbook has never heard of that suffix. HandbookPageCode, not PageCode: opening
+            // must take the same IHandBookPageCodeProvider hop the game's own
+            // open-handbook-for-stack flow takes, or any collectible that names its
+            // representative page (meals, mod classes) sends us to a code the index never held.
+            string page = RecipeProbe.HandbookPageCode(pin.Stack, capi.World);
             if (page == null)
             {
                 notice = $"No handbook page for {pin.DisplayName}.";
@@ -1210,15 +1288,26 @@ namespace Tallybook
             if (handbook.OpenDetailPageFor(page)) return;
 
             // Attribute-carrying variants can name a page the handbook does not index; the
-            // plain item's page is the honest second choice, and saying so beats leaving the
-            // handbook sitting on whatever it showed last.
+            // plain item's page is the honest second choice.
             string basePage = pin.Stack?.Collectible == null
                 ? null
-                : RecipeProbe.PageCode(new ItemStack(pin.Stack.Collectible));
+                : RecipeProbe.HandbookPageCode(new ItemStack(pin.Stack.Collectible), capi.World);
 
-            if (basePage == null || basePage == page || !handbook.OpenDetailPageFor(basePage))
+            if (basePage != null && basePage != page && handbook.OpenDetailPageFor(basePage)) return;
+
+            // No code we can derive names an indexed page. Searching by display name lands
+            // the player on a list with the right entry in it — self-explanatory on screen —
+            // where stopping at the root reads as the button doing nothing at all.
+            string name = pin.DisplayName;
+            if (!string.IsNullOrWhiteSpace(name))
             {
-                capi.ShowChatMessage($"Tallybook: no handbook page for {pin.DisplayName}.");
+                handbook.Search(name);
+                capi.ShowChatMessage(
+                    $"Tallybook: no exact handbook page for {name} — searched by name instead.");
+            }
+            else
+            {
+                capi.ShowChatMessage($"Tallybook: no handbook page for {pin.Code}.");
             }
         }
 

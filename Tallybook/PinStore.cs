@@ -185,6 +185,12 @@ namespace Tallybook
         /// so it gets today's date; one that was already finished the first time we ever saw
         /// it did not.</summary>
         public Dictionary<string, string> ChainStates = new Dictionary<string, string>();
+
+        /// <summary>Story-step facts, recorded forward-only: seen:/done: per step,
+        /// obs: for entity-scope state observed in conversation, pinned:/parked: guards.
+        /// Monotonic because half the underlying signals are transient — an item handed
+        /// over or a waypoint read that fails must never un-happen a step.</summary>
+        public Dictionary<string, string> StoryStates = new Dictionary<string, string>();
     }
 
     public class PinStore
@@ -198,6 +204,7 @@ namespace Tallybook
         public Dictionary<string, string> NpcPlaces { get; private set; } = new Dictionary<string, string>();
         public List<QuestRecord> QuestHistory { get; private set; } = new List<QuestRecord>();
         public Dictionary<string, string> ChainStates { get; private set; } = new Dictionary<string, string>();
+        public Dictionary<string, string> StoryStates { get; private set; } = new Dictionary<string, string>();
         public event Action OnChanged;
 
         public PinStore(ICoreClientAPI capi)
@@ -366,7 +373,8 @@ namespace Tallybook
                     OfferedQuests = OfferedQuests.ToList(),
                     NpcPlaces = NpcPlaces,
                     QuestHistory = QuestHistory,
-                    ChainStates = ChainStates
+                    ChainStates = ChainStates,
+                    StoryStates = StoryStates
                 };
                 File.WriteAllText(path, JsonConvert.SerializeObject(file, Formatting.Indented));
             }
@@ -402,6 +410,13 @@ namespace Tallybook
         {
             pins.Clear();
             RecipePrefs = new Dictionary<string, string>();
+            // Per-world separation is the design (spec §11): a world with no save file starts
+            // clean, it does not inherit whatever world was loaded before it in this session.
+            OfferedQuests = new HashSet<string>();
+            NpcPlaces = new Dictionary<string, string>();
+            QuestHistory = new List<QuestRecord>();
+            ChainStates = new Dictionary<string, string>();
+            StoryStates = new Dictionary<string, string>();
             try
             {
                 string path = SavePath;
@@ -424,6 +439,7 @@ namespace Tallybook
                     if (loaded?.NpcPlaces != null) NpcPlaces = loaded.NpcPlaces;
                     if (loaded?.QuestHistory != null) QuestHistory = loaded.QuestHistory;
                     if (loaded?.ChainStates != null) ChainStates = loaded.ChainStates;
+                    if (loaded?.StoryStates != null) StoryStates = loaded.StoryStates;
                 }
             }
             catch (Exception e)

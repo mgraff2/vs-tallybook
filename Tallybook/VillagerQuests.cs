@@ -614,6 +614,20 @@ namespace Tallybook
             catch { return null; }
         }
 
+        /// <summary>Read an entity-scope quest flag off the NPC in front of you — the only
+        /// moment such state is readable at all. Public for the story tracker, which records
+        /// what it sees here so the fact outlives the conversation.</summary>
+        public string EntityVariable(string name, Entity npc)
+        {
+            if (npc == null) return null;
+            try
+            {
+                var vars = capi.ModLoader.GetModSystem<VariablesModSystem>();
+                return vars?.GetVariable(EnumActivityVariableScope.Entity, name, npc)?.ToString();
+            }
+            catch { return null; }
+        }
+
         Dictionary<string, StoryVar> storyVars;
 
         /// <summary>

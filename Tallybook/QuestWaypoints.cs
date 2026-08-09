@@ -183,6 +183,24 @@ namespace Tallybook
         }
 
         /// <summary>
+        /// Does a waypoint with exactly this title exist right now? True only on a successful
+        /// read that finds it; an empty or failed read returns false, which callers must
+        /// treat as "don't know" — the list is KNOWN to read back empty at random, so absence
+        /// proves nothing and nothing may act on it. The story tracker records a true answer
+        /// permanently and never asks again.
+        /// </summary>
+        public bool HasWaypointTitled(string title)
+        {
+            try
+            {
+                var list = OwnWaypoints();
+                if (list == null || list.Count == 0) return false;
+                return list.Any(w => string.Equals(w?.Title, title, StringComparison.Ordinal));
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// Where a map that came with an errand points, read off the waypoint that reading it
         /// created — vanilla's own record of the place. Matched on the distinctive words of
         /// the map's name ("Devastation" out of "Map to the devastation"), which is loose by

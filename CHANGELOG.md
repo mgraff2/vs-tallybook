@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.7 — 2026-08-09
+
+- **The story, one step at a time.** Tallybook now walks you through the vanilla storyline —
+  from asking a wandering trader about a treasure hunter all the way to Tobias' cave — as a
+  "story so far" block at the top of the Side quests tab. It advances entirely by itself,
+  watching the story's own variables, the locator maps and letters in your hands, and what
+  NPCs tell you in conversation. **No spoilers by construction:** every step has a reveal
+  gate — proof the game has already told you that much — and only the step you are on is ever
+  shown; nothing about later steps appears anywhere, including in the new `.tallybook story`
+  command. Steps with things to fetch (the trader's gears, The Lens) pin them automatically,
+  once, and park them when the step completes. Progress is remembered per world and only
+  moves forward, so a lost map or a handed-over item never un-completes a step. On worlds
+  without story content the whole feature stays silent.
+- Fixed: on worlds created with 0.2.x, the lens errand could appear at world start (its only
+  dialogue gate is negative, and the pre-0.3.0 login scan accepted that). The scan has
+  refused it since 0.3.0; the story tracker now surfaces the lens at the right moment
+  instead — after you have read the note that names the Devastation. A leftover lens pin
+  from an old build can simply be unpinned; it will not return.
+
+- **The Handbook button resolves pages the way the game itself does.** It now asks the
+  collectible's own `IHandBookPageCodeProvider` first — the hop vanilla's open-handbook-for-
+  held-item flow and every in-handbook item link take — before falling back to the stack's
+  page code, so items whose class names a representative page (meals, modded classes) open
+  the right entry instead of a code the handbook never indexed.
+- **The wrong handbook can no longer answer.** The survival handbook was found via
+  "first dialog deriving from GuiDialogHandbook", and vanilla's Command Handbook derives from
+  the same class — whichever the player had opened first won, and an item page sent to the
+  command handbook opened the wrong book at its root, silently. The survival handbook's own
+  mod system is now asked first, and the fallback filters the command handbook out.
+- **A pin whose page genuinely is not indexed now searches the handbook by name** instead of
+  leaving it sitting at the root, and says so in chat.
+- **New diagnostic: `.tallybook pages`** prints every pin's handbook page code and whether
+  the live handbook index knows it — run this when a Handbook button misbehaves and report
+  the line for the affected pin.
+
 ## 0.3.6 — 2026-08-08
 
 - **The HUD hugs the minimap and coordinates again.** Its anchor sat it below the deepest

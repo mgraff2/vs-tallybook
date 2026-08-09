@@ -312,6 +312,11 @@ namespace Tallybook
 
         string lastSignature = "";
 
+        /// <summary>Extra state folded into the change signature by whoever owns it — the
+        /// story tracker's current step lives outside the pin list but redraws the same
+        /// surfaces, and a step change must register exactly like a count change.</summary>
+        public Func<string> ExtraSignature;
+
         /// <summary>
         /// Every visible fact in one string: counts AND structure (recipe choice, expansion
         /// shape). Structure is included so cycling a recipe whose numbers happen to match
@@ -320,6 +325,7 @@ namespace Tallybook
         string Signature()
         {
             var sb = new System.Text.StringBuilder();
+            try { sb.Append(ExtraSignature?.Invoke()).Append('§'); } catch { }
             foreach (var pin in Store.Pins)
             {
                 sb.Append(pin.Key).Append(':').Append(pin.Count)

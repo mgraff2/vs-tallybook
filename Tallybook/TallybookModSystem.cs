@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using HarmonyLib;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
@@ -30,6 +31,7 @@ namespace Tallybook
         QuestWatcher questWatcher;
         QuestWaypoints questWaypoints;
         QuestHistory questHistory;
+        StoryProgress story;
         GuiDialogTallybook dialog;
         HudTallybook hud;
         HandbookReturnButton handbookReturn;
@@ -226,6 +228,25 @@ namespace Tallybook
                             capi.ShowChatMessage(line);
                         return TextCommandResult.Success("");
                     })
+                .EndSubCommand()
+                .BeginSubCommand("pages")
+                    .WithDescription("Diagnose Handbook buttons: each pin's page code and whether the handbook index knows it")
+                    .HandleWith(_ =>
+                    {
+                        EnsureGui();
+                        foreach (var line in HandbookPageReport())
+                            capi.ShowChatMessage(line);
+                        return TextCommandResult.Success("");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("story")
+                    .WithDescription("Where you are in the story — revealed steps only, no spoilers")
+                    .HandleWith(_ =>
+                    {
+                        EnsureGui();
+                        foreach (var line in story.Report()) capi.ShowChatMessage(line);
+                        return TextCommandResult.Success("");
+                    })
                 .EndSubCommand();
 
             api.Event.PlayerJoin += OnPlayerJoin;
@@ -246,7 +267,10 @@ namespace Tallybook
                 {
                     if (HandbookPin.CameFromList)
                     {
-                        var hb = capi.Gui.LoadedGuis?.OfType<GuiDialogHandbook>().FirstOrDefault();
+                        // FindDialog, not a raw OfType over LoadedGuis: the Command Handbook
+                        // shares the base class, and reading whichever registered first could
+                        // clear the flag while the player is still in the survival handbook.
+                        var hb = HandbookPin.FindDialog(capi);
                         if (hb == null || !hb.IsOpened()) HandbookPin.CameFromList = false;
                     }
 
@@ -276,6 +300,10 @@ namespace Tallybook
                     // is ever noticed — completing one raises no event we can hear.
                     questHistory?.Update();
                     questHistory?.CheckErrandCompletion();
+
+                    // Same reason: a story step completing raises no event. A handful of
+                    // variable reads when nothing moved.
+                    story?.Poll();
                 }
                 catch (Exception e)
                 {
@@ -289,14 +317,24 @@ namespace Tallybook
             if (dialog != null) return;
             questHistory = new QuestHistory(capi, svc.Store, quests);
             questWaypoints = new QuestWaypoints(capi, config, svc.Store);
+            story = new StoryProgress(capi, svc, quests, questWaypoints);
+            // The story block redraws with the same surfaces as every count, so its state
+            // rides the shared change signature.
+            svc.ExtraSignature = () => story.UiSignature();
             dialog = new GuiDialogTallybook(capi, config, svc, questHistory, questWaypoints,
-                                            SetHudVisible, () => hud?.Refresh());
+                                            story, SetHudVisible, () => hud?.Refresh());
             hud = new HudTallybook(capi, config, svc);
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
             questGlow = new QuestReadyGlow(capi, config, svc);
             questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);
             questWatcher.History = questHistory;
-            questWatcher.OnConversing = RecordNpcPlace;
+            questWatcher.OnConversing = npc =>
+            {
+                RecordNpcPlace(npc);
+                // Standing with an NPC is the only moment their entity-scope story state is
+                // readable at all — record what is true before the conversation is over.
+                story.ObserveConversation(npc);
+            };
             // Checking and unchecking come through the recount; unpinning has to be caught as
             // it happens, while the pin can still tell us it had a marker.
             svc.OnCountsChanged += questWaypoints.Sync;
@@ -386,11 +424,13 @@ namespace Tallybook
             // world is stale.
             svc.Probe.InvalidateIndex();
             quests.InvalidateCatalogue();     // asset sets differ between servers
+            story.InvalidateWorld();          // and story content with them
             SubscribeToCarriedInventories();
             svc.Store.Load(svc.Resolve);
             BackfillQuestText();
             AdoptVillageQuests();
             questHistory.Update();
+            story.Poll();
             svc.RecountAll();
             hud.Refresh();
 
@@ -486,6 +526,56 @@ namespace Tallybook
             svc.Store.Save();
             capi.ShowChatMessage(
                 $"Tallybook: picked up {adopted} errand(s) you were already on. Press L to see them.");
+        }
+
+        /// <summary>
+        /// One line per pin: the page code its Handbook button will ask for, and whether the
+        /// live handbook index actually holds that page. Failures print the code so a report
+        /// can say exactly which lookup missed — "the button goes to the root" is this, seen
+        /// without instrumentation. The index is a protected dictionary read by reflection;
+        /// if that ever breaks, page codes still print and the index column says so.
+        /// </summary>
+        List<string> HandbookPageReport()
+        {
+            var lines = new List<string>();
+            var handbook = HandbookPin.FindDialog(capi);
+            if (handbook == null)
+            {
+                lines.Add("Handbook dialog not found — nothing to check against.");
+                return lines;
+            }
+
+            Dictionary<string, int> index = null;
+            try
+            {
+                index = AccessTools.Field(typeof(GuiDialogHandbook), "pageNumberByPageCode")
+                    ?.GetValue(handbook) as Dictionary<string, int>;
+            }
+            catch { /* diagnostic only; report the codes without the index column */ }
+
+            lines.Add(index == null
+                ? $"{handbook.GetType().Name}: page index not readable; listing page codes only."
+                : $"{handbook.GetType().Name}: index holds {index.Count} page(s).");
+
+            foreach (var pin in svc.Store.Pins)
+            {
+                if (pin.Stack == null)
+                {
+                    lines.Add($"· {pin.Code}: unresolved — this world does not know the item (yet).");
+                    continue;
+                }
+
+                string page = RecipeProbe.HandbookPageCode(pin.Stack, capi.World);
+                string identity = RecipeProbe.PageCode(pin.Stack);
+                string suffix = page == identity ? "" : $" (pin identity: {identity})";
+                string known = index == null ? ""
+                    : index.ContainsKey(page) ? " — in index"
+                    : " — NOT IN INDEX";
+                lines.Add($"· {pin.DisplayName}: {page}{known}{suffix}");
+            }
+
+            if (svc.Store.Pins.Count == 0) lines.Add("No pins to check.");
+            return lines;
         }
 
         /// <summary>

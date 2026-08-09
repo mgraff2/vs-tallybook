@@ -48,32 +48,39 @@ namespace Tallybook
         public static bool CameFromList { get; set; }
 
         /// <summary>
-        /// The handbook dialog, whether or not the player has opened it yet this session.
+        /// The survival handbook dialog, whether or not the player has opened it yet this
+        /// session.
         ///
-        /// Before its first use it is absent from <c>Gui.LoadedGuis</c> — that list holds
-        /// dialogs registered with the GUI manager, and the handbook is not wired in until it
-        /// is first opened. The survival handbook mod system has built the instance long
-        /// before that, so read it from there when the registered list comes up empty.
-        /// (Without this, Book on a list row failed with "handbook is not available" until
-        /// the player had pressed H once — found by Mark.)
+        /// The mod system's own private field is asked FIRST, not as a fallback: it is the
+        /// authoritative instance, present from world load. The registered-GUI list is the
+        /// backup (in case that field ever moves), and it must be filtered — vanilla's
+        /// Command Handbook derives from the same GuiDialogHandbook class, so a bare
+        /// OfType().FirstOrDefault() returns whichever book the player happened to open first.
+        /// Sending an item page there opens the wrong handbook at its root, silently: its
+        /// index holds command pages, so the lookup just fails. (The original order was
+        /// list-first, which also failed with "handbook is not available" until the player
+        /// had pressed H once, because the handbook only registers on first open — found by
+        /// Mark.)
         /// </summary>
         public static GuiDialogHandbook FindDialog(ICoreClientAPI api)
         {
-            var registered = api?.Gui?.LoadedGuis?.OfType<GuiDialogHandbook>().FirstOrDefault();
-            if (registered != null) return registered;
-
             try
             {
                 var sys = api?.ModLoader?.GetModSystem<ModSystemSurvivalHandbook>();
-                if (sys == null) return null;
-                return AccessTools.Field(typeof(ModSystemSurvivalHandbook), "dialog")
-                    ?.GetValue(sys) as GuiDialogHandbook;
+                if (sys != null
+                    && AccessTools.Field(typeof(ModSystemSurvivalHandbook), "dialog")
+                        ?.GetValue(sys) is GuiDialogHandbook own)
+                {
+                    return own;
+                }
             }
             catch (Exception e)
             {
                 api?.Logger.Warning("[tallybook] could not locate the handbook: {0}", e.Message);
-                return null;
             }
+
+            return api?.Gui?.LoadedGuis?.OfType<GuiDialogHandbook>()
+                .FirstOrDefault(d => !(d is GuiDialogCommandHandbook));
         }
 
         /// <summary>

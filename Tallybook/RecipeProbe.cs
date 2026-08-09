@@ -366,7 +366,40 @@ namespace Tallybook
         {
             if (stack?.Collectible?.Code == null) return null;
             try { return GuiHandbookItemStackPage.PageCodeForStack(stack); }
-            catch { return $"{stack.Class}-{stack.Collectible.Code.ToShortString()}"; }
+            catch
+            {
+                // Mirror PageCodeForStack's own format, including its lowercase class name —
+                // "Block-" (enum casing) can never match a handbook index entry.
+                return $"{stack.Class.Name()}-{stack.Collectible.Code.ToShortString()}";
+            }
+        }
+
+        /// <summary>
+        /// The page code to *open the handbook with* for this stack — distinct from
+        /// <see cref="PageCode"/>, which is pin identity. The game's own open-handbook-for-stack
+        /// flow (ModSystemSurvivalHandbook's hotkey handler, and every itemstack link inside
+        /// handbook pages) asks the collectible first: classes like BlockMeal implement
+        /// IHandBookPageCodeProvider to name the page that *represents* the stack, which for
+        /// them is not the page PageCodeForStack derives — meals map to their recipe page, and
+        /// mod classes do the same. Skipping that hop sends such stacks to a page code the
+        /// index has never held, which reads as the handbook opening on nothing.
+        ///
+        /// Identity deliberately stays PageCodeForStack-based: the provider maps many stacks
+        /// to one representative page, and keying pins on it would merge variants the rest of
+        /// the mod treats as distinct.
+        /// </summary>
+        public static string HandbookPageCode(ItemStack stack, IWorldAccessor world)
+        {
+            if (stack?.Collectible?.Code == null) return null;
+            try
+            {
+                string provided = stack.Collectible
+                    .GetCollectibleInterface<IHandBookPageCodeProvider>()
+                    ?.HandbookPageCodeForStack(world, stack);
+                if (provided != null) return provided;
+            }
+            catch { /* a modded provider throwing must not cost the button */ }
+            return PageCode(stack);
         }
 
         /// <summary>
@@ -388,6 +421,25 @@ namespace Tallybook
             req.ExactCodes.Add(stack.Collectible.Code.ToShortString());
             req.PresetSampleStack(stack);
             return req;
+        }
+
+        /// <summary>A plain stack for a known vanilla code — how the story tracker pins the
+        /// items it names. Null when this world does not have the collectible, which callers
+        /// treat as "then don't pin it".</summary>
+        public static ItemStack StackFor(IWorldAccessor world, string code, bool isBlock)
+        {
+            try
+            {
+                var loc = new AssetLocation(code);
+                if (isBlock)
+                {
+                    var block = world.GetBlock(loc);
+                    return block == null ? null : new ItemStack(block);
+                }
+                var item = world.GetItem(loc);
+                return item == null ? null : new ItemStack(item);
+            }
+            catch { return null; }
         }
 
         /// <summary>Stack attributes as a JSON token for persistence; null when empty.</summary>

@@ -92,6 +92,21 @@ don't have to open a list to know the walk is worth it. Nothing is guessed from 
 structured conditions, and only requests that are actually live for you are offered, so
 quests you haven't been given stay unspoiled.
 
+### The story, one step at a time
+
+Tallybook also walks you through the vanilla storyline — starting from the very first step, a
+few rusty gears and a question for a wandering trader. A **"story so far"** block at the top
+of the Side quests tab shows the step you are on and nothing more; it advances by itself as
+you play, watching the story's own progress flags, the maps and letters in your hands, and
+what NPCs tell you in conversation. Steps that need something fetched pin it automatically
+and retire it when the step is done.
+
+No spoilers: a step is only ever shown once the game itself has told you that much — the
+next step after it stays hidden everywhere, including in `.tallybook story`, which prints
+where you are on request. Progress is per world and only moves forward, so losing a map or
+handing an item over never un-completes a step. On worlds without story content the block
+never appears.
+
 Every pin tracks **its own acquisition**, not just its ingredients: the row reads
 `Low-quality soil 12/64` and fills in as you dig. That means items nothing crafts are worth
 pinning too — ores, hides, soil, an item a villager asked you to fetch — and a craftable
@@ -143,9 +158,16 @@ by hand and want them again.
 would have you fetch. Which items those are depends on the mods your server runs, so it is
 worth a look after adding one.
 
+`.tallybook pages` prints, for every pin, the handbook page code its Handbook button will ask
+for and whether the handbook actually has that page — if a Handbook button ever dumps you at
+the handbook's front page instead of the item, run this and the line for that pin says why.
+
+`.tallybook story` prints where you are in the storyline — completed and current steps only,
+never what comes next.
+
 ## Install
 
-Drop `tallybook_0.3.6.zip` into
+Drop `tallybook_0.3.7.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source
