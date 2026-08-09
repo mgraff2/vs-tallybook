@@ -167,7 +167,7 @@ never what comes next.
 
 ## Install
 
-Drop `tallybook_0.3.7.zip` into
+Drop `tallybook_0.3.8.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source

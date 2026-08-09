@@ -129,7 +129,9 @@ namespace Tallybook
                 .EndChildElements()
                 .Compose();
 
-            if (replaced != null) capi.World.RegisterCallback(_ => replaced.Dispose(), 250);
+            // Permitted while paused: this composes alongside the handbook, which pauses
+            // singleplayer while it is open — the dispose just waits for unpause.
+            if (replaced != null) capi.Event.RegisterCallback(_ => replaced.Dispose(), 250, permittedWhilePaused: true);
         }
     }
 }

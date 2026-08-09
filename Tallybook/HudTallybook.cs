@@ -349,7 +349,7 @@ namespace Tallybook
 
             var replaced = SingleComposer;
             SingleComposer = composer.EndChildElements().Compose();
-            if (replaced != null) capi.World.RegisterCallback(_ => replaced.Dispose(), 250);
+            if (replaced != null) capi.Event.RegisterCallback(_ => replaced.Dispose(), 250, permittedWhilePaused: true);
         }
 
         /// <summary>

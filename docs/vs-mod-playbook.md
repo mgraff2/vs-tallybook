@@ -186,6 +186,35 @@ calls `Assembly.LoadFrom` and `GetMembers`. Note:
 - **One definition of "what is on this page".** Composing and any later input-restore pass must
   agree exactly; asking the composer for a control it never composed is unhealthy whether or
   not it throws.
+- **The game can be paused during any of your GUI events — never call bare 2-arg
+  `RegisterCallback` from one.** The handbook pauses singleplayer while it is open, and
+  inventory dialogs, your dialogs and links inside the handbook all stay clickable
+  underneath — so `SlotModified` and your own click handlers run while `IsGamePaused`. The
+  2-arg `RegisterCallback` then logs an engine warning, and on a client with developer mode
+  + extended debug it *throws on purpose* — a crash report with your mod at the top of the
+  stack. Two replacements, chosen by what the defer is for (both present since 1.22.0):
+  - A "next tick" defer that should still respond while paused (the click was the player's
+    explicit act; a recount that keeps numbers live): `capi.Event.EnqueueMainThreadTask(
+    action, code)` — dispatched every frame after the render loop, no pause gate.
+  - Time-based housekeeping (delayed disposes, debounce timers): `capi.Event.
+    RegisterCallback(handler, ms, permittedWhilePaused: true)` — the flag only suppresses
+    the trap; delayed callbacks tick while unpaused only, so it fires at unpause, which is
+    the point of housekeeping. `capi.World.RegisterCallback` has no such overload — route
+    GUI callbacks through `capi.Event`.
+- **The handbook's page index loads on a background thread — and is wiped and rebuilt every
+  time any mod registers a hotkey.** `GuiDialogHandbook.loadEntries` (constructor, at level
+  finalize) sets `loadingPagesAsync` and queues a thread-pool load; the survival handbook
+  also wires `capi.Event.HotkeysChanged += loadEntries`, so rebuilds happen mid-session too,
+  and heavy content mods make one take tens of seconds. Until the flag clears,
+  `OpenDetailPageFor` misses and every `FilterItems` — including the one in `OnGuiOpened` —
+  filters an empty list and renders a blank handbook that *stays* blank; nothing re-filters
+  on completion. Anything that opens the handbook onto a page must first poll the
+  (reflected) `loadingPagesAsync` flag — per frame, since the open handbook pauses
+  singleplayer and a delayed callback would wait for unpause. Bound the wait by **wall
+  clock** (`Environment.TickCount64`): a frame count expires in seconds at high FPS, and
+  the in-world clock freezes while paused. On timeout, tell the player instead of
+  half-acting; if they close the handbook mid-wait, stop. There is nothing to warm up: the
+  game already starts loading as early as possible; the only correct move is waiting.
 
 ---
 

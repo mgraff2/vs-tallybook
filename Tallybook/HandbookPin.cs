@@ -84,6 +84,25 @@ namespace Tallybook
         }
 
         /// <summary>
+        /// Whether the handbook is still building its page index. Vanilla starts that on a
+        /// background thread at world join (GuiDialogHandbook.loadEntries → LoadPages_Async);
+        /// until it finishes, OpenDetailPageFor can only fail and FilterItems filters an
+        /// empty list — an open handbook shows nothing at all. Anything that wants to land
+        /// on a page must wait this out. Unreadable counts as "not loading": the caller then
+        /// behaves exactly as before this probe existed.
+        /// </summary>
+        public static bool StillLoadingPages(GuiDialogHandbook dialog)
+        {
+            try
+            {
+                return dialog != null
+                    && AccessTools.Field(typeof(GuiDialogHandbook), "loadingPagesAsync")
+                        ?.GetValue(dialog) is true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// Open the handbook the way pressing H does, so whatever setup the game performs on
         /// first use happens exactly once and by its own hand rather than ours.
         /// </summary>

@@ -258,6 +258,26 @@ GUI lessons learned the hard way — do not relearn these:
   still be mid-iteration in the event loop that triggered the recompose.
 - Set `ignoreNextKeyPress = true` in `OnGuiOpened` — the opening hotkey's own char event
   otherwise lands in the first text input.
+- **The game can be paused during any of our GUI events — pick the defer mechanism
+  accordingly (found via ModDB crash report + Mark's repro, 0.3.7).** The handbook pauses
+  singleplayer while it is open (`GuiDialogHandbook.OnGuiOpened` → `capi.PauseGame(true)`,
+  toggleable via `noHandbookPause`) — and the inventory, our dialog and the HUD all stay
+  clickable underneath, so `SlotModified` and our own button handlers run while
+  `IsGamePaused`. The 2-arg `RegisterCallback` then logs an engine warning, which developer
+  mode + extended debug escalates to a deliberate crash ("Call to RegisterCallback while
+  game is paused") — with our frame on top of the stack. It surfaced twice: the reporter's
+  backpack click (`OnSlotModified`), and Mark's Book-button click (`OpenHandbookFor`).
+  Two mechanisms, chosen by what the defer is *for* (both verified present 1.22.0–1.22.6):
+  - **"Next tick" defers that must respond to a paused player** — the recount coalescer,
+    open-list link, Book button, journal — use `capi.Event.EnqueueMainThreadTask(action,
+    code)`. It runs every frame right after the render loop with no pause gate, so counts
+    stay live and buttons work inside a paused handbook; delayed callbacks would sit until
+    unpause and the click would look dead.
+  - **Time-based housekeeping** — composer disposes, typing-grace/options recompose timers,
+    map centring — keeps `RegisterCallback` but always with `permittedWhilePaused: true`
+    (the 3-arg overload; it only suppresses the trap, firing at unpause).
+    `capi.World.RegisterCallback` has no such overload — use `capi.Event`.
+  Never call bare 2-arg `RegisterCallback` anywhere a paused player can reach.
 
 ## Handbook integration (the entry point)
 
@@ -737,6 +757,28 @@ types), and a throwaway net10.0 console app referencing `VintagestoryAPI.dll` /
   `ModSystemSurvivalHandbook`'s private `dialog` field *first* and filters the command
   handbook out of the LoadedGuis fallback. `.tallybook pages` prints every pin's page code
   against the live index when a Handbook button misbehaves.
+- **The handbook's page index builds on a background thread from world join, and everything
+  page-shaped fails quietly until it finishes (found by Mark: Book right after login opened
+  a blank handbook; close-and-reopen "fixed" it).** `GuiDialogHandbook.loadEntries` (run in
+  the constructor, which `ModSystemSurvivalHandbook` calls at `Event_LevelFinalize`) sets
+  `loadingPagesAsync` and queues `LoadPages_Async` on the thread pool — several seconds on
+  a modded world. Until it clears: `OpenDetailPageFor` misses (`pageNumberByPageCode` is
+  empty), and `FilterItems` — including the one `OnGuiOpened` runs, and the one behind
+  `Search` — filters the empty list and shows *nothing*, with no re-filter when loading
+  completes; the blank handbook stays blank until reopened. Worse, the survival handbook
+  wires `capi.Event.HotkeysChanged += loadEntries`, so **any mod registering a hotkey at any
+  time wipes the index and rebuilds it from scratch** — this is not just a login race, and
+  with heavy content mods (ACA meal/pie pages) one rebuild can take tens of seconds. So
+  `ShowHandbookPage` waits on `HandbookPin.StillLoadingPages` (reflected
+  `loadingPagesAsync`) before touching pages — re-queued per frame via
+  `EnqueueMainThreadTask`, because the handbook being open is what pauses singleplayer and a
+  delayed callback would wait for unpause. Two hard-won details: the bound must be
+  **wall-clock** (`Environment.TickCount64`) — a frame count expires in seconds at high FPS
+  and fell through mid-build right back to the blank screen (found by Mark, rusty gear), and
+  `capi.ElapsedMilliseconds` freezes while paused so it would never expire — and on timeout
+  say so in chat rather than half-act, while a player closing the handbook mid-wait
+  silently cancels. There is nothing to "warm up" — vanilla already starts the load as
+  early as possible; the only fix is waiting for it.
 - **The handbook is missing from `Gui.LoadedGuis` until first opened** (found by Mark: Book
   failed with "handbook is not available" until H had been pressed once). That list holds
   dialogs registered with the GUI manager, and the handbook is not wired in until its first

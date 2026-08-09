@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.8 — 2026-08-09
+
+- Fixed: a crash when clicking while the game was paused — the handbook pauses singleplayer
+  while open, and the inventory, the Tallybook list and its buttons all stay clickable
+  underneath. Any of those clicks (rearranging your backpack, a row's Book button) made
+  Tallybook register a deferred callback the engine flags as "while game is paused"; on
+  clients running developer mode with extended debug info the engine deliberately crashes
+  there, and on everyone else it wrote a spurious warning to the log. Reported on ModDB and
+  reproduced locally via both paths.
+- With the same change, Tallybook now stays responsive while singleplayer is paused with the
+  handbook open: counts keep updating as you rearrange bags, and the Book, list and journal
+  buttons act immediately instead of waiting for the game to unpause.
+- Fixed: the recipe chooser showed seemingly duplicate entries. Linen (normal stitches) has
+  three vanilla shears recipes that differ only in which stitch type they convert — and the
+  materials summary was trimming "Linen (Square stitches)" and friends down to "Linen",
+  hiding exactly the part that told them apart. Real name parentheticals are now kept; only
+  Tallybook's own "(any …)" variant bookkeeping is trimmed.
+- Fixed: a tool that any variant satisfies no longer masquerades as one specific variant in
+  the materials summary — "needs Copper shears" (with nine metals of shears qualifying) now
+  reads "needs Shears", using the words all qualifying variants share.
+- Fixed: clicking a row's Handbook button could open a blank handbook that stayed blank
+  until closed and reopened. The game builds the handbook's page index on a background
+  thread — at world join, and again from scratch whenever any mod registers a hotkey — and
+  on a well-modded world one build takes long enough to click into; a click mid-build found
+  no pages, and the handbook never refreshes itself when the build finishes. The button now
+  waits out the build (however long it takes, bounded by a generous safety limit) and then
+  lands on the right page; closing the handbook while it waits cancels quietly. When a wait
+  is coming, a chat line says so up front — the blank handbook you may briefly see is the
+  game still rebuilding, and the page opens by itself the moment it finishes.
+
 ## 0.3.7 — 2026-08-09
 
 - **The story, one step at a time.** Tallybook now walks you through the vanilla storyline —

@@ -827,6 +827,17 @@ namespace Tallybook
             // naming one arbitrary member of it (spec §8).
             int paren = name.IndexOf(" (");
             if (paren > 0) name = name.Substring(0, paren);
+            else
+            {
+                // Prefix-style families vary the front of the name instead: nine metals of
+                // "… shears" all satisfy a tool-shears tag, and calling the row "Copper
+                // shears" tells an iron-shears owner they lack the tool. The words every
+                // sampled variant shares are the set's name; sharing none, the first
+                // member's name is still the best available.
+                string shared = SharedNameTail(samples);
+                if (!string.IsNullOrEmpty(shared))
+                    name = char.ToUpper(shared[0]) + shared.Substring(1);
+            }
 
             string what = req.VariantLabel;
             return string.IsNullOrEmpty(what)
@@ -835,12 +846,41 @@ namespace Tallybook
         }
 
         /// <summary>"Board (any wood, 12 variants)" → "Board": a materials summary wants the
-        /// thing, not its bookkeeping.</summary>
+        /// thing, not its bookkeeping. Only OUR "(any …)" suffix is bookkeeping, though —
+        /// a parenthetical in the item's real name is often the whole identity. Vanilla's
+        /// three shears recipes for linen (normal stitches) each convert a different stitch
+        /// type, and chopping at the first "(" made "Linen (Square stitches)" and friends
+        /// all read "Linen": the chooser offered three seemingly identical recipes (found
+        /// by Mark, 0.3.7).</summary>
         static string StripVariants(string name)
         {
             if (string.IsNullOrEmpty(name)) return name;
-            int paren = name.IndexOf(" (");
+            int paren = name.IndexOf(" (any");
             return paren > 0 ? name.Substring(0, paren) : name;
+        }
+
+        /// <summary>The longest run of words all sample names end with: "Copper shears" +
+        /// "Iron shears" → "shears". Null when there are fewer than two samples or the
+        /// names share no tail.</summary>
+        static string SharedNameTail(List<ItemStack> samples)
+        {
+            if (samples == null || samples.Count < 2) return null;
+            string[] tail = null;
+            foreach (var stack in samples)
+            {
+                var words = stack?.GetName()?.Split(' ');
+                if (words == null || words.Length == 0) return null;
+                if (tail == null) { tail = words; continue; }
+
+                int shared = 0;
+                while (shared < tail.Length && shared < words.Length
+                       && string.Equals(tail[tail.Length - 1 - shared],
+                                        words[words.Length - 1 - shared],
+                                        StringComparison.OrdinalIgnoreCase)) shared++;
+                if (shared == 0) return null;
+                if (shared < tail.Length) tail = tail.Skip(tail.Length - shared).ToArray();
+            }
+            return string.Join(" ", tail);
         }
 
         string NameForCode(string shortCode)

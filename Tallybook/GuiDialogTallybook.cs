@@ -232,7 +232,7 @@ namespace Tallybook
             {
                 if (recomposeQueued) return;
                 recomposeQueued = true;
-                capi.Event.RegisterCallback(_ => { recomposeQueued = false; OnCountsChanged(); }, 1000);
+                capi.Event.RegisterCallback(_ => { recomposeQueued = false; OnCountsChanged(); }, 1000, permittedWhilePaused: true);
                 return;
             }
             Recompose();
@@ -404,8 +404,11 @@ namespace Tallybook
             SingleComposer = composer.EndChildElements().Compose();
             if (replaced != null)
             {
-                // Deferred: the old composer may still be mid-iteration in the event loop
-                capi.World.RegisterCallback(_ => replaced.Dispose(), 250);
+                // Deferred: the old composer may still be mid-iteration in the event loop.
+                // Recomposes can be triggered while singleplayer is paused (the handbook
+                // pauses the game and stays interactive), so permit the registration then —
+                // the dispose just waits for unpause.
+                capi.Event.RegisterCallback(_ => replaced.Dispose(), 250, permittedWhilePaused: true);
             }
 
             if (screen == TbScreen.List) RestoreCountInputs();
@@ -882,14 +885,14 @@ namespace Tallybook
             optionsFontChangedMs = capi.ElapsedMilliseconds;
             if (optionsRecomposeQueued) return;
             optionsRecomposeQueued = true;
-            capi.Event.RegisterCallback(CheckOptionsRecompose, 650);
+            capi.Event.RegisterCallback(CheckOptionsRecompose, 650, permittedWhilePaused: true);
         }
 
         void CheckOptionsRecompose(float _)
         {
             if (capi.ElapsedMilliseconds - optionsFontChangedMs < 550)
             {
-                capi.Event.RegisterCallback(CheckOptionsRecompose, 300);
+                capi.Event.RegisterCallback(CheckOptionsRecompose, 300, permittedWhilePaused: true);
                 return;
             }
             optionsRecomposeQueued = false;
@@ -1144,7 +1147,7 @@ namespace Tallybook
             if (dlg != null && dlg.IsOpened() && dlg.DialogType == EnumDialogType.Dialog)
             {
                 // Already the map we want — centre it and change nothing else.
-                capi.World.RegisterCallback(_ => Centre(maps, target), 100);
+                capi.Event.RegisterCallback(_ => Centre(maps, target), 100, permittedWhilePaused: true);
                 return true;
             }
 
@@ -1169,7 +1172,7 @@ namespace Tallybook
             // Once, after it has had time to compose. Repeating the centre was a hedge against
             // it not being ready; it is also a second chance to fight whatever the player has
             // done in the meantime, so it happens once and is allowed to fail.
-            capi.World.RegisterCallback(_ => Centre(maps, target), 400);
+            capi.Event.RegisterCallback(_ => Centre(maps, target), 400, permittedWhilePaused: true);
             return true;
         }
 
@@ -1269,9 +1272,13 @@ namespace Tallybook
             var handbook = HandbookPin.FindDialog(capi);
             if (handbook == null || !handbook.IsOpened()) HandbookPin.OpenLikeThePlayerWould(capi);
 
-            // A tick later: opening may have been the handbook's first, which is when it
-            // registers itself with the GUI manager and builds its pages.
-            capi.Event.RegisterCallback(_ => ShowHandbookPage(pin, page), 0);
+            // A frame later: opening may have been the handbook's first, which is when it
+            // registers itself with the GUI manager and builds its pages. The frame queue
+            // rather than RegisterCallback because this button can be clicked while the game
+            // is paused (an already-open handbook pauses singleplayer) — a delayed callback
+            // would not fire until unpause, and registering one then is the crash a ModDB
+            // report caught in developer mode.
+            capi.Event.EnqueueMainThreadTask(() => ShowHandbookPage(pin, page), "tallybook-showpage");
             return true;
         }
 
@@ -1284,6 +1291,51 @@ namespace Tallybook
                 return;
             }
             if (!handbook.IsOpened()) handbook.TryOpen();
+
+            // Say so up front when a wait is coming: the handbook will sit on a blank
+            // overview until its rebuild finishes, and an unexplained blank screen reads
+            // as the button being broken no matter how well the landing works afterwards.
+            if (HandbookPin.StillLoadingPages(handbook))
+                capi.ShowChatMessage(
+                    $"Tallybook: the handbook is rebuilding its pages — {pin.DisplayName} will open when it finishes.");
+
+            WaitForPagesThenShow(pin, page, handbook,
+                deadline: Environment.TickCount64 + 60_000);
+        }
+
+        /// <summary>
+        /// The handbook's page index builds on a background thread — from world join, and
+        /// again from scratch every time any mod registers a hotkey (vanilla wires
+        /// HotkeysChanged straight to a full reload), which on a well-modded world takes
+        /// long enough to click into. While it builds, every page lookup below can only
+        /// fail, and the search fallback would filter an empty page list, leaving an open
+        /// handbook showing nothing at all (found by Mark twice: linen right after login,
+        /// then rusty gear outlasting a frame-counted wait). So: wait for the index,
+        /// re-queued per frame because the handbook we just opened is what pauses
+        /// singleplayer and a delayed callback would sit until unpause. The deadline is
+        /// wall-clock — the in-world timer freezes while paused — and only guards against
+        /// the loading flag being stuck forever; hitting it says so in chat, because
+        /// half-acting on an empty index is exactly the blank screen this exists to avoid.
+        /// </summary>
+        void WaitForPagesThenShow(Pin pin, string page, GuiDialogHandbook handbook, long deadline)
+        {
+            // Closed while we were waiting: the player changed their mind — reopening the
+            // handbook at them every frame is not landing a page, it is a fight.
+            if (!handbook.IsOpened()) return;
+
+            if (HandbookPin.StillLoadingPages(handbook))
+            {
+                if (Environment.TickCount64 < deadline)
+                {
+                    capi.Event.EnqueueMainThreadTask(
+                        () => WaitForPagesThenShow(pin, page, handbook, deadline),
+                        "tallybook-showpage");
+                    return;
+                }
+                capi.ShowChatMessage(
+                    "Tallybook: the handbook is still building its pages — try the button again in a moment.");
+                return;
+            }
 
             if (handbook.OpenDetailPageFor(page)) return;
 
@@ -1517,7 +1569,8 @@ namespace Tallybook
         bool OpenJournal()
         {
             TryClose();
-            capi.Event.RegisterCallback(_ =>
+            // Frame queue: works while paused too (see OpenHandbookFor).
+            capi.Event.EnqueueMainThreadTask(() =>
             {
                 try
                 {
@@ -1547,7 +1600,7 @@ namespace Tallybook
                 }
 
                 capi.ShowChatMessage("Tallybook: could not open the journal — try its own key.");
-            }, 0);
+            }, "tallybook-journal");
             return true;
         }
 

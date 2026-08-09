@@ -403,7 +403,11 @@ namespace Tallybook
         /// </summary>
         void OnOpenListRequested()
         {
-            capi.Event.RegisterCallback(_ =>
+            // Frame queue rather than RegisterCallback: this link lives inside the handbook,
+            // which pauses singleplayer while open — a delayed callback registered then would
+            // not fire until unpause, leaving the click apparently dead. Main-thread tasks
+            // run every frame, paused or not; closing the handbook here is also what unpauses.
+            capi.Event.EnqueueMainThreadTask(() =>
             {
                 EnsureGui();
 
@@ -412,7 +416,7 @@ namespace Tallybook
 
                 HandbookPin.CameFromList = false;    // the round trip is finished
                 if (!dialog.IsOpened()) dialog.TryOpen();
-            }, 0);
+            }, "tallybook-openlist");
         }
 
         void OnPlayerJoin(IClientPlayer player)
@@ -716,19 +720,27 @@ namespace Tallybook
         {
             if (recountQueued) return;
 
-            // Coalesce to one recount on the next tick. Moving a stack fires SlotModified for
+            // Coalesce to one recount on the next frame. Moving a stack fires SlotModified for
             // the source and destination slots separately, and mid-move the counts are briefly
             // wrong — recounting per event would both waste work and flash a number that was
             // never true. Deferring also avoids mutating event subscriptions inside a handler.
+            //
+            // The frame queue, not RegisterCallback: in paused singleplayer the inventory
+            // stays interactive — the handbook pauses the game and slot clicks still land —
+            // and RegisterCallback while paused is an engine warning that developer mode
+            // escalates to a deliberate crash (seen in the wild via a ModDB report). Delayed
+            // callbacks also only tick while unpaused, whereas main-thread tasks run every
+            // frame regardless, so this keeps counts live while the player rearranges bags
+            // with the handbook open.
             recountQueued = true;
-            capi.Event.RegisterCallback(_ =>
+            capi.Event.EnqueueMainThreadTask(() =>
             {
                 recountQueued = false;
                 // Backpack slots can appear after login (equipping a bag adds an inventory),
                 // so re-scan rather than assuming the login-time set is final.
                 SubscribeToCarriedInventories();
                 svc.RecountAll();
-            }, 0);
+            }, "tallybook-recount");
         }
 
         /// <summary>
