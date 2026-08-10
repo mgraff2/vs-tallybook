@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.9 — unreleased
+## 0.3.9 — 2026-08-10
 
 - Fixed: recipes that call for a liquid — dough, alcohol-soaked bandages, ink and quill,
   modded dyes and acids — listed the empty container ("Bowl") instead of what actually
