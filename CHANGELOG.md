@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.10 — 2026-08-10
 
 - Fixed: a finished errand stayed on the Side quests tab, unchecked, until you unpinned it
   yourself. Handing the goods over now takes the pin off the list — the History tab is where
