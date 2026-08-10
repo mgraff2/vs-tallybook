@@ -194,6 +194,20 @@ namespace Tallybook
                         return TextCommandResult.Success($"{lines.Count} waypoint(s) readable.");
                     })
                 .EndSubCommand()
+                .BeginSubCommand("glow")
+                    .WithDescription("Diagnose the quest-ready glow: option state, who should glow, who is nearby — and fire a test burst overhead")
+                    .HandleWith(_ =>
+                    {
+                        EnsureGui();
+                        if (questGlow == null) return TextCommandResult.Error("Tallybook is not ready yet.");
+
+                        foreach (var line in questGlow.Diagnose()) capi.ShowChatMessage("  " + line);
+                        questGlow.TestBurst();
+                        return TextCommandResult.Success(
+                            "Test burst fired over your own head — if nothing sparkled just now, "
+                            + "the particle itself is the problem; say so.");
+                    })
+                .EndSubCommand()
                 .BeginSubCommand("blankmarkers")
                     .WithDescription("Find map waypoints with no title — hovering one crashes the world map")
                     .WithArgs(api.ChatCommands.Parsers.OptionalWord("remove"))
@@ -297,9 +311,13 @@ namespace Tallybook
                     }
 
                     // Cheap while nothing changes, and this is the only way finishing a quest
-                    // is ever noticed — completing one raises no event we can hear.
-                    questHistory?.Update();
-                    questHistory?.CheckErrandCompletion();
+                    // is ever noticed — completing one raises no event we can hear. A stage
+                    // moving is also invisible to the store's change event (variables flip
+                    // server-side, not in our data), so a move earns an explicit recount —
+                    // that is what clears a "collect your reward" row the moment it is paid.
+                    bool questsMoved = questHistory?.Update() == true;
+                    if (questHistory?.CheckErrandCompletion() == true) questsMoved = true;
+                    if (questsMoved) svc.RecountAll();
 
                     // Same reason: a story step completing raises no event. A handful of
                     // variable reads when nothing moved.
@@ -319,13 +337,15 @@ namespace Tallybook
             questWaypoints = new QuestWaypoints(capi, config, svc.Store);
             story = new StoryProgress(capi, svc, quests, questWaypoints);
             // The story block redraws with the same surfaces as every count, so its state
-            // rides the shared change signature.
-            svc.ExtraSignature = () => story.UiSignature();
+            // rides the shared change signature — and so does the set of quests awaiting a
+            // reward, or the "collect your reward" row could never appear or clear.
+            svc.ExtraSignature = () => story.UiSignature() + "|rw:"
+                + string.Join(",", questHistory.AwaitingRewards().Select(a => a.Chain));
             dialog = new GuiDialogTallybook(capi, config, svc, questHistory, questWaypoints,
                                             story, SetHudVisible, () => hud?.Refresh());
             hud = new HudTallybook(capi, config, svc);
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
-            questGlow = new QuestReadyGlow(capi, config, svc);
+            questGlow = new QuestReadyGlow(capi, config, svc, questHistory);
             questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);
             questWatcher.History = questHistory;
             questWatcher.OnConversing = npc =>

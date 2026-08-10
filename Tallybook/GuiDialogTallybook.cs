@@ -163,6 +163,9 @@ namespace Tallybook
         class PinRow : Row { public Pin Pin; }
         class NodeRow : Row { public Pin Pin; public TallyNode Node; }
         class ToolRow : Row { public Requirement Tool; }
+        /// <summary>A quest handed in whose reward is uncollected — no pin behind it (the
+        /// errand pin left with the goods), just the walk still owed to the player.</summary>
+        class RewardRow : Row { public string Name; public string Giver; }
         class InfoRow : Row
         {
             public string Text;
@@ -249,6 +252,16 @@ namespace Tallybook
         void BuildRows()
         {
             allRows = new List<Row>();
+
+            // Rewards first: a walk you can make right now beats a list of things to find.
+            if (tab == TbTab.Quests && history != null)
+            {
+                foreach (var waiting in history.AwaitingRewards())
+                {
+                    allRows.Add(new RewardRow { Name = waiting.Name, Giver = waiting.Giver, Indent = 0 });
+                }
+            }
+
             foreach (var pin in PinsForTab(tab))
             {
                 allRows.Add(new PinRow { Pin = pin, Indent = 0 });
@@ -465,7 +478,11 @@ namespace Tallybook
             double y = 34;
 
             int itemCount = PinsForTab(TbTab.Items).Count();
-            int questCount = PinsForTab(TbTab.Quests).Count();
+            // Uncollected rewards count as side quests — they are the tab's most actionable
+            // rows, and a tab reading (0) over a table with a row in it is a lie.
+            var awaiting = history?.AwaitingRewards()
+                ?? new List<(string Chain, string Name, string Giver)>();
+            int questCount = PinsForTab(TbTab.Quests).Count() + awaiting.Count;
 
             // Open quests first, then what is finished — the archive reads as a story so far.
             var done = new List<QuestRecord>();
@@ -489,7 +506,7 @@ namespace Tallybook
 
             if (tab == TbTab.Quests) ComposeStoryBlock(c, ref y);
 
-            if (!PinsForTab(tab).Any())
+            if (!PinsForTab(tab).Any() && !(tab == TbTab.Quests && awaiting.Count > 0))
             {
                 string empty = tab == TbTab.Quests
                     ? "No errands tracked."
@@ -688,6 +705,36 @@ namespace Tallybook
 
             switch (row)
             {
+                case RewardRow rr:
+                {
+                    // Reads as done in the checkbox column — same glyph vocabulary as
+                    // everywhere else (the fonts have no real checkmark).
+                    var doneFont = font.Clone().WithColor(TallybookConfig.ParseColor(config.ColorSatisfied));
+                    c.AddStaticText("√", doneFont, EB(ColCheck + 6, y + 4, 20, 24));
+
+                    string who = rr.Giver ?? rr.Name;
+                    string title = $"{rr.Name} — done, collect your reward";
+                    if (!string.Equals(who, rr.Name, StringComparison.OrdinalIgnoreCase))
+                        title += $" from {who}";
+
+                    var titleFont = CairoFont.WhiteSmallishText().WithFontSize((float)(TablePx + 2))
+                        .WithColor(TallybookConfig.ParseColor(config.ColorSatisfied));
+                    double titleW = ColAct2 - nx - 10;
+                    FittedText(c, title, titleFont, EB(nx, ry + 3, titleW, 26), titleW);
+
+                    // Same contract as an errand's Map button: always present, persisted
+                    // knowledge only, and clicking with nothing known explains what would
+                    // teach us — a button that is sometimes missing reads as broken.
+                    var place = PlaceOf(who);
+                    c.AddSmallButton("Map", () => ShowOnMapAt(place, who),
+                        EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
+                    c.AddHoverText(place == null
+                            ? $"No location known for {who} yet — talk to them once, stand "
+                              + "there and use .tallybook here, or name a map waypoint after them."
+                            : $"Open the map centred on {who}.",
+                        font, 260, EB(ColAct2, y, 40, 26));
+                    break;
+                }
                 case PinRow pr:
                 {
                     var pin = pr.Pin;
@@ -1175,7 +1222,9 @@ namespace Tallybook
         /// Open the world map centred on the quest giver. The marker is already there; this
         /// saves hunting for it on a map the size of a world.
         /// </summary>
-        bool ShowOnMap(Pin pin)
+        bool ShowOnMap(Pin pin) => ShowOnMapAt(MapTargetFor(pin), pin.QuestGiver);
+
+        bool ShowOnMapAt(BlockPos target, string who)
         {
             var maps = capi.ModLoader.GetModSystem<WorldMapManager>();
             if (maps == null)
@@ -1185,10 +1234,9 @@ namespace Tallybook
                 return true;
             }
 
-            var target = MapTargetFor(pin);
             if (target == null)
             {
-                notice = $"No location known for {pin.QuestGiver} yet — walk past them once.";
+                notice = $"No location known for {who} yet — walk past them once.";
                 Recompose();
                 return true;
             }
@@ -1275,6 +1323,32 @@ namespace Tallybook
         /// there after the goods are in hand sends the player the wrong way down a very
         /// long road.</summary>
         static bool GoingToSite(Pin pin) => !pin.Complete && pin.HasSite;
+
+        /// <summary>
+        /// A named NPC's recorded position from the conversation-filled directory — what a
+        /// reward row's Map button points at, since there is no pin left to carry a place.
+        /// Persisted data only, same as every Map button; case-insensitive on miss because
+        /// the name can come from a dialogue filename or a live entity, which only
+        /// coincidentally agree.
+        /// </summary>
+        BlockPos PlaceOf(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+
+            if (!svc.Store.NpcPlaces.TryGetValue(name, out string place))
+            {
+                place = svc.Store.NpcPlaces.FirstOrDefault(
+                    kv => string.Equals(kv.Key, name, StringComparison.OrdinalIgnoreCase)).Value;
+                if (place == null) return null;
+            }
+
+            var parts = place.Split(',');
+            if (parts.Length != 3) return null;
+            if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double x)) return null;
+            if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double py)) return null;
+            if (!double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double z)) return null;
+            return new BlockPos((int)x, (int)py, (int)z, 0);
+        }
 
         /// <summary>
         /// Point every map widget the dialog owns at a spot.

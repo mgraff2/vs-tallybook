@@ -36,14 +36,16 @@ namespace Tallybook
 
         /// <summary>
         /// Bring the record up to date. Safe to call repeatedly: a quest already recorded is
-        /// left alone, so nothing is ever double-counted or re-dated.
+        /// left alone, so nothing is ever double-counted or re-dated. Returns whether
+        /// anything moved — a stage change is invisible to the store's own change event
+        /// (variables flip server-side, not in our data), so the caller owns the redraw.
         /// </summary>
-        public void Update()
+        public bool Update()
         {
             try
             {
                 var chains = scanner.QuestChains();
-                if (chains.Count == 0) return;
+                if (chains.Count == 0) return false;
 
                 bool changed = false;
                 bool firstEverLook = store.ChainStates.Count == 0;
@@ -89,11 +91,29 @@ namespace Tallybook
                             changed = true;
                         }
                         // Records written before the archive kept the words, or before it kept
-                        // them as a transcript.
+                        // them as a transcript. Copied — BriefingForChain memoizes, and a
+                        // record must never share a list with the cache (the hand-in append
+                        // below would write into it).
                         if (!QuestScanner.IsTranscript(existing.Text))
                         {
                             var said = scanner.BriefingForChain(chain.Key);
-                            if (said.Count > 0) { existing.Text = said; changed = true; }
+                            if (said.Count > 0) { existing.Text = said.ToList(); changed = true; }
+                        }
+                        // The rest of the conversation, appended as it happens — records
+                        // written before it was recovered carry only the briefing, and "what
+                        // did she say when I brought the goods" is the half worth rereading
+                        // (Mark). The reward exchange joins only at stage rewarded: before
+                        // the visit those words have not been spoken. Line-level containment
+                        // keeps every append idempotent.
+                        var extra = scanner.HandInForChain(chain.Key).ToList();
+                        if (stage == "rewarded") extra.AddRange(scanner.RewardTranscriptForChain(chain.Key));
+
+                        var have = existing.Text ?? new List<string>();
+                        var missing = extra.Where(l => !have.Contains(l)).ToList();
+                        if (missing.Count > 0)
+                        {
+                            existing.Text = have.Concat(missing).ToList();
+                            changed = true;
                         }
                         continue;
                     }
@@ -102,6 +122,17 @@ namespace Tallybook
                     // already done on our first ever pass, means we genuinely do not know.
                     bool watched = !firstEverLook && previous != null && previous != stage;
 
+                    // The whole conversation as far as it has happened: the ask, the
+                    // hand-over, and — only once the reward is actually collected — the
+                    // payout. Copied out of the memo cache before anything is appended.
+                    var text = scanner.BriefingForChain(chain.Key).ToList();
+                    var rest = scanner.HandInForChain(chain.Key).ToList();
+                    if (stage == "rewarded") rest.AddRange(scanner.RewardTranscriptForChain(chain.Key));
+                    foreach (var said in rest)
+                    {
+                        if (!text.Contains(said)) text.Add(said);
+                    }
+
                     store.QuestHistory.Add(new QuestRecord
                     {
                         Chain = chain.Key,
@@ -109,23 +140,55 @@ namespace Tallybook
                         Stage = stage,
                         Day = watched ? capi.World.Calendar?.TotalDays : null,
                         Depth = chain.Depth,
-                        Text = scanner.BriefingForChain(chain.Key)
+                        Text = text
                     });
                     changed = true;
                 }
 
                 if (UpdateMilestones()) changed = true;
                 if (changed) store.Save();
+                return changed;
             }
             catch (Exception e)
             {
                 capi.Logger.Warning("[tallybook] quest history update failed: {0}", e.Message);
+                return false;
             }
         }
 
         /// <summary>
+        /// Chains handed in but not yet paid out, with who to see. This is the "done — go
+        /// and collect" state made actionable: the Side quests tab lists it and the glow
+        /// marks the payer, because a quest that still owes the player a walk is not
+        /// finished business. Giver can be null when no dialogue file claims the reward
+        /// variable — the row still shows, it just cannot point anywhere.
+        /// </summary>
+        public List<(string Chain, string Name, string Giver)> AwaitingRewards()
+        {
+            var result = new List<(string, string, string)>();
+            try
+            {
+                var vars = scanner.StoryVariables();
+                foreach (var chain in scanner.QuestChains().Values)
+                {
+                    // "completed" from StageOf already means not rewarded — the rewarded
+                    // flag would have won. No reward step defined means simply finished.
+                    if (StageOf(chain) != "completed") continue;
+                    if (!vars.ContainsKey(chain.Key + "rewarded")) continue;
+
+                    result.Add((chain.Key, chain.DisplayName, scanner.RewardGiverForChain(chain.Key)));
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not list awaiting rewards: {0}", e.Message);
+            }
+            return result;
+        }
+
+        /// <summary>
         /// Notice tracked errands whose hand-over has already happened, archive them, and
-        /// park their pins.
+        /// take their pins off the list.
         ///
         /// "Done" is read from the player's own state: handing goods over sets variables
         /// (`agnieszkaquestcompleted`, `gavelens`, Better Ruins' `gaveironpickaxe`), the
@@ -134,18 +197,20 @@ namespace Tallybook
         /// this, a handed-in errand looked *less* finished afterwards: the goods left the
         /// inventory, so 8/8 fell back to 0/8 on a quest that was over.
         ///
-        /// The pin is parked, never unpinned — unpinning is the player's act. Parked exactly
-        /// once, when the record is first written: re-checking the pin afterwards is a player
-        /// choice this must not fight every second. Errands whose completion variable is the
-        /// `…questcompleted` of a vanilla chain get no record of their own — the chain pass
-        /// above already records those properly, with stages.
+        /// The pin is removed, not merely unchecked: a finished errand sitting greyed-out on
+        /// the Side quests tab read as clutter the player had to sweep up themselves (Mark),
+        /// and the History tab is where it now lives. Removal happens exactly once, when the
+        /// completion is first noticed (the ChainStates guard): re-pinning afterwards is a
+        /// player choice this must not fight every second. Errands whose completion variable
+        /// is the `…questcompleted` of a vanilla chain get no record of their own — the chain
+        /// pass above already records those properly, with stages.
         ///
         /// Entity-scope completion (vanilla traders keep quest state on the NPC) is only
         /// readable while standing with them — pass the NPC from the conversation watcher;
         /// with none, those errands read as still open rather than getting archived on a
         /// guess.
         /// </summary>
-        public void CheckErrandCompletion(Entity npc = null)
+        public bool CheckErrandCompletion(Entity npc = null)
         {
             try
             {
@@ -155,10 +220,18 @@ namespace Tallybook
                     if (pin.QuestGiver == null) continue;
 
                     // The once-guard is ChainStates, not the record: chain-owned errands add
-                    // no record of their own, and guarding on the record alone would re-park
-                    // those every second — fighting a player who deliberately re-checked.
+                    // no record of their own, and guarding on the record alone would redo
+                    // those every second — fighting a player who deliberately re-pinned.
                     string key = $"errand:{pin.QuestGiver}:{pin.Code}";
-                    if (store.ChainStates.ContainsKey(key)) continue;
+                    if (store.ChainStates.TryGetValue(key, out string already))
+                    {
+                        // Earlier builds parked the pin here instead of removing it, so a
+                        // finished errand could still be sitting unchecked on the list.
+                        // Sweep those up; a *checked* pin over a done errand is the player's
+                        // deliberate re-add and stays.
+                        if (already == "done" && !pin.Active && store.Remove(pin)) changed = true;
+                        continue;
+                    }
 
                     var def = scanner.DefFor(pin.QuestGiver, pin.Code, pin.Count);
                     if (def == null || !scanner.DefIsDone(def, npc)) continue;
@@ -169,24 +242,38 @@ namespace Tallybook
                         d.variable != null && d.variable.EndsWith("questcompleted", StringComparison.OrdinalIgnoreCase));
                     if (!chainOwned)
                     {
+                        // The archived words: what was said when the errand was set, then what
+                        // was said when the goods changed hands — both recovered from the
+                        // dialogue files, so neither depends on us having been listening.
+                        var text = pin.QuestText?.ToList() ?? new List<string>();
+                        foreach (var said in def.HandIn)
+                        {
+                            if (!text.Contains(said)) text.Add(said);
+                        }
+
                         store.QuestHistory.Add(new QuestRecord
                         {
                             Chain = key,
                             Name = $"{pin.DisplayName} for {pin.QuestGiver}",
                             Stage = "completed",
                             Day = capi.World.Calendar?.TotalDays,
-                            Text = pin.QuestText?.ToList() ?? new List<string>()
+                            Text = text
                         });
                     }
 
-                    if (pin.Active) pin.Active = false;
+                    // Off the list — the record above is where a finished errand lives now.
+                    // Remove fires the marker cleanup and the recount through the normal
+                    // paths, exactly as the Unpin button would.
+                    store.Remove(pin);
                     changed = true;
                 }
                 if (changed) store.Save();
+                return changed;
             }
             catch (Exception e)
             {
                 capi.Logger.Warning("[tallybook] errand completion check failed: {0}", e.Message);
+                return false;
             }
         }
 
@@ -283,13 +370,26 @@ namespace Tallybook
                     bool rewardStep = vars.ContainsKey(chain.Key + "rewarded");
                     if (stage == "completed" && !rewardStep) continue;
 
+                    // Awaiting a reward means the goods already changed hands, so that
+                    // exchange belongs in the readable text too. Concat copies — the memo
+                    // cache must never be handed out in a list that grew.
+                    var text = scanner.BriefingForChain(chain.Key);
+                    if (stage == "completed")
+                    {
+                        var handIn = scanner.HandInForChain(chain.Key);
+                        if (handIn.Count > 0)
+                        {
+                            text = text.Concat(handIn.Where(l => !text.Contains(l))).ToList();
+                        }
+                    }
+
                     open.Add(new QuestRecord
                     {
                         Chain = chain.Key,
                         Name = chain.DisplayName,
                         Stage = stage == "completed" ? "awaiting" : "open",
                         Depth = chain.Depth,
-                        Text = scanner.BriefingForChain(chain.Key)
+                        Text = text
                     });
                 }
             }

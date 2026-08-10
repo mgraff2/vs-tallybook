@@ -35,6 +35,12 @@ namespace Tallybook
         internal List<QuestScanner.DlgCond> Gates = new List<QuestScanner.DlgCond>();
         public List<string> Briefing = new List<string>();
 
+        /// <summary>What was said when the goods changed hands — the player's turn-in line
+        /// and the NPC's response, recovered from the dialogue graph like the briefing is.
+        /// The half of the conversation a finished quest's record was missing (Mark: "I want
+        /// to see what she said after I brought her the goods").</summary>
+        public List<string> HandIn = new List<string>();
+
         /// <summary>
         /// Variables the hand-over sets — what "this errand is finished" looks like in the
         /// player's own state. Collected by walking forward from the turn-in line into the
@@ -324,6 +330,55 @@ namespace Tallybook
         /// `lens` sets `gavelens=true` directly. Bounded so an errand can never claim a
         /// variable set half a conversation away.
         /// </summary>
+        /// <summary>
+        /// The hand-over as a transcript: the player's turn-in words, then the NPC's
+        /// response, walked forward from the turn-in line exactly as <see cref="DoneSetters"/>
+        /// walks it for variables. Read from the dialogue file, so no part of the live
+        /// conversation is touched — available whether or not this mod was listening when the
+        /// goods were handed over.
+        ///
+        /// A player component with a single onward line is walked *through* without quoting
+        /// it — that is the "Continue" punctuation the files use mid-speech (Gerhardt's
+        /// reward is split across two components with one between them) — while a player
+        /// component offering real choices means control came back to the player, which is
+        /// where the exchange ends.
+        /// </summary>
+        List<string> HandInTranscript(DlgFile file, DlgText turnInLine)
+        {
+            var lines = new List<string>();
+            string me = capi.World?.Player?.PlayerName ?? "You";
+
+            if (!string.IsNullOrEmpty(turnInLine?.value))
+            {
+                string text = Lang.Get(turnInLine.value);
+                if (!string.IsNullOrEmpty(text) && text != turnInLine.value)
+                {
+                    lines.Add($"{me}: \"{OneLine(text)}\"");
+                }
+            }
+
+            string cur = turnInLine?.jumpTo;
+            for (int hop = 0; hop < 6 && cur != null; hop++)
+            {
+                int idx = Array.FindIndex(file.components, c => c?.code == cur);
+                if (idx < 0) break;
+                var comp = file.components[idx];
+
+                if (IsPlayer(comp))
+                {
+                    var only = comp.text != null && comp.text.Length == 1 ? comp.text[0] : null;
+                    if (only?.jumpTo == null) break;
+                    cur = only.jumpTo;
+                    continue;
+                }
+
+                AddSpeech(lines, comp);
+                cur = comp.jumpTo
+                      ?? (idx + 1 < file.components.Length ? file.components[idx + 1]?.code : null);
+            }
+            return lines;
+        }
+
         List<DlgCond> DoneSetters(DlgFile file, DlgText turnInLine)
         {
             var result = new List<DlgCond>();
@@ -564,6 +619,26 @@ namespace Tallybook
         }
 
         readonly Dictionary<string, List<string>> briefingsByChain = new Dictionary<string, List<string>>();
+
+        /// <summary>
+        /// What was said at a chain quest's hand-over, found from the chain alone. The
+        /// catalogue's errand defs already carry the transcript; the one whose turn-in sets
+        /// this chain's `…questcompleted` is this chain's hand-over. Callers must treat the
+        /// result as read-only — it is the catalogue's own list.
+        /// </summary>
+        public List<string> HandInForChain(string chainKey)
+        {
+            string done = "player." + chainKey + "completed";
+            foreach (var def in QuestCatalogue())
+            {
+                if (def.HandIn.Count == 0) continue;
+                if (def.Done.Any(d => string.Equals(d.variable, done, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return def.HandIn;
+                }
+            }
+            return new List<string>();
+        }
 
         /// <summary>
         /// Was this text captured before extracts were written as a transcript? Plain
@@ -973,6 +1048,7 @@ namespace Tallybook
                                 Maps = MapsForGates(file, gates),
                                 Gates = gates,
                                 Briefing = Briefing(file, gates),
+                                HandIn = HandInTranscript(file, line),
                                 Done = DoneSetters(file, line)
                             });
                         }
@@ -989,7 +1065,97 @@ namespace Tallybook
         {
             catalogue = null;
             briefingsByChain.Clear();
+            rewardGiverByChain.Clear();
+            rewardTextByChain.Clear();
         }
+
+        /// <summary>
+        /// Who pays out a chain's reward — the NPC whose dialogue sets `<chain>rewarded`.
+        /// That is the person to walk to once a quest reads "done — go and collect", and it
+        /// is not always the one who took the goods: Kat takes Beata's bread, Beata pays for
+        /// it. Null (memoized, like an empty briefing) when no file sets the variable.
+        /// </summary>
+        public string RewardGiverForChain(string chainKey)
+        {
+            if (rewardGiverByChain.TryGetValue(chainKey, out string cached)) return cached;
+
+            string wanted = "player." + chainKey + "rewarded";
+            string giver = null;
+            try
+            {
+                foreach (var loc in capi.Assets.GetLocations("config/dialogue/") ?? new List<AssetLocation>())
+                {
+                    if (!loc.Path.EndsWith(".json")) continue;
+
+                    var file = capi.Assets.TryGet(loc)?.ToObject<DlgFile>();
+                    if (file?.components == null) continue;
+
+                    bool sets = file.components.Any(c => c?.setVariables != null
+                        && c.setVariables.Keys.Any(k =>
+                            string.Equals(k, wanted, StringComparison.OrdinalIgnoreCase)));
+                    if (sets) { giver = NpcNameFrom(loc); break; }
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not find reward giver for {0}: {1}", chainKey, e.Message);
+            }
+            return rewardGiverByChain[chainKey] = giver;
+        }
+
+        readonly Dictionary<string, string> rewardGiverByChain = new Dictionary<string, string>();
+
+        /// <summary>
+        /// What was said when the reward was collected — the third act of a chain quest's
+        /// conversation, after the briefing and the hand-in. Found from the chain alone: a
+        /// player-owned line whose forward walk sets `<chain>rewarded` is the collecting
+        /// step (Beata's "I delivered your bread" answer leads into "So glad…" and the flag),
+        /// and the same walk that turns a turn-in line into a transcript turns this one.
+        /// Empty (memoized) when the chain has no reward step. Only ever appended to records
+        /// already at stage rewarded — before that the words have not been spoken, and
+        /// showing them would spoil the visit.
+        /// </summary>
+        public List<string> RewardTranscriptForChain(string chainKey)
+        {
+            if (rewardTextByChain.TryGetValue(chainKey, out var cached)) return cached;
+
+            string wanted = "player." + chainKey + "rewarded";
+            var result = new List<string>();
+            try
+            {
+                foreach (var loc in capi.Assets.GetLocations("config/dialogue/") ?? new List<AssetLocation>())
+                {
+                    if (!loc.Path.EndsWith(".json")) continue;
+
+                    var file = capi.Assets.TryGet(loc)?.ToObject<DlgFile>();
+                    if (file?.components == null) continue;
+
+                    foreach (var comp in file.components)
+                    {
+                        if (comp?.text == null || !IsPlayer(comp)) continue;
+                        foreach (var line in comp.text)
+                        {
+                            if (line?.jumpTo == null) continue;
+                            if (!DoneSetters(file, line).Any(d =>
+                                string.Equals(d.variable, wanted, StringComparison.OrdinalIgnoreCase))) continue;
+
+                            var said = HandInTranscript(file, line);
+                            if (said.Count > 0) result = said;
+                            break;
+                        }
+                        if (result.Count > 0) break;
+                    }
+                    if (result.Count > 0) break;
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not recover reward text for {0}: {1}", chainKey, e.Message);
+            }
+            return rewardTextByChain[chainKey] = result;
+        }
+
+        readonly Dictionary<string, List<string>> rewardTextByChain = new Dictionary<string, List<string>>();
 
         /// <summary>
         /// The catalogue entry behind a pin. The giver's name is the strongest signal but the

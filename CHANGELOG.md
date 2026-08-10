@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: a finished errand stayed on the Side quests tab, unchecked, until you unpinned it
+  yourself. Handing the goods over now takes the pin off the list — the History tab is where
+  a finished errand lives (and its map marker is cleaned up with it). Leftover parked pins
+  from earlier versions are swept up too; re-pinning a finished errand yourself still works
+  and is never fought.
+- New: a finished quest's history now records the whole conversation, not just the ask —
+  what you said when you brought the goods, what they said back (Agnieszka's "my usual
+  rate" included), and, once you collect a reward, that exchange too (Beata's "so glad").
+  Recovered from the dialogue files like the briefing is, so records written by earlier
+  versions gain the missing parts on their own, and quests awaiting a reward ("go and
+  collect") show the story so far. The payout lines join only after the reward is actually
+  collected — never as a preview.
+- Fixed: the gold shimmer over a quest giver you are ready to hand goods to never actually
+  appeared — the entity query it relied on silently returns nothing (the same API already
+  banned elsewhere in the mod for exactly that). It now scans loaded entities directly.
+  The shimmer also gained a steady glowing orb at its heart, and the sparkles glow softly,
+  so the flag reads in a dark room and from across a village square.
+- New: a quest that is handed in but not yet paid out ("done — go and collect") now shows on
+  the Side quests tab as "Beata — done, collect your reward", with a Map button to whoever
+  pays it — which is not always who took the goods (Kat takes Beata's bread; Beata pays for
+  it). The same NPC gets the gold shimmer until you collect.
+- New: `.tallybook glow` diagnoses the shimmer end to end — option state, who should be
+  glowing and why, every conversable NPC in range with whether their name matches — and
+  fires a test burst over your own head so "does the particle render at all" has a visible
+  answer. Name matching is case-insensitive now, and a glow error no longer writes the
+  feature off into your saved config (it stops for the session and says so in the log).
+
 ## 0.3.9 — 2026-08-10
 
 - Fixed: recipes that call for a liquid — dough, alcohol-soaked bandages, ink and quill,

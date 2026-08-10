@@ -473,15 +473,41 @@ things the files genuinely cannot know should live on the pin.
   spoiler reason above.
 - **Completion is read from what the hand-over *sets*** (`QuestDef.Done`, via `DoneSetters` —
   a bounded forward walk from the turn-in line's jumpTo through explicit-jump-else-fallthrough,
-  the dialogue runner's own convention). `QuestHistory.CheckErrandCompletion` archives and
-  parks finished errands: on the 1s tick with player scope (BR traders use player-scope flags,
-  so their completions settle at login), and per conversation poll with the NPC for entity
-  scope. Guards that matter: the once-guard is **ChainStates** (`errand:<giver>:<code>`), not
-  the history record — chain-owned errands (`…questcompleted`) add no record of their own, and
-  guarding on the record would re-park those every second, fighting a player who deliberately
-  re-checked; parking is once-ever, unpinning stays the player's act; and without the errand
-  this fixes, a handed-in quest looked *less* done afterwards — the goods leave the inventory,
-  so 8/8 fell to 0/8 on a finished quest.
+  the dialogue runner's own convention). `QuestHistory.CheckErrandCompletion` archives finished
+  errands and **removes** their pins: on the 1s tick with player scope (BR traders use
+  player-scope flags, so their completions settle at login), and per conversation poll with the
+  NPC for entity scope. An earlier build parked (unchecked) the pin instead, which left every
+  finished errand sitting greyed-out on the Side quests tab for the player to sweep up (found
+  by Mark, 0.3.9 play) — the History tab is where a finished errand lives, so the pin goes;
+  the check also sweeps up pins the parking build left behind (key already "done" + pin
+  inactive). Guards that matter: the once-guard is **ChainStates** (`errand:<giver>:<code>`),
+  not the history record — chain-owned errands (`…questcompleted`) add no record of their own,
+  and guarding on the record would redo those every second; a *checked* pin over a done errand
+  is the player's deliberate re-add and is never touched, so re-pinning stays possible; and
+  without the errand this fixes, a handed-in quest looked *less* done afterwards — the goods
+  leave the inventory, so 8/8 fell to 0/8 on a finished quest.
+- **"Done — go and collect" is a state the surfaces act on, not just a History caption.**
+  `QuestHistory.AwaitingRewards()` lists chains at stage completed with a reward step still
+  open; the Side quests tab renders each as a RewardRow (no pin behind it — the errand pin
+  left with the goods) with a Map button, and QuestReadyGlow shimmers over the payer. The
+  payer is `QuestScanner.RewardGiverForChain` — the NPC whose dialogue file sets
+  `<chain>rewarded` — because the payer is not always who took the goods (Kat takes Beata's
+  bread, Beata pays). Redraw plumbing: a stage flip changes no store data and fires no event,
+  so the 1s tick calls `RecountAll` when `Update`/`CheckErrandCompletion` report movement,
+  and the awaiting set rides `ExtraSignature` so the recount actually redraws.
+- **The hand-over conversation is recovered from the graph too** (`QuestDef.HandIn`, via
+  `HandInTranscript` — the player's turn-in line, then NPC speech walked forward exactly as
+  `DoneSetters` walks variables; a player component with a single onward line is "Continue"
+  punctuation and is walked through unquoted, one with real choices ends the exchange). A
+  finished quest's history record used to keep only the briefing, and "what did she say when I
+  brought the goods" was the half worth rereading (Mark). `HandInForChain` maps a chain to its
+  transcript through the def whose `Done` sets `…questcompleted`; records append it
+  idempotently at the next Update, so archives written by older builds repair themselves.
+  The conversation has a THIRD act (found by Mark on Beata): `RewardTranscriptForChain`
+  recovers the payout exchange — the player-owned line whose DoneSetters walk sets
+  `<chain>rewarded` is the collecting step — and it is appended **only at stage rewarded**;
+  before the visit those words are unspoken and showing them would spoil it. All *ForChain
+  lookups hand out memoized lists — always copy before appending.
 - **A map belongs to an errand only via a shared gate variable — never via the file (found by
   Mark, twice; the sound tie found on the third pass).** A dialogue file covers several
   unrelated quest threads: Agnieszka takes iron ingots at her forge and separately hands out
@@ -578,6 +604,9 @@ asset, and collect `player.inventory` conditions.
   loaded chunks, however knowable quest *status* is; and iterate `LoadedEntities`, never
   `GetEntitiesAround` — the partition query returned nothing, ever, and the empty NpcPlaces
   it produced was misread as "hasn't walked past yet" for a whole session (found by Mark).
+  The rule applies to cosmetics too: QuestReadyGlow shipped on `GetEntitiesAround` and no orb
+  ever appeared over a ready quest giver (found by Mark, first hand-in) — a silent empty
+  result looks exactly like the feature being broken, because it is.
 - **The player's journal is readable client-side** (not yet used): `ModJournal` keeps a
   private `ownJournal` (`Journal.Entries` → `JournalEntry{ EntryId, LoreCode, Title, Chapters }`)
   and `DidDiscoverLore(playerUid, code, chapterId)` is public. So showing collected lore
@@ -965,7 +994,11 @@ types), and a throwaway net10.0 console app referencing `VintagestoryAPI.dll` /
 ## Release flow
 
 Stage `dist/tallybook_X.Y.Z.zip` into `%APPDATA%\VintagestoryData\Mods\` (remove older
-tallybook zips) for local/friend testing first. Publish only on explicit go-ahead: dated
+tallybook zips) for local/friend testing first. **A restaged zip needs a full game restart to
+load** — rejoining the world from a running client hits "Assembly with same name is already
+loaded" in client-main.log and the session keeps running the *old* build (or none), which
+tests the previous code while looking like the fix didn't work (bit Mark mid-iteration on
+0.3.10). When a staged fix "changes nothing", check that log line before doubting the fix. Publish only on explicit go-ahead: dated
 CHANGELOG entry, README version refs, commit, tag `vX.Y.Z`, push,
 `gh release create vX.Y.Z dist\tallybook_X.Y.Z.zip --title "Tallybook X.Y.Z"`. ModDB upload
 is manual. **Run `.\tools\compat-test.ps1` and `.\tools\version-sweep.ps1` before every
