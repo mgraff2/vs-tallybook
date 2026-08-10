@@ -226,6 +226,70 @@ is most of it. Manual pre-release checklist for what the server can't see:
    expanded node's recipe, not just the pinned item's own. The glass slab's ingredient row
    must be the glass *block* — if it reads "glass slab", the self-consuming placement-mode
    pseudo-recipe has leaked back into the index.
+2b. **Liquid ingredients** — pin dough: the water row must read as water with litres
+   ("Water (in …) 0/1 L"), never as a bare bucket/bowl/jug, and the three vessel recipes
+   must be one recipe, not three identical chooser entries. An **empty** accepted container
+   must count 0; filling it with the right liquid flips the row; the wrong liquid in the
+   right container stays 0. Pin a liquid itself (a bucket of milk in the bag): its Have
+   must come from container contents. An errand pin's count must *not* rise from liquid in
+   containers — hand-over checks want slot stacks.
+2c. **Cooking-pot recipes** — pin sulfuric acid from its handbook page: it arrives folded
+   (no pin ever auto-expands); Expand shows 1 L water + 2 powdered sulfur + 1 saltpeter
+   (chooser says "cooked in a pot, up to 6 L per pot"), the water counting from *any*
+   carried container. Porridge and other meals
+   must still say "no recipe known" when gather-only is toggled — meals are deliberately
+   not decomposed. In a grid recipe that takes acid in a jug, expanding the acid row must
+   offer the cooking recipe.
+2d. **Liquid units & pot loads** — a pinned liquid's count field means litres (hover says
+   so; header reads "0/12 L"), and setting 12 L of acid must show "2 pot loads" on the row
+   (12 servings, vanilla pot cooks 6) with ingredients scaled ×12 (12 L water, 24 sulfur,
+   12 saltpeter). Carrying some acid must shrink both the ingredient demands and the pot
+   loads; at 12 L the row reads "got it" and loads disappear.
+2e. **Volume calculator** — the acid pin row shows "Volume Calc" in its own column,
+   alongside the normal Expand/Collapse and (once expanded) the recipe cycler — liquid
+   rows keep every standard control. The screen lists containers largest-first (Barrel
+   50 L on top); picking Barrel ×5 shows "5 × Barrel = 250 L — about 42 pot loads to cook",
+   and Set lands back on the list with the pin at 0/250 L, expanded, ingredients ×250.
+   Typing a count updates the summary after a typing pause without stealing focus
+   mid-number. A liquid pin with no recipe (milk) gets the calculator but no pot-load line
+   and no recipe toggle. Container variants must collapse to one row per family and size —
+   Eternal Stew's metal cauldrons are ONE "Cauldron" row, not one per metal — and the small
+   containers (bowl, jug) stay visible in the two-column list, never hidden behind a cap.
+2f. **The spirit chain (barrel/distill/press)** — pin Apple brandy, Volume Calc → 1 Barrel
+   (50 L), Set. Expanding walks the whole chain by hand: the pin shows ~1000 L of apple
+   cider (distillation, ratio 0.05); expanding cider shows apple juice with a barrel-seals
+   suffix ("...barrel seals (~7 days each)"); expanding juice shows apples (fruit press).
+   Mead spirit walks to honey, grain spirits to flour + water. Barrel products beyond
+   drink — tannin, lime water, dyes — must expand too. Carrying cider in any container
+   counts toward the cider row (barrels and boilers are filled by pouring — no vessel
+   constraint, unlike grid recipes).
+2g. **Multi-path liquids** — pin Aqua Vitae (it distills from every spirit): the pin must
+   arrive **folded** (counting only, chat says "N ways to make it"), with Expand, Volume
+   Calc and Handbook all on the row. Expand must open a chooser with the paths **grouped
+   by origin** — "Fruit" (all juices and mead), "Grain" (the mashes) — each category
+   sorted, two columns, one line per path; picking one plans the tree down that path and
+   shows the 1/N cycler. The choice is remembered as a *preselection only*: re-pinning the
+   same item later still arrives folded, and expanding lands on the remembered path. No
+   pin auto-expands, single-recipe ones included; a small chooser (bandages) keeps the
+   two-line uncategorized layout.
+2h. **Grinding & crushing** — under an expanded sulfuric acid, "Powdered sulfur" must
+   offer Expand, unfolding to sulfur chunks ("ground in a quern"); a flour row under a
+   whiskey mash expands to its grain. Counting the input works like any solid row.
+2i. **Smelting & smithing** — pin a copper ingot: Expand offers the smelting paths (20 ×
+   nuggets, "smelted in a crucible", one entry per smeltable source) listed before the
+   anvil+chisel grid recycler. The nugget row expands to crushed ore. Bread must expand to
+   dough ("baked"), cooked meat to raw ("cooked over fire"). No item may list itself as
+   its own smelting source (ingots cast from ingots). Pin an IRON ingot: it expands to
+   1 × Iron bloom ("smithed on an anvil"), and the bloom to 20 × iron nuggets — the
+   bloomery chain, not a crucible.
+2j. **Alloys & method sections** — pin ONE bismuth bronze ingot: the chooser leads with
+   "Alloyed in a crucible" and the rows read 60/25/15 units (linear — 3 ingots read
+   180/75/45; never whole-batch multiples) as "Copper — bits, nuggets or any meltable
+   (50–70%)" (the metal named bare, never "Copper ingot") and sections the rest by method — the melt-your-chain-down entries under
+   "Smelted in a crucible", the anvil chisel under "Crafting grid" — never one section per
+   input item. The copper row must count nuggets and bits at 5 units each — 20 copper
+   nuggets reads 100 u — and a whole copper ingot must count **nothing** (the crucible
+   refuses ingots; chisel it into bits and the 20 bits read 100 u).
 3. **Counts** — steppers and direct numeric entry; typing must not lose focus mid-number;
    stepping or typing to 0 unpins immediately, no dialog.
 4. **Expansion math** — expand a node while partially stocked; children must size to the
@@ -259,7 +323,9 @@ is most of it. Manual pre-release checklist for what the server can't see:
     the list and open the handbook on that item's page, and must work from **both** tabs: an errand and a goal copied from one are
     separate pins, and a pin's identity is not itself a handbook page code. For an attribute
     variant (bookshelf shapes) it must open the *same* variant that was pinned, not just the
-    first page sharing its code. A "← Back to Tallybook" button must
+    first page sharing its code. Ingredient and tool rows under an expanded pin carry the
+    button too — it opens the page for the item the row's icon shows (a liquid row opens
+    the liquid's page, not a container's). A "← Back to Tallybook" button must
     then sit under the handbook's own Back button, return you to the list, and follow the
     handbook if the window is resized or the GUI scale changed; close the handbook and press
     H afresh and it must not appear, since there is no journey to return from.

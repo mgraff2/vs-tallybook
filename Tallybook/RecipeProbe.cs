@@ -54,6 +54,81 @@ namespace Tallybook
         /// </summary>
         public string SelfPageCode;
 
+        // ---- liquid requirements (recipes whose ingredient is really "a container OF X") --
+
+        /// <summary>
+        /// Non-null when this row's real demand is a liquid: the recipe's own requiresContent
+        /// matcher (from the ingredient's recipeAttributes, or the recipe-level
+        /// liquidContainerProps fallback). The container matchers stay in
+        /// ExactCodes/OtherMatchers — the liquid only counts while it sits in an accepted
+        /// vessel, exactly as the crafting grid demands.
+        /// </summary>
+        public JsonItemStack LiquidMatcher;
+
+        /// <summary>Resolved sample of the liquid itself, for the row's name and icon.</summary>
+        public ItemStack LiquidStack;
+
+        /// <summary>Litres one craft consumes; display only — counting runs in portion items.</summary>
+        public float LitresPerCraft;
+
+        /// <summary>The liquid's own items-per-litre (waterTightContainerProps). Quantity,
+        /// Have and Needed are all in portion items; this converts them back for display.</summary>
+        public float ItemsPerLitre = 1f;
+
+        /// <summary>Grid cells this ingredient occupied per craft, before Quantity was
+        /// rescaled to portion items — what recipe-variant merging must compare against.</summary>
+        public int CellQuantity;
+
+        /// <summary>A liquid demand of any recipe kind — every builder that creates one sets
+        /// the liquid sample, whichever matcher variant it carries.</summary>
+        public bool IsLiquid => LiquidStack != null;
+
+        public string LiquidCode => LiquidStack?.Collectible?.Code?.ToShortString();
+
+        /// <summary>The self row of a pinned liquid also counts what is inside carried
+        /// containers — a portion can never sit in a bare slot, so without this a pinned
+        /// liquid could never be "had". Off for errand pins: a hand-over check inspects slot
+        /// stacks, and a jug of honey does not satisfy a request for honey.</summary>
+        public bool CountContainerContents;
+
+        /// <summary>Cooking-pot rows only: the recipe's own ingredient, whose Matches() is the
+        /// game's matcher for what may go in the pot — solids and liquid contents alike.</summary>
+        public CookingRecipeIngredient CookingIngredient;
+
+        /// <summary>Barrel rows only: the recipe's own ingredient, asked directly whether a
+        /// container's *contents* satisfy it (BarrelRecipeIngredient is a
+        /// CraftingRecipeIngredient, so this is again the game's matcher, not ours).</summary>
+        public CraftingRecipeIngredient LiquidContentMatcher;
+
+        /// <summary>Liquid rows that accept the liquid from any container. Cooking wants the
+        /// liquid poured into the pot, so unlike a grid recipe no particular vessel is part of
+        /// the demand.</summary>
+        public bool AnyVessel;
+
+        /// <summary>Self rows of pinned liquids: display in litres even though the row is not
+        /// an ingredient demand — nobody discusses two hundred "portions" of acid.</summary>
+        public bool ShowLitres;
+
+        /// <summary>
+        /// Alloy rows: the metal in any meltable form. Keyed by item code, valued at the
+        /// metal units that one item carries (ingot 100, nugget 5) — counting weighs each
+        /// carried stack by its metal content, exactly as the crucible will.
+        /// </summary>
+        public Dictionary<string, int> UnitsPerItem;
+
+        /// <summary>have/needed for display: litres for liquid rows, metal units for alloy
+        /// rows, plain items otherwise.</summary>
+        public string CountText(int have, int needed)
+            => IsLiquid || ShowLitres ? $"{LitresText(have)}/{LitresText(needed)} L"
+             : UnitsPerItem != null ? $"{have}/{needed} u"
+             : $"{have}/{needed}";
+
+        public string LitresText(int items)
+        {
+            float ipl = ItemsPerLitre <= 0 ? 1f : ItemsPerLitre;
+            return (items / ipl).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         public int VariantCount => ExactCodes.Count + OtherMatchers.Count;
 
         /// <summary>How many real items actually satisfy this row. For exact codes that is
@@ -121,6 +196,15 @@ namespace Tallybook
                     .Select(m => $"{m.Type}:{m.MatchingType}:{m.Code}")
                     .OrderBy(s => s, StringComparer.Ordinal));
                 key = $"{(IsTool ? "T" : "I")}|{codes}|{others}";
+                // "Bucket of water" and "empty bucket" share container matchers but are
+                // different demands — they must never merge into one HUD row.
+                if (IsLiquid)
+                {
+                    key += $"|L:{LiquidCode}:{LitresPerCraft.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}";
+                }
+                // Nor may a units-counted metal row merge with an item-counted row that
+                // happens to accept the same codes.
+                if (UnitsPerItem != null) key += "|U";
                 return key;
             }
         }
@@ -144,8 +228,22 @@ namespace Tallybook
         readonly Dictionary<string, (ItemStack Sample, int Total, string Code)> byPage
             = new Dictionary<string, (ItemStack, int, string)>();
 
-        public InventorySnapshot(IEnumerable<IInventory> inventories, IEnumerable<ItemStack> alsoCount = null)
+        /// <summary>Liquids found inside carried containers: the vessel, its contents, and how
+        /// many portion items that is. Kept separate from byPage on purpose — liquid in a jug
+        /// is not an item in a slot, and folding it into the general pool would let a quest
+        /// hand-over or an ordinary ingredient row count goods the game would refuse.</summary>
+        readonly List<(ItemStack Container, ItemStack Content, int Items)> liquids
+            = new List<(ItemStack, ItemStack, int)>();
+
+        /// <summary>Contained liquid totals by the content's page code, for self rows.</summary>
+        readonly Dictionary<string, int> liquidByPage = new Dictionary<string, int>();
+
+        readonly IWorldAccessor world;
+
+        public InventorySnapshot(IWorldAccessor world, IEnumerable<IInventory> inventories,
+            IEnumerable<ItemStack> alsoCount = null)
         {
+            this.world = world;
             foreach (var inv in inventories)
             {
                 foreach (var slot in inv) Add(slot?.Itemstack);
@@ -165,6 +263,23 @@ namespace Tallybook
             byPage[page] = byPage.TryGetValue(page, out var cur)
                 ? (cur.Sample, cur.Total + stack.StackSize, cur.Code)
                 : (stack, stack.StackSize, code);
+
+            if (stack.Collectible is BlockLiquidContainerBase container)
+            {
+                ItemStack content = null;
+                try { content = container.GetContent(stack); } catch { /* unreadable contents count as none */ }
+                if (content?.Collectible?.Code == null || content.StackSize <= 0) return;
+
+                // Contents ride on each container item; identical filled containers that
+                // stack share the same per-item contents.
+                int items = content.StackSize * Math.Max(1, stack.StackSize);
+                liquids.Add((stack, content, items));
+
+                string contentPage = RecipeProbe.PageCode(content) ?? content.Collectible.Code.ToShortString();
+                liquidByPage[contentPage] = liquidByPage.TryGetValue(contentPage, out var have)
+                    ? have + items
+                    : items;
+            }
         }
 
         public int Count(Requirement req)
@@ -172,7 +287,55 @@ namespace Tallybook
             // Self requirements name one exact page — a single lookup, and no chance of
             // another variant of the same code counting toward it.
             if (req.SelfPageCode != null)
-                return byPage.TryGetValue(req.SelfPageCode, out var self) ? self.Total : 0;
+            {
+                int n = byPage.TryGetValue(req.SelfPageCode, out var self) ? self.Total : 0;
+                if (req.CountContainerContents && liquidByPage.TryGetValue(req.SelfPageCode, out var contained))
+                    n += contained;
+                return n;
+            }
+
+            // Alloy rows count metal units, each carried item weighed by its content —
+            // an ingot is worth twenty nuggets, and the crucible agrees.
+            if (req.UnitsPerItem != null)
+            {
+                int units = 0;
+                foreach (var entry in byPage)
+                {
+                    if (req.UnitsPerItem.TryGetValue(entry.Value.Code, out var per))
+                        units += entry.Value.Total * per;
+                }
+                return units;
+            }
+
+            // A liquid row counts the liquid, and only while it sits in a vessel the recipe
+            // accepts — an empty bowl satisfies the container matcher and the crafting grid
+            // still refuses it, so it must contribute nothing here.
+            if (req.IsLiquid)
+            {
+                int held = 0;
+                foreach (var (containerStack, content, items) in liquids)
+                {
+                    // Grid recipes demand a specific vessel in the grid; pots, barrels and
+                    // boilers take the liquid poured from anything.
+                    if (!req.AnyVessel && !ContainerMatches(req, containerStack)) continue;
+                    bool matches;
+                    try
+                    {
+                        // Whichever matcher the recipe kind actually owns, in that order —
+                        // and each of them is the game's, never a reimplementation. The code
+                        // fallback serves synthesized recipes (distillation) whose input is
+                        // one exact liquid.
+                        if (req.CookingIngredient != null) matches = req.CookingIngredient.Matches(content);
+                        else if (req.LiquidContentMatcher != null) matches = req.LiquidContentMatcher.SatisfiesAsIngredient(content, false);
+                        else if (req.LiquidMatcher != null) matches = req.LiquidMatcher.Matches(world, content);
+                        else matches = content.Collectible?.Code != null
+                            && req.ExactCodes.Contains(content.Collectible.Code.ToShortString());
+                    }
+                    catch { matches = false; }
+                    if (matches) held += items;
+                }
+                return held;
+            }
 
             int total = 0;
             foreach (var entry in byPage)
@@ -182,12 +345,33 @@ namespace Tallybook
                     total += entry.Value.Total;
                     continue;
                 }
+                bool counted = false;
                 foreach (var m in req.OtherMatchers)
                 {
-                    if (m.SatisfiesAsIngredient(entry.Value.Sample, false)) { total += entry.Value.Total; break; }
+                    if (m.SatisfiesAsIngredient(entry.Value.Sample, false)) { total += entry.Value.Total; counted = true; break; }
+                }
+                // Cooking rows delegate to the pot's own matcher, which covers anything the
+                // exact codes above did not (attribute-distinct or wildcarded valid stacks).
+                if (!counted && req.CookingIngredient != null)
+                {
+                    bool ok;
+                    try { ok = req.CookingIngredient.Matches(entry.Value.Sample); }
+                    catch { ok = false; }
+                    if (ok) total += entry.Value.Total;
                 }
             }
             return total;
+        }
+
+        static bool ContainerMatches(Requirement req, ItemStack containerStack)
+        {
+            var code = containerStack?.Collectible?.Code?.ToShortString();
+            if (code != null && req.ExactCodes.Contains(code)) return true;
+            foreach (var m in req.OtherMatchers)
+            {
+                if (m.SatisfiesAsIngredient(containerStack, false)) return true;
+            }
+            return false;
         }
     }
 
@@ -209,6 +393,23 @@ namespace Tallybook
         public string OutputName;
         public int OutputQuantity;
         public ItemStack OutputStack;
+
+        /// <summary>Items-per-litre of a liquid output (0 for solids) — what lets choosers
+        /// and labels say "makes 1 L" instead of "makes 100 ×".</summary>
+        public float OutputItemsPerLitre;
+
+        /// <summary>"Makes 1 L of Aqua Vitae" / "Makes 4 × Plank" — the output stated in the
+        /// unit the player thinks in.</summary>
+        public string MakesLabel()
+        {
+            if (OutputItemsPerLitre > 0)
+            {
+                string litres = (OutputQuantity / OutputItemsPerLitre)
+                    .ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+                return $"Makes {litres} L of {OutputName}";
+            }
+            return $"Makes {OutputQuantity} × {OutputName}";
+        }
         public string Pattern;
         public int Width;
         public int Height;
@@ -222,6 +423,72 @@ namespace Tallybook
         /// groups carry the material signature in their key instead — which is what makes the
         /// stricter merge gate in BuildRequirements safe to apply to them and wrong here.</summary>
         public bool Collapsed;
+
+        /// <summary>Non-null for a cooking-pot recipe (vanilla 1.22 cooks acids, glue, potash
+        /// and the like into real items via cooksInto). Such a group has no grid recipes;
+        /// Pattern carries the recipe code so Signature stays unique and persistable.</summary>
+        public CookingRecipe Cooking;
+
+        /// <summary>Cooking groups: servings one pot cooks at once (the best pot this world
+        /// has — vanilla's clay pot does 6). One serving = one OutputQuantity of output, so
+        /// this is what turns "how many servings" into "how many pot loads".</summary>
+        public int ServingsPerBatch;
+
+        /// <summary>Non-null for a sealed-barrel recipe (ferments, tannin, lime water, dyes…).
+        /// Pattern carries the recipe code for a stable Signature, as with cooking.</summary>
+        public BarrelRecipe Barrel;
+
+        /// <summary>Barrel groups: in-game hours the barrel stays sealed per batch.</summary>
+        public double SealHours;
+
+        /// <summary>Barrel groups: litres the biggest barrel in this world holds — the batch
+        /// cap that turns "how many crafts" into "how many seals".</summary>
+        public float BatchLitres;
+
+        /// <summary>Barrel groups: the largest litre amount one craft moves through the
+        /// barrel (max of output and any liquid ingredient) — the divisor against
+        /// BatchLitres when working out crafts per seal.</summary>
+        public float LitresPerCraft;
+
+        /// <summary>Non-null for a synthesized distillation recipe: the liquid that goes into
+        /// the boiler, yielding this group's output at DistillRatio litres per litre.</summary>
+        public ItemStack DistillFrom;
+        public float DistillRatio;
+
+        /// <summary>Non-null for a synthesized one-item conversion — fruit press, quern
+        /// grinding, pulverizer crushing: the item that goes in, one per craft.</summary>
+        public ItemStack PressFrom;
+        public float PressLitresPerItem;
+
+        /// <summary>Human word for how a synthesized conversion happens ("ground in a
+        /// quern"); the Materials suffix for the kinds that share the one-item shape.</summary>
+        public string MethodLabel;
+
+        /// <summary>Input items one craft consumes for synthesized conversions — 1 for
+        /// press/grind/crush, the smelt ratio for smelting (20 nuggets per copper ingot).</summary>
+        public float InputsPerCraft = 1f;
+
+        /// <summary>Non-null for a crucible alloy (bismuth bronze from copper+zinc+bismuth).
+        /// One craft is one output; unit demands scale linearly.</summary>
+        public AlloyRecipe Alloy;
+
+        /// <summary>Non-null for an anvil smithing recipe (iron bloom → ingot, ingots →
+        /// plate). Input count comes from the recipe's voxels, by the game's own math.</summary>
+        public SmithingRecipe Smithing;
+
+        /// <summary>The method family this group belongs to — the section header when a
+        /// chooser mixes kinds ("Alloyed in a crucible" vs "Smelted…" vs "Crafting grid").</summary>
+        public string KindLabel()
+        {
+            if (Alloy != null) return "Alloyed in a crucible";
+            if (Smithing != null) return "Smithed on an anvil";
+            if (Cooking != null) return "Cooked in a pot";
+            if (Barrel != null) return SealHours > 0 ? "Sealed in a barrel" : "Mixed in a barrel";
+            if (DistillFrom != null) return "Distilled in a boiler";
+            if (!string.IsNullOrEmpty(MethodLabel))
+                return char.ToUpper(MethodLabel[0]) + MethodLabel.Substring(1);
+            return "Crafting grid";
+        }
 
         public List<GridRecipe> Recipes = new List<GridRecipe>();
 
@@ -240,6 +507,10 @@ namespace Tallybook
         /// the group is built, since the requirements are worked out there.
         /// </summary>
         public string Materials;
+
+        /// <summary>The ingredient list alone — Materials without the method/tools tail —
+        /// for compact chooser rows where the tail is shared by the whole category.</summary>
+        public string MaterialsBrief;
     }
 
     /// <summary>
@@ -273,7 +544,27 @@ namespace Tallybook
         /// Drop the index. Recipes arrive from the server on join, so a different server or
         /// world means a different recipe set.
         /// </summary>
-        public void InvalidateIndex() => byOutput = null;
+        public void InvalidateIndex()
+        {
+            byOutput = null;
+            cookingByOutput = null;
+            barrelByOutput = null;
+            distillByOutput = null;
+            pressByOutput = null;
+            grindByOutput = null;
+            crushByOutput = null;
+            smeltByOutput = null;
+            alloyByOutput = null;
+            smithByOutput = null;
+            maxCookingServings = 0;
+            maxBarrelLitres = 0;
+            liquidContainerOptions = null;
+            pathCategories.Clear();
+            familySamples.Clear();
+            liquidDemands.Clear();
+            liquidContainerMatchers.Clear();
+            matcherSamples.Clear();
+        }
 
         public int IndexedRecipeCount => capi.World?.GridRecipes?.Count ?? 0;
 
@@ -297,6 +588,805 @@ namespace Tallybook
                 }
                 list.Add(r);
             }
+
+            IndexCookingRecipes();
+            IndexBarrelRecipes();
+            IndexAlloyRecipes();
+            IndexSmithingRecipes();
+            IndexAttributeRecipes();
+        }
+
+        /// <summary>
+        /// Sealed-barrel recipes — ferments, tannin, lime water, dyes, cheese and some thirty
+        /// other products. Same client-resident registry family as cooking
+        /// (RecipeRegistrySystem.BarrelRecipes), and BarrelRecipe.FromBytes resolves both
+        /// ingredients and output on the client (verified in the 1.22.6 decompile). Wildcard
+        /// ingredients arrive pre-expanded per variant, exactly like grid recipes.
+        /// </summary>
+        void IndexBarrelRecipes()
+        {
+            barrelByOutput = new Dictionary<string, List<BarrelRecipe>>();
+            List<BarrelRecipe> recipes = null;
+            try { recipes = capi.ModLoader.GetModSystem<RecipeRegistrySystem>()?.BarrelRecipes; }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] barrel recipes unavailable: {0}", e.Message);
+            }
+            if (recipes == null) return;
+
+            foreach (var r in recipes)
+            {
+                if (r == null || !r.Enabled) continue;
+                var code = r.Output?.ResolvedItemstack?.Collectible?.Code?.ToShortString();
+                if (code == null) continue;
+                if (!barrelByOutput.TryGetValue(code, out var list))
+                    barrelByOutput[code] = list = new List<BarrelRecipe>();
+                list.Add(r);
+            }
+        }
+
+        /// <summary>
+        /// The two recipe kinds that are not recipes at all but collectible attributes:
+        /// distillation (distillationProps on the liquid the boiler consumes — read exactly
+        /// as BlockEntityBoiler reads it) and fruit pressing (juiceableProperties on the item
+        /// the press squeezes — as BlockEntityFruitPress reads it). One scan over the world's
+        /// collectibles per session, indexed by what each one *produces*.
+        /// </summary>
+        void IndexAttributeRecipes()
+        {
+            distillByOutput = new Dictionary<string, List<(ItemStack, ItemStack, float)>>();
+            pressByOutput = new Dictionary<string, List<(ItemStack, ItemStack, float)>>();
+            grindByOutput = new Dictionary<string, List<(ItemStack, ItemStack, float)>>();
+            crushByOutput = new Dictionary<string, List<(ItemStack, ItemStack, float)>>();
+            smeltByOutput = new Dictionary<string, List<(ItemStack, ItemStack, float)>>();
+            try
+            {
+                foreach (var obj in AllCollectibles())
+                {
+                    var attrs = obj?.Attributes;
+                    if (attrs == null || obj.Code == null) continue;
+
+                    if (attrs["distillationProps"].Exists)
+                    {
+                        var props = attrs["distillationProps"].AsObject<DistillationProps>(null);
+                        if (props?.DistilledStack != null && props.Ratio > 0
+                            && props.DistilledStack.Resolve(capi.World, "[tallybook] distillation"))
+                        {
+                            Index(distillByOutput, props.DistilledStack.ResolvedItemstack,
+                                new ItemStack(obj), props.Ratio);
+                        }
+                    }
+
+                    if (attrs["juiceableProperties"].Exists)
+                    {
+                        var props = attrs["juiceableProperties"]
+                            .AsObject<JuiceableProperties>(null, obj.Code.Domain);
+                        if (props?.LitresPerItem != null && props.LitresPerItem > 0
+                            && props.LiquidStack != null
+                            && props.LiquidStack.Resolve(capi.World, "[tallybook] juiceable"))
+                        {
+                            Index(pressByOutput, props.LiquidStack.ResolvedItemstack,
+                                new ItemStack(obj), (float)props.LitresPerItem);
+                        }
+                    }
+                }
+
+                // Grinding, crushing and smelting are first-class collectible fields rather
+                // than attributes — sulfur chunks grind into powder, ores crush into grits,
+                // and twenty copper nuggets smelt into an ingot. Factor = output items per
+                // input item for grind/crush, inputs per craft (the smelt ratio) for smelt.
+                foreach (var obj in AllCollectibles())
+                {
+                    if (obj?.Code == null) continue;
+
+                    var ground = obj.GrindingProps?.GroundStack;
+                    if (ground != null && ground.Resolve(capi.World, "[tallybook] grinding"))
+                    {
+                        Index(grindByOutput, ground.ResolvedItemstack, new ItemStack(obj),
+                            Math.Max(1, ground.ResolvedItemstack.StackSize));
+                    }
+
+                    var crushed = obj.CrushingProps?.CrushedStack;
+                    if (crushed != null && crushed.Resolve(capi.World, "[tallybook] crushing"))
+                    {
+                        float per = Math.Max(1f,
+                            crushed.ResolvedItemstack.StackSize * (obj.CrushingProps.Quantity?.avg ?? 1f));
+                        Index(crushByOutput, crushed.ResolvedItemstack, new ItemStack(obj), per);
+                    }
+
+                    // Everything burnable has CombustibleProps; only entries that actually
+                    // smelt INTO something are recipes (firewood burns to nothing) — and an
+                    // item that smelts into itself (an ingot melted for casting) is the
+                    // crucible's bookkeeping, not a way to obtain one. Same rule as the
+                    // self-consuming grid pseudo-recipes.
+                    var smelted = obj.CombustibleProps?.SmeltedStack;
+                    if (smelted != null && smelted.Resolve(capi.World, "[tallybook] smelting")
+                        && smelted.ResolvedItemstack?.Collectible?.Code?.ToShortString()
+                           != obj.Code.ToShortString())
+                    {
+                        Index(smeltByOutput, smelted.ResolvedItemstack, new ItemStack(obj),
+                            Math.Max(1, obj.CombustibleProps.SmeltedRatio));
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not scan distill/press attributes: {0}", e.Message);
+            }
+
+            static void Index(Dictionary<string, List<(ItemStack, ItemStack, float)>> dict,
+                ItemStack output, ItemStack input, float factor)
+            {
+                var code = output?.Collectible?.Code?.ToShortString();
+                if (code == null) return;
+                if (!dict.TryGetValue(code, out var list))
+                    dict[code] = list = new List<(ItemStack, ItemStack, float)>();
+                list.Add((input, output, factor));
+            }
+        }
+
+        IEnumerable<CollectibleObject> AllCollectibles()
+        {
+            foreach (var item in capi.World.Items)
+            {
+                if (item != null) yield return item;
+            }
+            foreach (var block in capi.World.Blocks)
+            {
+                if (block != null) yield return block;
+            }
+        }
+
+        Dictionary<string, List<BarrelRecipe>> barrelByOutput;
+        Dictionary<string, List<(ItemStack Input, ItemStack Output, float Factor)>> distillByOutput;
+        Dictionary<string, List<(ItemStack Input, ItemStack Output, float Factor)>> pressByOutput;
+        Dictionary<string, List<(ItemStack Input, ItemStack Output, float Factor)>> grindByOutput;
+        Dictionary<string, List<(ItemStack Input, ItemStack Output, float Factor)>> crushByOutput;
+        Dictionary<string, List<(ItemStack Input, ItemStack Output, float Factor)>> smeltByOutput;
+        Dictionary<string, List<AlloyRecipe>> alloyByOutput;
+
+        /// <summary>
+        /// Crucible alloys (RecipeRegistrySystem.MetalAlloys, client-synced like the rest):
+        /// the one way an alloy ingot is actually created — every smeltable "source" for one
+        /// is scrap recovery.
+        /// </summary>
+        void IndexAlloyRecipes()
+        {
+            alloyByOutput = new Dictionary<string, List<AlloyRecipe>>();
+            List<AlloyRecipe> recipes = null;
+            try { recipes = capi.ModLoader.GetModSystem<RecipeRegistrySystem>()?.MetalAlloys; }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] alloy recipes unavailable: {0}", e.Message);
+            }
+            if (recipes == null) return;
+
+            foreach (var r in recipes)
+            {
+                if (r == null || !r.Enabled) continue;
+                if (r.Output?.ResolvedItemstack == null)
+                {
+                    try { r.Output?.Resolve(capi.World, "[tallybook] alloy output"); } catch { }
+                }
+                var code = r.Output?.ResolvedItemstack?.Collectible?.Code?.ToShortString();
+                if (code == null) continue;
+                if (!alloyByOutput.TryGetValue(code, out var list))
+                    alloyByOutput[code] = list = new List<AlloyRecipe>();
+                list.Add(r);
+            }
+        }
+
+        Dictionary<string, List<SmithingRecipe>> smithByOutput;
+
+        /// <summary>
+        /// Anvil smithing (RecipeRegistrySystem via GetSmithingRecipes, client-synced,
+        /// wildcards pre-expanded like grid recipes): iron bloom → ingot, ingots → plates,
+        /// chains, tools. The step that closes the iron chain — a bloomery's bloom is
+        /// hammered, never melted.
+        /// </summary>
+        void IndexSmithingRecipes()
+        {
+            smithByOutput = new Dictionary<string, List<SmithingRecipe>>();
+            List<SmithingRecipe> recipes = null;
+            try { recipes = capi.GetSmithingRecipes(); }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] smithing recipes unavailable: {0}", e.Message);
+            }
+            if (recipes == null) return;
+
+            foreach (var r in recipes)
+            {
+                if (r == null || !r.Enabled) continue;
+                var code = r.Output?.ResolvedItemstack?.Collectible?.Code?.ToShortString();
+                if (code == null) continue;
+                if (!smithByOutput.TryGetValue(code, out var list))
+                    smithByOutput[code] = list = new List<SmithingRecipe>();
+                list.Add(r);
+            }
+        }
+
+        List<RecipeVariantGroup> SmithGroupsFor(string shortCode)
+        {
+            var groups = new List<RecipeVariantGroup>();
+            if (shortCode == null || smithByOutput == null
+                || !smithByOutput.TryGetValue(shortCode, out var recipes)) return groups;
+
+            foreach (var r in recipes)
+            {
+                var output = r.Output?.ResolvedItemstack;
+                var inputCode = r.Ingredient?.ResolvedItemStack?.Collectible?.Code?.ToShortString()
+                    ?? r.Ingredient?.Code?.ToShortString();
+                if (output == null || inputCode == null) continue;
+
+                groups.Add(new RecipeVariantGroup
+                {
+                    Smithing = r,
+                    OutputCode = shortCode,
+                    OutputPageCode = PageCode(output) ?? shortCode,
+                    OutputName = output.GetName(),
+                    OutputQuantity = Math.Max(1, output.StackSize),
+                    OutputStack = output,
+                    Pattern = "smith:" + inputCode,
+                    Width = 0,
+                    Height = 0,
+                    LayoutCount = 1,
+                    MethodLabel = "smithed on an anvil"
+                });
+            }
+            return groups;
+        }
+
+        /// <summary>
+        /// Requirement row for a smithing recipe: the workpiece material, counted the way
+        /// the handbook counts it — the recipe's voxels divided by what one input item
+        /// provides, asked of the item itself (IAnvilWorkable.VoxelCountForHandbook).
+        /// </summary>
+        List<Requirement> BuildSmithingRequirements(RecipeVariantGroup group, bool tools)
+        {
+            var reqs = new List<Requirement>();
+            if (tools) return reqs;
+
+            var recipe = group.Smithing;
+            var ing = recipe.Ingredient;
+            if (ing == null) return reqs;
+
+            int qty = 1;
+            try
+            {
+                int voxels = recipe.Voxels.Cast<bool>().Count(v => v);
+                var stack = ing.ResolvedItemStack;
+                int per = stack?.Collectible?.GetCollectibleInterface<IAnvilWorkable>()
+                    ?.VoxelCountForHandbook(stack) ?? 42;
+                if (per > 0) qty = Math.Max(1, (int)Math.Ceiling(voxels / (double)per));
+            }
+            catch { /* one workpiece is the safe floor */ }
+
+            var req = new Requirement { Quantity = qty, CellQuantity = qty };
+            AddMatcher(req, ing);
+            ResolveVariants(req);
+            req.DisplayName = BuildDisplayName(req);
+            reqs.Add(req);
+
+            if (group.Materials == null)
+            {
+                group.MaterialsBrief = $"{qty} × {StripVariants(req.DisplayName)}";
+                group.Materials = group.MaterialsBrief + " — smithed on an anvil";
+            }
+            return reqs;
+        }
+
+        List<RecipeVariantGroup> AlloyGroupsFor(string shortCode)
+        {
+            var groups = new List<RecipeVariantGroup>();
+            if (shortCode == null || alloyByOutput == null
+                || !alloyByOutput.TryGetValue(shortCode, out var recipes)) return groups;
+
+            foreach (var r in recipes)
+            {
+                var output = r.Output?.ResolvedItemstack;
+                if (output == null || r.Ingredients == null || r.Ingredients.Length == 0) continue;
+
+                groups.Add(new RecipeVariantGroup
+                {
+                    Alloy = r,
+                    OutputCode = shortCode,
+                    OutputPageCode = PageCode(output) ?? shortCode,
+                    OutputName = output.GetName(),
+                    // Alloying is continuous — the crucible makes exactly as many units as
+                    // you feed it, so one craft is ONE output and the unit demands scale
+                    // linearly. (A first version batched crafts up to whole-item counts and
+                    // charged a 20-ingot batch for wanting one — found by Mark against a
+                    // reference alloy calculator.)
+                    OutputQuantity = Math.Max(1, output.StackSize),
+                    OutputStack = output,
+                    Pattern = "alloy:" + shortCode,
+                    Width = 0,
+                    Height = 0,
+                    LayoutCount = 1
+                });
+            }
+            return groups;
+        }
+
+        List<RecipeVariantGroup> BarrelGroupsFor(string shortCode)
+        {
+            var groups = new List<RecipeVariantGroup>();
+            if (shortCode == null || barrelByOutput == null
+                || !barrelByOutput.TryGetValue(shortCode, out var recipes)) return groups;
+
+            foreach (var r in recipes)
+            {
+                var output = r.Output?.ResolvedItemstack;
+                if (output == null) continue;
+
+                // One craft = the recipe's base quantities. A liquid output's true quantity
+                // is its litres (the resolved stack size does not carry them); solids use
+                // the stack size as-is.
+                float outIpl = ContainableProps(output)?.ItemsPerLitre ?? 0f;
+                float outLitres = r.Output.Litres;
+                int outputItems = outLitres > 0 && outIpl > 0
+                    ? Math.Max(1, (int)Math.Round(outLitres * outIpl))
+                    : Math.Max(1, output.StackSize);
+
+                float maxLitres = outLitres;
+                foreach (var ing in r.Ingredients ?? Array.Empty<BarrelRecipeIngredient>())
+                {
+                    if (ing != null && ing.Litres > maxLitres) maxLitres = ing.Litres;
+                }
+
+                groups.Add(new RecipeVariantGroup
+                {
+                    Barrel = r,
+                    SealHours = r.SealHours,
+                    BatchLitres = MaxBarrelLitres(),
+                    LitresPerCraft = maxLitres,
+                    OutputCode = shortCode,
+                    OutputPageCode = PageCode(output) ?? shortCode,
+                    OutputName = output.GetName(),
+                    OutputQuantity = outputItems,
+                    OutputStack = output,
+                    Pattern = "barrel:" + r.Code,
+                    Width = 0,
+                    Height = 0,
+                    LayoutCount = 1,
+                    OutputItemsPerLitre = outLitres > 0 ? outIpl : 0f
+                });
+            }
+            return groups;
+        }
+
+        List<RecipeVariantGroup> DistillGroupsFor(string shortCode)
+            => AttributeGroupsFor(shortCode, distillByOutput, "distill:", null);
+
+        List<RecipeVariantGroup> PressGroupsFor(string shortCode)
+            => AttributeGroupsFor(shortCode, pressByOutput, "press:", "squeezed in a fruit press");
+
+        List<RecipeVariantGroup> GrindGroupsFor(string shortCode)
+            => AttributeGroupsFor(shortCode, grindByOutput, "grind:", "ground in a quern");
+
+        List<RecipeVariantGroup> CrushGroupsFor(string shortCode)
+            => AttributeGroupsFor(shortCode, crushByOutput, "crush:", "crushed in a pulverizer");
+
+        List<RecipeVariantGroup> SmeltGroupsFor(string shortCode)
+            => AttributeGroupsFor(shortCode, smeltByOutput, "smelt:", null);
+
+        /// <summary>The human word for how this input smelts, from its own combustible
+        /// props: cooked / baked / fired / smelted (in a crucible when it says so).</summary>
+        static string SmeltLabel(ItemStack input)
+        {
+            var props = input?.Collectible?.CombustibleProps;
+            if (props == null) return "smelted";
+            switch (props.SmeltingType)
+            {
+                case EnumSmeltType.Cook: return "cooked over fire";
+                case EnumSmeltType.Bake: return "baked";
+                case EnumSmeltType.Fire: return "fired";
+                case EnumSmeltType.Convert: return "converted by heat";
+                default: return props.RequiresContainer ? "smelted in a crucible" : "smelted";
+            }
+        }
+
+        /// <summary>
+        /// Groups for the synthesized recipe kinds. One craft is defined per kind:
+        /// distillation makes one litre of output (so the input row reads 1/ratio litres —
+        /// 20 L of cider per litre of brandy at the vanilla 0.05); the one-item conversions
+        /// (press, grind, crush) consume one input item, yielding factor litres of juice or
+        /// factor output items respectively.
+        /// </summary>
+        List<RecipeVariantGroup> AttributeGroupsFor(string shortCode,
+            Dictionary<string, List<(ItemStack Input, ItemStack Output, float Factor)>> index,
+            string patternPrefix, string methodLabel)
+        {
+            var groups = new List<RecipeVariantGroup>();
+            if (shortCode == null || index == null || !index.TryGetValue(shortCode, out var entries))
+                return groups;
+
+            foreach (var (input, output, factor) in entries)
+            {
+                string inputCode = input?.Collectible?.Code?.ToShortString();
+                if (inputCode == null || output == null) continue;
+
+                bool distill = patternPrefix[0] == 'd';
+                bool press = patternPrefix[0] == 'p';
+                bool smelt = patternPrefix[0] == 's';
+                float outIpl = ContainableProps(output)?.ItemsPerLitre ?? 1f;
+                int outputItems = distill
+                    ? Math.Max(1, (int)Math.Round(outIpl))                 // 1 L of spirit
+                    : press
+                        ? Math.Max(1, (int)Math.Round(factor * outIpl))    // litres from one item
+                        : smelt
+                            ? Math.Max(1, output.StackSize)                // ratio inputs → the smelted stack
+                            : Math.Max(1, (int)Math.Round(factor));        // items from one item
+
+                var group = new RecipeVariantGroup
+                {
+                    OutputCode = shortCode,
+                    OutputPageCode = PageCode(output) ?? shortCode,
+                    OutputName = output.GetName(),
+                    OutputQuantity = outputItems,
+                    OutputStack = output,
+                    Pattern = patternPrefix + inputCode,
+                    Width = 0,
+                    Height = 0,
+                    LayoutCount = 1,
+                    OutputItemsPerLitre = ContainableProps(output)?.ItemsPerLitre ?? 0f,
+                    MethodLabel = smelt ? SmeltLabel(input) : methodLabel,
+                    InputsPerCraft = smelt ? Math.Max(1f, factor) : 1f
+                };
+                if (distill) { group.DistillFrom = input; group.DistillRatio = factor; }
+                else { group.PressFrom = input; group.PressLitresPerItem = factor; }
+                groups.Add(group);
+            }
+            return groups;
+        }
+
+        // ---- chooser path categories -----------------------------------------------------
+
+        readonly Dictionary<string, string> pathCategories = new Dictionary<string, string>();
+
+        /// <summary>
+        /// A category label for one recipe path, derived from what its chain bottoms out in —
+        /// built for choosers with dozens of entries (Aqua Vitae distills from thirty-two
+        /// spirits; the paths ARE grain vs fruit vs honey, but only the far end of each chain
+        /// knows which). Follows single-ingredient conversions through every recipe index
+        /// (spirit → cider → juice → apple stops at "Fruit"; the grain mash stops at
+        /// "Flour + Water"; mead stops at "Honey"), bounded and cycle-guarded. Where a chain
+        /// forks or ends, the ingredient *code families* label the category — data, not
+        /// name-matching. No recipe kind or item is special-cased, so any future giant
+        /// chooser gets grouped the same way.
+        /// </summary>
+        public string PathCategory(RecipeVariantGroup group)
+        {
+            if (group?.Signature == null) return "";
+            if (pathCategories.TryGetValue(group.Signature, out var cached)) return cached;
+
+            string label;
+            try { label = CategoryWalk(group, depth: 5, seen: new HashSet<string>()); }
+            catch { label = ""; }
+            return pathCategories[group.Signature] = label ?? "";
+        }
+
+        string CategoryWalk(RecipeVariantGroup group, int depth, HashSet<string> seen)
+        {
+            var reqs = BuildRequirements(group);
+            if (reqs.Count == 0) return "";
+
+            // A single consumed ingredient is a conversion step, not an origin — walk
+            // through it while the trail stays unambiguous.
+            if (reqs.Count == 1)
+            {
+                // The game's own food classification is the category a player means:
+                // cider declares Fruit (mead included) or Grain per variant, so every
+                // spirit path resolves one hop down — while spirits themselves say
+                // NoNutrition and the walk continues through them.
+                string food = FoodCategoryLabel(reqs[0]);
+                if (food != null) return food;
+
+                string code = reqs[0].LiquidCode ?? reqs[0].ExactCodes.FirstOrDefault();
+                if (code == null || !seen.Add(code)) return FamilyLabel(reqs[0]);
+
+                if (depth > 0)
+                {
+                    var producers = FindGroupsFor(code);
+                    if (producers.Count == 1) return CategoryWalk(producers[0], depth - 1, seen);
+
+                    // A fork (several ways to make the intermediate) only matters if the
+                    // branches disagree about where they come from — apple juice made two
+                    // ways is still apples both ways.
+                    if (producers.Count > 1 && producers.Count <= 6)
+                    {
+                        string agreed = null;
+                        bool unanimous = true;
+                        foreach (var p in producers)
+                        {
+                            var branch = CategoryWalk(p, depth - 1, new HashSet<string>(seen));
+                            if (string.IsNullOrEmpty(branch) || (agreed != null && branch != agreed))
+                            {
+                                unanimous = false;
+                                break;
+                            }
+                            agreed = branch;
+                        }
+                        if (unanimous && agreed != null) return agreed;
+                    }
+                }
+                return FamilyLabel(reqs[0]);
+            }
+
+            // Several ingredients: this recipe's shape is the origin story.
+            var parts = reqs.Select(FamilyLabel)
+                .Where(l => !string.IsNullOrEmpty(l))
+                .Distinct()
+                .OrderBy(l => l, StringComparer.Ordinal)
+                .ToList();
+            return string.Join(" + ", parts);
+        }
+
+        /// <summary>The game's own food classification for a requirement's item, localized
+        /// ("Fruit", "Grain") — null when the item declares none worth grouping by.
+        /// Liquids carry theirs in nutritionPropsPerLitre, solids on the collectible.</summary>
+        string FoodCategoryLabel(Requirement req)
+        {
+            var stack = req.LiquidStack ?? req.SampleStacks(capi.World).FirstOrDefault();
+            if (stack?.Collectible == null) return null;
+
+            EnumFoodCategory? category = null;
+            try
+            {
+                var perLitre = ContainableProps(stack)?.NutritionPropsPerLitre;
+                if (perLitre != null) category = perLitre.FoodCategory;
+                else if (stack.Collectible.NutritionProps != null)
+                    category = stack.Collectible.NutritionProps.FoodCategory;
+            }
+            catch { return null; }
+
+            if (category == null || category == EnumFoodCategory.Unknown
+                || category == EnumFoodCategory.NoNutrition) return null;
+
+            string key = "foodcategory-" + category.ToString().ToLowerInvariant();
+            string label = Lang.Get(key);
+            return label == key ? category.ToString() : label;
+        }
+
+        /// <summary>
+        /// The family word for one requirement: what its code's variant family is called.
+        /// "flour-rye" and its siblings share the name tail "flour" → "Flour"; families
+        /// whose variant names share nothing fall back to the capitalized code segment
+        /// ("fruit-apple"/"fruit-blueberry" → "Fruit"); a dashless code is its own family
+        /// and keeps its display name ("honeyportion" → "Honey").
+        /// </summary>
+        string FamilyLabel(Requirement req)
+        {
+            // The food classification outranks code families here too: a chain that dead
+            // ends at "juiceportion-apple" is still Fruit by the game's own account.
+            string food = FoodCategoryLabel(req);
+            if (food != null) return food;
+
+            string code = req.LiquidCode ?? req.ExactCodes.FirstOrDefault();
+            if (code == null) return StripVariants(req.DisplayName);
+
+            string path = new AssetLocation(code).Path;
+            int dash = path.IndexOf('-');
+            if (dash <= 0)
+            {
+                var name = req.LiquidStack?.GetName()
+                    ?? req.SampleStacks(capi.World).FirstOrDefault()?.GetName();
+                return name ?? NameForCode(code);
+            }
+
+            string family = path.Substring(0, dash);
+            var samples = FamilySamples(family, max: 4);
+            string shared = SharedNameTail(samples);
+            if (!string.IsNullOrEmpty(shared))
+                return char.ToUpper(shared[0]) + shared.Substring(1);
+            return char.ToUpper(family[0]) + family.Substring(1);
+        }
+
+        readonly Dictionary<string, List<ItemStack>> familySamples = new Dictionary<string, List<ItemStack>>();
+
+        List<ItemStack> FamilySamples(string family, int max)
+        {
+            if (familySamples.TryGetValue(family, out var cached)) return cached;
+
+            var samples = new List<ItemStack>();
+            string prefix = family + "-";
+            try
+            {
+                foreach (var obj in AllCollectibles())
+                {
+                    if (obj.Code?.Path == null || !obj.Code.Path.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                    samples.Add(new ItemStack(obj));
+                    if (samples.Count >= max) break;
+                }
+            }
+            catch { /* fewer samples only weakens the label */ }
+            return familySamples[family] = samples;
+        }
+
+        float maxBarrelLitres;
+
+        /// <summary>Litres the biggest barrel in this world holds — read off the barrel
+        /// blocks themselves (BlockBarrel is what sealed recipes run in), so a modded larger
+        /// barrel raises every batch estimate with no work here.</summary>
+        float MaxBarrelLitres()
+        {
+            if (maxBarrelLitres > 0) return maxBarrelLitres;
+
+            float max = 0;
+            try
+            {
+                foreach (var block in capi.World.Blocks)
+                {
+                    if (block is BlockBarrel barrel && barrel.CapacityLitres > max)
+                        max = barrel.CapacityLitres;
+                }
+            }
+            catch { /* fall through to the vanilla default */ }
+
+            return maxBarrelLitres = max > 0 ? max : 50f;
+        }
+
+        /// <summary>
+        /// Cooking-pot recipes that cook into a real item (cooksInto) — vanilla 1.22 makes
+        /// acids, glue, potash, sulfate, leather and more this way, and mods use the same
+        /// mechanism. Meal recipes (no cooksInto) are deliberately skipped: their output is a
+        /// meal container whose identity lives in attributes, a different product entirely.
+        /// The registry is client-resident and arrives resolved (RecipeRegistrySystem via
+        /// ApiAdditions.GetCookingRecipes; CookingRecipe.FromBytes resolves ingredients and
+        /// cooksInto — verified in the 1.22.6 decompile).
+        /// </summary>
+        void IndexCookingRecipes()
+        {
+            cookingByOutput = new Dictionary<string, List<CookingRecipe>>();
+            List<CookingRecipe> recipes = null;
+            try { recipes = capi.GetCookingRecipes(); }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] cooking recipes unavailable: {0}", e.Message);
+            }
+            if (recipes == null) return;
+
+            foreach (var r in recipes)
+            {
+                if (r == null || !r.Enabled) continue;
+                var output = r.CooksInto?.ResolvedItemstack;
+                var code = output?.Collectible?.Code?.ToShortString();
+                if (code == null) continue;
+                if (!cookingByOutput.TryGetValue(code, out var list))
+                {
+                    list = new List<CookingRecipe>();
+                    cookingByOutput[code] = list;
+                }
+                list.Add(r);
+            }
+        }
+
+        Dictionary<string, List<CookingRecipe>> cookingByOutput;
+
+        List<RecipeVariantGroup> CookingGroupsFor(string shortCode)
+        {
+            var groups = new List<RecipeVariantGroup>();
+            if (shortCode == null || cookingByOutput == null
+                || !cookingByOutput.TryGetValue(shortCode, out var recipes)) return groups;
+
+            foreach (var r in recipes)
+            {
+                var output = r.CooksInto?.ResolvedItemstack;
+                if (output == null) continue;
+                groups.Add(new RecipeVariantGroup
+                {
+                    Cooking = r,
+                    OutputCode = shortCode,
+                    OutputPageCode = PageCode(output) ?? shortCode,
+                    OutputName = output.GetName(),
+                    OutputQuantity = Math.Max(1, output.StackSize),
+                    OutputStack = output,
+                    // No grid: the recipe code keeps Signature unique and stable across
+                    // sessions, which is all Pattern is used for on this group.
+                    Pattern = "cooking:" + r.Code,
+                    Width = 0,
+                    Height = 0,
+                    LayoutCount = 1,
+                    ServingsPerBatch = MaxCookingServings(),
+                    OutputItemsPerLitre = ContainableProps(output)?.ItemsPerLitre ?? 0f
+                });
+            }
+            return groups;
+        }
+
+        /// <summary>One choice in the volume calculator: a container family and its size.</summary>
+        public class ContainerOption
+        {
+            public ItemStack Sample;
+            public string Name;
+            public float CapacityLitres;
+        }
+
+        List<ContainerOption> liquidContainerOptions;
+
+        /// <summary>
+        /// Every container in this world that can hold a liquid, one row per container
+        /// *family* — sorted by capacity descending, which puts the barrel first without
+        /// matching any name. Family is the code's first path segment plus capacity, not the
+        /// display name: thirty jug colours already share a name, but Eternal Stew's
+        /// cauldrons are "Copper cauldron", "Iron cauldron", … and name-keyed dedupe listed
+        /// every metal (found by Mark). A merged family is labelled by the words its
+        /// variants share ("Cauldron"), the same trick the shears tool row uses. Containers
+        /// in VS are liquid-agnostic (containable-ness lives on the liquid), so one list
+        /// serves every liquid. Cached per world.
+        /// </summary>
+        public List<ContainerOption> LiquidContainerOptions()
+        {
+            if (liquidContainerOptions != null) return liquidContainerOptions;
+
+            var families = new Dictionary<string, (List<ItemStack> Samples, float Capacity)>();
+            try
+            {
+                foreach (var block in capi.World.Blocks)
+                {
+                    if (!(block is BlockLiquidContainerBase container) || block.Code == null) continue;
+                    float capacity = container.CapacityLitres;
+                    if (capacity <= 0) continue;
+
+                    string path = block.Code.Path;
+                    int dash = path.IndexOf('-');
+                    string family = $"{block.Code.Domain}:{(dash > 0 ? path.Substring(0, dash) : path)}|{capacity}";
+
+                    if (!families.TryGetValue(family, out var entry))
+                        families[family] = entry = (new List<ItemStack>(), capacity);
+                    if (entry.Samples.Count < 8) entry.Samples.Add(new ItemStack(block));
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not list liquid containers: {0}", e.Message);
+            }
+
+            var options = new List<ContainerOption>();
+            foreach (var entry in families.Values)
+            {
+                var names = entry.Samples.Select(s => s.GetName())
+                    .Where(n => !string.IsNullOrEmpty(n)).Distinct().ToList();
+                if (names.Count == 0) continue;
+
+                string name = names.Count == 1 ? names[0] : SharedNameTail(entry.Samples);
+                if (string.IsNullOrEmpty(name)) name = names[0];
+                else if (char.IsLower(name[0])) name = char.ToUpper(name[0]) + name.Substring(1);
+
+                options.Add(new ContainerOption
+                {
+                    Sample = entry.Samples[0],
+                    Name = name,
+                    CapacityLitres = entry.Capacity
+                });
+            }
+
+            return liquidContainerOptions = options.OrderByDescending(o => o.CapacityLitres).ToList();
+        }
+
+        int maxCookingServings;
+
+        /// <summary>Servings the best cooking pot in this world does per batch — read off the
+        /// pot blocks themselves (BlockCookingContainer.MaxServingSize; vanilla's clay pot is
+        /// 6), so a mod adding a bigger pot raises the answer with no work here. The answer
+        /// cannot change within a session; worked out once per world.</summary>
+        int MaxCookingServings()
+        {
+            if (maxCookingServings > 0) return maxCookingServings;
+
+            int max = 0;
+            try
+            {
+                foreach (var block in capi.World.Blocks)
+                {
+                    if (block is BlockCookingContainer pot && pot.MaxServingSize > max)
+                        max = pot.MaxServingSize;
+                }
+            }
+            catch { /* fall through to the vanilla default */ }
+
+            return maxCookingServings = max > 0 ? max : 6;
         }
 
         /// <summary>
@@ -331,10 +1421,26 @@ namespace Tallybook
         {
             EnsureIndex();
 
-            if (shortCode == null || !byOutput.TryGetValue(shortCode, out var recipes))
-                return new List<RecipeVariantGroup>();
+            var groups = shortCode != null && byOutput.TryGetValue(shortCode, out var recipes)
+                ? BuildGroups(recipes)
+                : new List<RecipeVariantGroup>();
 
-            return BuildGroups(recipes);
+            // The other recipe kinds are real choices too — for acids, ferments, spirits
+            // and juices they are the only one. Grid groups stay ahead of most kinds as the
+            // default — EXCEPT smelting, which goes first: where both exist, the grid entry
+            // is invariably a recycler ("chisel a copper anvil back into ingots") while
+            // smelting is how anyone actually gets the item (Mark: "anvil chisel will be
+            // the least used method").
+            groups.InsertRange(0, SmithGroupsFor(shortCode));
+            groups.InsertRange(0, SmeltGroupsFor(shortCode));
+            groups.InsertRange(0, AlloyGroupsFor(shortCode));
+            groups.AddRange(CookingGroupsFor(shortCode));
+            groups.AddRange(BarrelGroupsFor(shortCode));
+            groups.AddRange(DistillGroupsFor(shortCode));
+            groups.AddRange(PressGroupsFor(shortCode));
+            groups.AddRange(GrindGroupsFor(shortCode));
+            groups.AddRange(CrushGroupsFor(shortCode));
+            return groups;
         }
 
         /// <summary>
@@ -418,9 +1524,38 @@ namespace Tallybook
                 DisplayName = stack.GetName(),
                 SelfPageCode = PageCode(stack)
             };
+
+            // A pinned liquid (sulfuric acid, milk) can only ever be carried inside a
+            // container, so its self count must look there — and its numbers must read in
+            // litres. TallyService switches both off for errand pins, whose hand-over check
+            // inspects bare slot stacks and whose counts come from dialogue in items.
+            var liquidProps = ContainableProps(stack);
+            if (liquidProps != null)
+            {
+                req.CountContainerContents = true;
+                req.ShowLitres = true;
+                req.ItemsPerLitre = liquidProps.ItemsPerLitre;
+            }
+
             req.ExactCodes.Add(stack.Collectible.Code.ToShortString());
             req.PresetSampleStack(stack);
             return req;
+        }
+
+        /// <summary>Is this the kind of item that lives in liquid containers? Asked of the
+        /// game's own containable props rather than the item's class, so modded liquids that
+        /// skip ItemLiquidPortion still qualify.</summary>
+        static bool IsContainableLiquid(ItemStack stack) => ContainableProps(stack) != null;
+
+        /// <summary>The stack's containable-liquid props, or null when it is not a liquid.</summary>
+        static WaterTightContainableProps ContainableProps(ItemStack stack)
+        {
+            try
+            {
+                var props = BlockLiquidContainerBase.GetContainableProps(stack);
+                return props != null && props.Containable ? props : null;
+            }
+            catch { return null; }
         }
 
         /// <summary>A plain stack for a known vanilla code — how the story tracker pins the
@@ -460,11 +1595,34 @@ namespace Tallybook
         {
             EnsureIndex();
 
-            var recipes = req.ExactCodes
+            // A liquid row's ExactCodes are its *vessels* when it came from a grid recipe;
+            // expanding it means asking how to make the liquid, never how to make a bucket.
+            var codes = (req.IsLiquid && req.CookingIngredient == null
+                ? (IEnumerable<string>)(req.LiquidCode != null ? new[] { req.LiquidCode } : Array.Empty<string>())
+                : req.ExactCodes).ToList();
+
+            var recipes = codes
                 .Where(code => byOutput.ContainsKey(code))
                 .SelectMany(code => byOutput[code]);
 
-            return BuildGroups(recipes, collapseOutputs: true);
+            var groups = BuildGroups(recipes, collapseOutputs: true);
+
+            // Every other recipe kind answers expansions too — this is what lets a barrel
+            // of brandy walk back through the boiler, the fermenting barrel and the fruit
+            // press to the orchard, one deliberate expand at a time.
+            foreach (var code in codes.Distinct())
+            {
+                groups.InsertRange(0, SmithGroupsFor(code));
+                groups.InsertRange(0, SmeltGroupsFor(code));
+                groups.InsertRange(0, AlloyGroupsFor(code));
+                groups.AddRange(CookingGroupsFor(code));
+                groups.AddRange(BarrelGroupsFor(code));
+                groups.AddRange(DistillGroupsFor(code));
+                groups.AddRange(PressGroupsFor(code));
+                groups.AddRange(GrindGroupsFor(code));
+                groups.AddRange(CrushGroupsFor(code));
+            }
+            return groups;
         }
 
         List<RecipeVariantGroup> BuildGroups(IEnumerable<GridRecipe> recipes, bool collapseOutputs = false)
@@ -653,17 +1811,146 @@ namespace Tallybook
         string MaterialSignature(GridRecipe recipe)
         {
             var parts = new List<string>();
-            foreach (var (ing, qty) in ConsumedIngredients(recipe)) parts.Add($"I{qty}x{MaterialToken(ing)}");
-            foreach (var (ing, _) in ToolCells(recipe)) parts.Add($"K{MaterialToken(ing)}");
+            foreach (var (ing, qty) in ConsumedIngredients(recipe)) parts.Add($"I{qty}x{MaterialToken(recipe, ing)}");
+            foreach (var (ing, _) in ToolCells(recipe)) parts.Add($"K{MaterialToken(recipe, ing)}");
             parts.Sort(StringComparer.Ordinal);
             return string.Join(";", parts);
         }
 
         /// <summary>Variant-blind identity of one ingredient: the author's word for what varies
         /// when there is one, else the matcher itself (a bare wildcard, regex or tag condition
-        /// is already variant-blind, so its own key is the right token).</summary>
-        static string MaterialToken(CraftingRecipeIngredient ing)
-            => string.IsNullOrEmpty(ing.Name) ? MatcherKey(ing) : $"{ing.Type}|${ing.Name}";
+        /// is already variant-blind, so its own key is the right token).
+        ///
+        /// A liquid-bearing ingredient's identity is the liquid, not the vessel: dough is
+        /// authored three times — bucket of water, bowl of water, jug of water — and to a
+        /// shopper those are one recipe wanting one litre of water, so they must share a token
+        /// (and thereby a group, whose requirement row then accepts every vessel). Litres stay
+        /// in the token so a recipe wanting more of the same liquid remains a distinct choice.</summary>
+        string MaterialToken(GridRecipe recipe, CraftingRecipeIngredient ing)
+        {
+            var demand = LiquidDemandFor(recipe, ing);
+            if (demand != null)
+            {
+                return "L|" + demand.Litres.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
+                     + "|" + demand.Content.Code;
+            }
+            return string.IsNullOrEmpty(ing.Name) ? MatcherKey(ing) : $"{ing.Type}|${ing.Name}";
+        }
+
+        // ---- liquid ingredients ---------------------------------------------------------
+
+        /// <summary>What a liquid-bearing ingredient really wants: which liquid, how much.</summary>
+        class LiquidDemand
+        {
+            /// <summary>The recipe's own requiresContent matcher, resolved. Counting delegates
+            /// to its Matches() — the same check BlockLiquidContainerBase.MatchesForCrafting
+            /// runs at craft time, so we can never claim liquid the grid would refuse.</summary>
+            public JsonItemStack Content;
+            public float Litres;
+            public float ItemsPerLitre;
+            /// <summary>Litres × items-per-litre: the demand in portion items, ≥ 1.</summary>
+            public int Items;
+        }
+
+        readonly Dictionary<(GridRecipe, CraftingRecipeIngredient), LiquidDemand> liquidDemands
+            = new Dictionary<(GridRecipe, CraftingRecipeIngredient), LiquidDemand>();
+
+        readonly Dictionary<string, bool> liquidContainerMatchers = new Dictionary<string, bool>();
+
+        /// <summary>
+        /// The liquid an ingredient demands inside its container, or null for ordinary
+        /// ingredients. Mirrors BlockLiquidContainerBase.MatchesForCrafting's lookup order
+        /// (verified in the 1.22.6 decompile): the ingredient's own recipeAttributes
+        /// (requiresContent + requiresLitres — the dough style), else the recipe-level
+        /// attributes.liquidContainerProps (the bandage style). The recipe-level form names no
+        /// ingredient, and at craft time only liquid-container collectibles ever run the
+        /// check — so it is applied here only to ingredients a liquid container can satisfy.
+        /// </summary>
+        LiquidDemand LiquidDemandFor(GridRecipe recipe, CraftingRecipeIngredient ing)
+        {
+            if (ing == null) return null;
+            // Nearly every ingredient of every recipe passes through here when groups are
+            // built; the ones that can possibly carry a liquid are the handful with any
+            // attributes at all, so answer "no" for the rest without touching the cache.
+            if (ing.RecipeAttributes == null && recipe?.Attributes == null) return null;
+            if (liquidDemands.TryGetValue((recipe, ing), out var cached)) return cached;
+
+            LiquidDemand demand = null;
+            try
+            {
+                JsonObject props = null;
+                var own = ing.RecipeAttributes;
+                if (own?.Exists == true && own["requiresContent"].Exists) props = own;
+                else
+                {
+                    var recipeLevel = recipe?.Attributes?["liquidContainerProps"];
+                    if (recipeLevel?.Exists == true && recipeLevel["requiresContent"].Exists
+                        && IsLiquidContainerMatcher(ing))
+                    {
+                        props = recipeLevel;
+                    }
+                }
+
+                if (props != null)
+                {
+                    var content = props["requiresContent"].AsObject<JsonItemStack>(null);
+                    if (content != null && content.Resolve(capi.World, "[tallybook] liquid ingredient"))
+                    {
+                        float litres = props["requiresLitres"].AsFloat(1f);
+                        float ipl = BlockLiquidContainerBase
+                            .GetContainableProps(content.ResolvedItemstack)?.ItemsPerLitre ?? 1f;
+                        demand = new LiquidDemand
+                        {
+                            Content = content,
+                            Litres = litres,
+                            ItemsPerLitre = ipl,
+                            Items = Math.Max(1, (int)Math.Round(litres * ipl))
+                        };
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not read a liquid ingredient: {0}", e.Message);
+            }
+
+            // Negative results cache too — MaterialToken asks for every ingredient of every
+            // recipe it groups, and re-parsing the answer "no" would be the whole cost.
+            liquidDemands[(recipe, ing)] = demand;
+            return demand;
+        }
+
+        /// <summary>Could a liquid container satisfy this matcher? Exact ingredients answer
+        /// from their resolved stack; wildcards ask the world once and the answer is cached —
+        /// only recipes that carry liquidContainerProps ever get here.</summary>
+        bool IsLiquidContainerMatcher(CraftingRecipeIngredient ing)
+        {
+            if (ing.ResolvedItemStack != null)
+                return ing.ResolvedItemStack.Collectible is BlockLiquidContainerBase;
+
+            string key = MatcherKey(ing);
+            if (liquidContainerMatchers.TryGetValue(key, out var known)) return known;
+
+            bool found = false;
+            try
+            {
+                var candidates = ing.Type == EnumItemClass.Block
+                    ? capi.World.Blocks.Cast<CollectibleObject>()
+                    : capi.World.Items.Cast<CollectibleObject>();
+                foreach (var obj in candidates)
+                {
+                    if (!(obj is BlockLiquidContainerBase) || obj.Code == null) continue;
+                    if (ing.Code != null && ing.Code.Path.Contains('*')
+                        && !WildcardUtil.Match(ing.Code, obj.Code)) continue;
+                    if (!ing.SatisfiesAsIngredient(new ItemStack(obj), false)) continue;
+                    found = true;
+                    break;
+                }
+            }
+            catch { /* treated as not a container */ }
+
+            return liquidContainerMatchers[key] = found;
+        }
 
         /// <summary>
         /// Collapse a variant group into one requirement per ingredient row, each accepting
@@ -671,13 +1958,36 @@ namespace Tallybook
         /// </summary>
         public List<Requirement> BuildRequirements(RecipeVariantGroup group, bool tools = false)
         {
+            if (group?.Cooking != null) return BuildCookingRequirements(group, tools);
+            if (group?.Barrel != null) return BuildBarrelRequirements(group, tools);
+            if (group?.Alloy != null) return BuildAlloyRequirements(group, tools);
+            if (group?.Smithing != null) return BuildSmithingRequirements(group, tools);
+            if (group?.DistillFrom != null || group?.PressFrom != null)
+                return BuildAttributeRequirements(group, tools);
+
             var reqs = new List<Requirement>();
             if (group?.Recipes == null || group.Recipes.Count == 0) return reqs;
 
-            var baseCells = tools ? ToolCells(group.Recipes[0]) : ConsumedIngredients(group.Recipes[0]);
+            var representative = group.Recipes[0];
+            var baseCells = tools ? ToolCells(representative) : ConsumedIngredients(representative);
             foreach (var (ing, qty) in baseCells)
             {
-                var req = new Requirement { Quantity = qty, IsTool = tools };
+                var req = new Requirement { Quantity = qty, CellQuantity = qty, IsTool = tools };
+
+                // A container-of-liquid ingredient's real demand is the liquid: rescale the
+                // row to portion items (the unit the game itself checks litres in), and keep
+                // the container matchers — counting accepts the liquid only inside a vessel
+                // the recipe accepts.
+                var demand = tools ? null : LiquidDemandFor(representative, ing);
+                if (demand != null)
+                {
+                    req.LiquidMatcher = demand.Content;
+                    req.LiquidStack = demand.Content.ResolvedItemstack;
+                    req.ItemsPerLitre = demand.ItemsPerLitre;
+                    req.LitresPerCraft = demand.Litres * qty;
+                    req.Quantity = demand.Items * qty;
+                }
+
                 AddMatcher(req, ing);
                 reqs.Add(req);
             }
@@ -692,7 +2002,9 @@ namespace Tallybook
 
                 for (int i = 0; i < cells.Count; i++)
                 {
-                    if (cells[i].Quantity != reqs[i].Quantity) continue;
+                    // Grid-cell count, not Quantity — a liquid row's Quantity was rescaled to
+                    // portion items and would never equal another recipe's cell count again.
+                    if (cells[i].Quantity != reqs[i].CellQuantity) continue;
                     // Non-collapsed groups only: same *ingredient*, not just same amount. Cell
                     // order is grid order while the group key's material signature is sorted,
                     // so a variant recipe with the same materials in a permuted grid lands
@@ -705,7 +2017,8 @@ namespace Tallybook
                     // codes and no name, and refusing those merges would shrink "any clay"
                     // back to whichever clay the representative uses.
                     if (!group.Collapsed
-                        && MaterialToken(cells[i].Ingredient) != MaterialToken(reqs[i].Sample)) continue;
+                        && MaterialToken(recipe, cells[i].Ingredient)
+                           != MaterialToken(representative, reqs[i].Sample)) continue;
                     AddMatcher(reqs[i], cells[i].Ingredient);
                 }
             }
@@ -713,7 +2026,21 @@ namespace Tallybook
             foreach (var req in reqs)
             {
                 ResolveVariants(req);
-                req.DisplayName = BuildDisplayName(req);
+                if (req.IsLiquid)
+                {
+                    // The row is the liquid, said as the liquid: "Water (in Bowl)" — the
+                    // vessel stays in the name because an accepted container is still part
+                    // of the demand. Icon likewise: the report this fixes was a dye recipe
+                    // showing a bare bowl.
+                    string liquid = req.LiquidStack?.GetName() ?? BuildDisplayName(req);
+                    string vessel = ContainerLabel(req);
+                    req.DisplayName = vessel == null ? liquid : $"{liquid} (in {vessel})";
+                    req.PresetSampleStack(req.LiquidStack);
+                }
+                else
+                {
+                    req.DisplayName = BuildDisplayName(req);
+                }
             }
 
             // Remember what this recipe takes, so a choice between recipes can be made on
@@ -722,9 +2049,13 @@ namespace Tallybook
             {
                 // With quantities: the hunter backpack's recipes differ by *how many* pelts,
                 // not by which, so a list of bare names makes four distinct recipes read as
-                // four identical ones.
+                // four identical ones. Liquid rows state litres — "100 × Water" would be
+                // portion items wearing an item count's clothes.
                 var summary = string.Join(", ",
-                    reqs.Select(r => $"{r.Quantity} × {StripVariants(r.DisplayName)}"));
+                    reqs.Select(r => r.IsLiquid
+                        ? $"{r.LitresText(r.Quantity)} L {StripVariants(r.DisplayName)}"
+                        : $"{r.Quantity} × {StripVariants(r.DisplayName)}"));
+                group.MaterialsBrief = summary;
 
                 // And what it takes but does not use up. Two recipes can want the same
                 // materials and differ only in demanding a schematic; leaving that out makes
@@ -735,6 +2066,318 @@ namespace Tallybook
                 if (kept.Count > 0) summary += $" — needs {string.Join(", ", kept)}";
 
                 group.Materials = summary;
+            }
+            return reqs;
+        }
+
+        /// <summary>
+        /// Requirement rows for a cooking-pot recipe. Solids come from the ingredient's
+        /// resolved valid stacks (counting also delegates to the ingredient's own Matches, the
+        /// game's authority on what may go in the pot); a liquid ingredient (portionSizeLitres)
+        /// becomes a liquid row counted from any carried container — cooking pours the liquid
+        /// in, so no vessel is part of the demand. Quantities use MinQuantity: the cheapest
+        /// honest floor, same principle as a group's cheapest grid layout.
+        /// </summary>
+        List<Requirement> BuildCookingRequirements(RecipeVariantGroup group, bool tools)
+        {
+            var reqs = new List<Requirement>();
+            // The pot and the fire are the mechanic, not data the recipe carries — inventing
+            // a pot requirement would mean guessing item codes by name.
+            if (tools) return reqs;
+
+            foreach (var cing in group.Cooking.Ingredients ?? Array.Empty<CookingRecipeIngredient>())
+            {
+                if (cing == null) continue;
+                int qty = Math.Max(1, cing.MinQuantity);
+                var req = new Requirement
+                {
+                    Quantity = qty,
+                    CellQuantity = qty,
+                    CookingIngredient = cing,
+                    VariantLabel = cing.TypeName ?? cing.Code
+                };
+
+                var samples = new List<ItemStack>();
+                foreach (var vs in cing.ValidStacks ?? Array.Empty<CookingRecipeStack>())
+                {
+                    var s = vs?.ResolvedItemstack;
+                    if (s?.Collectible?.Code == null) continue;
+                    samples.Add(s);
+                    req.ExactCodes.Add(s.Collectible.Code.ToShortString());
+                }
+
+                var liquid = cing.PortionSizeLitres > 0 ? samples.FirstOrDefault(IsContainableLiquid) : null;
+                if (liquid != null)
+                {
+                    float ipl = BlockLiquidContainerBase.GetContainableProps(liquid)?.ItemsPerLitre ?? 1f;
+                    req.LiquidMatcher = (cing.ValidStacks ?? Array.Empty<CookingRecipeStack>())
+                        .FirstOrDefault(vs => vs?.ResolvedItemstack == liquid);
+                    req.LiquidStack = liquid;
+                    req.AnyVessel = true;
+                    req.ItemsPerLitre = ipl;
+                    req.LitresPerCraft = cing.PortionSizeLitres * qty;
+                    req.Quantity = Math.Max(1, (int)Math.Round(req.LitresPerCraft * ipl));
+                    req.DisplayName = liquid.GetName();
+                    req.PresetSampleStack(liquid);
+                }
+                else
+                {
+                    req.MatchedVariants = req.ExactCodes.Count;
+                    if (samples.Count > 0) req.PresetSampleStacks(samples);
+                    req.DisplayName = BuildDisplayName(req);
+                }
+                reqs.Add(req);
+            }
+
+            if (group.Materials == null)
+            {
+                var summary = string.Join(", ",
+                    reqs.Select(r => r.IsLiquid
+                        ? $"{r.LitresText(r.Quantity)} L {StripVariants(r.DisplayName)}"
+                        : $"{r.Quantity} × {StripVariants(r.DisplayName)}"));
+                group.MaterialsBrief = summary;
+
+                // Say what one pot can do: for a liquid output that is a hard per-load cap
+                // ("up to 6 L per pot"), which is exactly the number a player planning a big
+                // cook needs to see.
+                string perLoad = " — cooked in a pot";
+                var outputProps = ContainableProps(group.OutputStack);
+                if (outputProps != null && group.ServingsPerBatch > 0)
+                {
+                    float ipl = outputProps.ItemsPerLitre <= 0 ? 1f : outputProps.ItemsPerLitre;
+                    float litres = group.ServingsPerBatch * group.OutputQuantity / ipl;
+                    perLoad += ", up to " + litres.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
+                             + " L per pot";
+                }
+
+                group.Materials = summary.Length > 0 ? summary + perLoad : perLoad.Substring(3);
+            }
+            return reqs;
+        }
+
+        /// <summary>
+        /// Requirement rows for a sealed-barrel recipe. Liquid ingredients (litres on the
+        /// ingredient) become any-vessel liquid rows — the barrel is filled by pouring —
+        /// matched by the recipe's own ingredient (a CraftingRecipeIngredient). Solids count
+        /// normally; kept ingredients (consume:false) land in the tools list, as with grid
+        /// recipes. One craft = the recipe's base quantities; seal-count math lives on the
+        /// group (BatchLitres / LitresPerCraft).
+        /// </summary>
+        List<Requirement> BuildBarrelRequirements(RecipeVariantGroup group, bool tools)
+        {
+            var reqs = new List<Requirement>();
+            foreach (var ing in group.Barrel.Ingredients ?? Array.Empty<BarrelRecipeIngredient>())
+            {
+                if (ing == null || IsKept(ing) != tools) continue;
+
+                var req = new Requirement { IsTool = tools };
+                if (ing.Litres > 0)
+                {
+                    var liquid = ing.ResolvedItemStack;
+                    float ipl = liquid == null ? 1f : (ContainableProps(liquid)?.ItemsPerLitre ?? 1f);
+                    req.LiquidStack = liquid;
+                    req.LiquidContentMatcher = ing;
+                    req.AnyVessel = true;
+                    req.ItemsPerLitre = ipl;
+                    req.LitresPerCraft = ing.Litres;
+                    req.Quantity = Math.Max(1, (int)Math.Round(ing.Litres * ipl));
+                    req.CellQuantity = req.Quantity;
+                    AddMatcher(req, ing);
+                    req.DisplayName = liquid?.GetName() ?? IngredientName(ing);
+                    if (liquid != null) req.PresetSampleStack(liquid);
+                }
+                else
+                {
+                    req.Quantity = Math.Max(1, ing.Quantity);
+                    req.CellQuantity = req.Quantity;
+                    AddMatcher(req, ing);
+                    ResolveVariants(req);
+                    req.DisplayName = BuildDisplayName(req);
+                }
+                reqs.Add(req);
+            }
+
+            if (!tools && group.Materials == null)
+            {
+                var summary = string.Join(", ",
+                    reqs.Select(r => r.IsLiquid
+                        ? $"{r.LitresText(r.Quantity)} L {StripVariants(r.DisplayName)}"
+                        : $"{r.Quantity} × {StripVariants(r.DisplayName)}"));
+                group.MaterialsBrief = summary;
+                int days = (int)Math.Round(group.SealHours / 24.0);
+                string how = days > 0
+                    ? $" — sealed in a barrel, ~{days} day{(days == 1 ? "" : "s")}"
+                    : " — mixed in a barrel";
+                group.Materials = summary.Length > 0 ? summary + how : how.Substring(3);
+            }
+            return reqs;
+        }
+
+        /// <summary>
+        /// Requirement rows for a crucible alloy: one row per METAL, counted in the game's
+        /// own metal units (an ingot-equivalent is 100) and accepting only crucible-fitting
+        /// forms — the recipe JSON names ingots as the unit the ratios are written against,
+        /// while the crucible takes nuggets and bits (Mark). One craft = one output, at the
+        /// midpoint of each metal's ratio window (60/25/15 units per bismuth bronze ingot);
+        /// row names carry the real window.
+        /// </summary>
+        List<Requirement> BuildAlloyRequirements(RecipeVariantGroup group, bool tools)
+        {
+            const int UnitsPerBase = 100;
+            var reqs = new List<Requirement>();
+            if (tools) return reqs;
+
+            int craftSize = Math.Max(1, group.OutputQuantity);
+            foreach (var ing in group.Alloy.Ingredients)
+            {
+                var baseStack = ing?.ResolvedItemstack;
+                var baseCode = baseStack?.Collectible?.Code?.ToShortString();
+                if (baseCode == null) continue;
+
+                float mid = (ing.MinRatio + ing.MaxRatio) / 2f;
+                var req = new Requirement
+                {
+                    Quantity = Math.Max(1, (int)Math.Round(mid * craftSize * UnitsPerBase)),
+                    UnitsPerItem = new Dictionary<string, int>()
+                };
+                req.CellQuantity = req.Quantity;
+
+                // Only forms the crucible actually takes count: everything that smelts
+                // INTO this metal — nuggets, bits, modded equivalents — each weighed by
+                // its share (20 nuggets to the ingot makes a nugget 5 units). The ingot
+                // itself is deliberately NOT counted: a crucible refuses whole ingots
+                // (Mark) — the player chisels them into bits first, at which point the
+                // bits count. Same honesty rule as liquids in unaccepted vessels.
+                var samples = new List<ItemStack>();
+                if (smeltByOutput != null && smeltByOutput.TryGetValue(baseCode, out var sources))
+                {
+                    foreach (var (input, output, ratio) in sources)
+                    {
+                        var code = input?.Collectible?.Code?.ToShortString();
+                        if (code == null || ratio <= 0) continue;
+                        int per = (int)Math.Round(UnitsPerBase * Math.Max(1, output.StackSize) / ratio);
+                        if (per <= 0) continue;
+                        req.UnitsPerItem[code] = per;
+                        req.ExactCodes.Add(code);
+                        if (samples.Count < 8) samples.Add(input);
+                    }
+                }
+                if (req.UnitsPerItem.Count == 0)
+                {
+                    // A mod alloy whose metal has no meltable forms we can see: the base
+                    // item is the only countable thing left — degraded but not blind.
+                    req.UnitsPerItem[baseCode] = UnitsPerBase;
+                    req.ExactCodes.Add(baseCode);
+                    samples.Add(baseStack);
+                }
+
+                req.MatchedVariants = req.ExactCodes.Count;
+                req.PresetSampleStacks(samples);
+                req.DisplayName = $"{MetalName(baseStack)} — bits, nuggets or any meltable "
+                    + $"({Percent(ing.MinRatio)}–{Percent(ing.MaxRatio)}%)";
+                reqs.Add(req);
+            }
+
+            if (group.Materials == null)
+            {
+                group.MaterialsBrief = string.Join(", ",
+                    reqs.Select(r => $"{r.Quantity} units {StripVariants(r.DisplayName)}"));
+                group.Materials = group.MaterialsBrief + " — alloyed in a crucible";
+            }
+            return reqs;
+        }
+
+        static string Percent(float ratio) => Math.Round(ratio * 100).ToString(
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        /// <summary>The metal's bare name via the game's own material-* lang convention
+        /// ("ingot-bismuthbronze" → "Bismuth bronze") — the same names the handbook's
+        /// "Alloyed from" line uses. Falls back to the item's display name when a modded
+        /// metal skips the convention.</summary>
+        static string MetalName(ItemStack baseStack)
+        {
+            string path = baseStack?.Collectible?.Code?.Path;
+            int dash = path?.IndexOf('-') ?? -1;
+            if (dash > 0)
+            {
+                string key = "material-" + path.Substring(dash + 1);
+                string name = Lang.Get(key);
+                if (name != key) return name;
+            }
+            return baseStack?.GetName() ?? "?";
+        }
+
+        /// <summary>The longest run of words all sample names START with: "Copper ingot" +
+        /// "Copper nugget" → "Copper". The head-side twin of SharedNameTail, for families
+        /// whose names vary at the end.</summary>
+        static string SharedNameHead(List<ItemStack> samples)
+        {
+            if (samples == null || samples.Count < 2) return null;
+            string[] head = null;
+            foreach (var stack in samples)
+            {
+                var words = stack?.GetName()?.Split(' ');
+                if (words == null || words.Length == 0) return null;
+                if (head == null) { head = words; continue; }
+
+                int shared = 0;
+                while (shared < head.Length && shared < words.Length
+                       && string.Equals(head[shared], words[shared], StringComparison.OrdinalIgnoreCase)) shared++;
+                if (shared == 0) return null;
+                if (shared < head.Length) head = head.Take(shared).ToArray();
+            }
+            return head == null ? null : string.Join(" ", head);
+        }
+
+        /// <summary>
+        /// Requirement rows for the synthesized kinds: distillation is one any-vessel liquid
+        /// row of 1/ratio litres per litre distilled; pressing is one item per craft.
+        /// </summary>
+        List<Requirement> BuildAttributeRequirements(RecipeVariantGroup group, bool tools)
+        {
+            var reqs = new List<Requirement>();
+            if (tools) return reqs;
+
+            if (group.DistillFrom != null)
+            {
+                float ipl = ContainableProps(group.DistillFrom)?.ItemsPerLitre ?? 1f;
+                float litresPerCraft = 1f / group.DistillRatio;
+                var req = new Requirement
+                {
+                    LiquidStack = group.DistillFrom,
+                    AnyVessel = true,
+                    ItemsPerLitre = ipl,
+                    LitresPerCraft = litresPerCraft,
+                    Quantity = Math.Max(1, (int)Math.Round(litresPerCraft * ipl)),
+                    DisplayName = group.DistillFrom.GetName()
+                };
+                req.CellQuantity = req.Quantity;
+                req.ExactCodes.Add(group.DistillFrom.Collectible.Code.ToShortString());
+                req.PresetSampleStack(group.DistillFrom);
+                reqs.Add(req);
+
+                if (group.Materials == null)
+                {
+                    group.MaterialsBrief = $"{req.LitresText(req.Quantity)} L {StripVariants(req.DisplayName)} per litre";
+                    group.Materials = group.MaterialsBrief + " — distilled in a boiler";
+                }
+            }
+            else if (group.PressFrom != null)
+            {
+                int qty = Math.Max(1, (int)Math.Round(group.InputsPerCraft));
+                var req = new Requirement { Quantity = qty, CellQuantity = qty };
+                req.ExactCodes.Add(group.PressFrom.Collectible.Code.ToShortString());
+                req.MatchedVariants = 1;
+                req.PresetSampleStack(group.PressFrom);
+                req.DisplayName = group.PressFrom.GetName();
+                reqs.Add(req);
+
+                if (group.Materials == null)
+                {
+                    group.MaterialsBrief = $"{qty} × {req.DisplayName}";
+                    group.Materials = group.MaterialsBrief
+                        + (group.MethodLabel != null ? $" — {group.MethodLabel}" : "");
+                }
             }
             return reqs;
         }
@@ -843,6 +2486,63 @@ namespace Tallybook
             return string.IsNullOrEmpty(what)
                 ? $"{name} (any, {variants} variants)"
                 : $"{name} (any {what}, {variants} variants)";
+        }
+
+        /// <summary>The vessels a liquid row accepts, for its name: "Bucket", "Bucket / Bowl",
+        /// "Bucket / Bowl / …". Reads the container samples, so it must run before the row's
+        /// icon is repointed at the liquid.</summary>
+        string ContainerLabel(Requirement req)
+        {
+            var names = new List<string>();
+            void AddName(ItemStack s)
+            {
+                var n = s?.GetName();
+                if (!string.IsNullOrEmpty(n) && !names.Contains(n)) names.Add(n);
+            }
+
+            foreach (var s in req.SampleStacks(capi.World)) AddName(s);
+            // A merged row (bucket exact + bowl/jug wildcards) short-circuits ResolveVariants
+            // on its exact codes, leaving the wildcard vessels sampleless — and a label that
+            // hides an accepted vessel tells the player their bowl won't do.
+            foreach (var m in req.OtherMatchers)
+            {
+                if (m.ResolvedItemStack == null) AddName(FirstMatchSample(m));
+            }
+
+            if (names.Count == 0) return null;
+            if (names.Count <= 2) return string.Join(" / ", names);
+            return $"{names[0]} / {names[1]} / …";
+        }
+
+        readonly Dictionary<string, ItemStack> matcherSamples = new Dictionary<string, ItemStack>();
+
+        /// <summary>First collectible in the world this matcher accepts, cached per matcher —
+        /// the answer cannot change within a session.</summary>
+        ItemStack FirstMatchSample(CraftingRecipeIngredient ing)
+        {
+            string key = MatcherKey(ing);
+            if (matcherSamples.TryGetValue(key, out var known)) return known;
+
+            ItemStack sample = null;
+            try
+            {
+                var candidates = ing.Type == EnumItemClass.Block
+                    ? capi.World.Blocks.Cast<CollectibleObject>()
+                    : capi.World.Items.Cast<CollectibleObject>();
+                foreach (var obj in candidates)
+                {
+                    if (obj?.Code == null) continue;
+                    if (ing.Code != null && ing.Code.Path.Contains('*')
+                        && !WildcardUtil.Match(ing.Code, obj.Code)) continue;
+                    var stack = new ItemStack(obj);
+                    if (!ing.SatisfiesAsIngredient(stack, false)) continue;
+                    sample = stack;
+                    break;
+                }
+            }
+            catch { /* no sample is just a shorter label */ }
+
+            return matcherSamples[key] = sample;
         }
 
         /// <summary>"Board (any wood, 12 variants)" → "Board": a materials summary wants the

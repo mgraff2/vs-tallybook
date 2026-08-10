@@ -10,7 +10,7 @@ using Vintagestory.GameContent;
 
 namespace Tallybook
 {
-    enum TbScreen { List, ConfirmClear, Options, ChooseRecipe }
+    enum TbScreen { List, ConfirmClear, Options, ChooseRecipe, LiquidCalc }
 
     /// <summary>Errands from villagers are a different kind of thing from things you decided
     /// to build, so they get their own tab rather than being mixed in and distinguished only
@@ -109,7 +109,7 @@ namespace Tallybook
     /// </summary>
     public class GuiDialogTallybook : GuiDialog
     {
-        const double DW = 818;                 // content width
+        const double DW = 934;                 // content width
 
         /// <summary>One text size for the whole mod: the HUD's slider also governs the table
         /// (Mark — "just link their font sizes together"). The right size is the one that
@@ -132,8 +132,9 @@ namespace Tallybook
         const double ColWant = 414;            // how many I want (pin rows only)
         const double ColAct1 = 526;            // expand / collapse (or Gather on errands)
         const double ColAct2 = 610;            // recipe switcher, once expanded
-        const double ColBook = 654;            // handbook
-        const double ColUnpin = 742;
+        const double ColCalc = 654;            // volume calculator (liquid pins only)
+        const double ColBook = 770;            // handbook
+        const double ColUnpin = 858;
         const double IndentW = 16;
 
         /// <summary>How long Unpin must be held. Long enough that a stray click cannot wipe a
@@ -398,6 +399,7 @@ namespace Tallybook
                 case TbScreen.ConfirmClear: ComposeConfirmClear(composer); break;
                 case TbScreen.Options: ComposeOptions(composer); break;
                 case TbScreen.ChooseRecipe: ComposeChooseRecipe(composer); break;
+                case TbScreen.LiquidCalc: ComposeLiquidCalc(composer); break;
             }
 
             var replaced = SingleComposer;
@@ -413,6 +415,7 @@ namespace Tallybook
 
             if (screen == TbScreen.List) RestoreCountInputs();
             else if (screen == TbScreen.Options) RestoreOptionSwitches();
+            else if (screen == TbScreen.LiquidCalc) RestoreCalcInput();
         }
 
         string TitleFor() => screen switch
@@ -421,6 +424,7 @@ namespace Tallybook
             TbScreen.ConfirmClear => "Tallybook — Clear list",
             TbScreen.Options => "Tallybook — Options",
             TbScreen.ChooseRecipe => "Tallybook — How do you want to make it?",
+            TbScreen.LiquidCalc => "Tallybook — Liquid calculator",
             _ => "Tallybook",
         };
 
@@ -657,7 +661,19 @@ namespace Tallybook
                     c.AddInteractiveElement(new GuiElementItemIcon(capi, stacks, config, EB(ColIcon + indent, ry + 2, 20, 20)));
             }
 
-            void Progress(int have, int needed, bool dim)
+            void RowHandbookButton(Requirement req, double rowY)
+            {
+                // Ingredient and tool rows can visit the handbook too (Mark) — any row that
+                // names an item should be able to show its page. The sample stack is what
+                // the row's icon draws, so the page always matches the picture; on a liquid
+                // row that is the liquid itself, not the vessel.
+                var stack = req?.SampleStacks(capi.World).FirstOrDefault();
+                if (stack?.Collectible == null) return;
+                c.AddSmallButton("Handbook", () => OpenHandbookForStack(stack, stack.GetName()),
+                    EB(ColBook, rowY, 84, 26), EnumButtonStyle.Small);
+            }
+
+            void Progress(int have, int needed, bool dim, Requirement req = null)
             {
                 // Only glyphs the game's fonts actually carry (Montserrat/Lora/Almendra have
                 // no ✓, ○ or ◑ — those drew as tofu boxes, the "little boxes" of Mark's
@@ -665,8 +681,9 @@ namespace Tallybook
                 // sign reads as a check, and faint dot → bullet → check is its own progress
                 // bar.
                 string mark = have >= needed ? "√" : have > 0 ? "•" : "·";
+                string counts = req?.CountText(have, needed) ?? $"{have}/{needed}";
                 var pf = font.Clone().WithColor(dim ? TallybookConfig.ParseColor(config.ColorNone) : StatusColor(have, needed));
-                c.AddStaticText($"{mark} {have}/{needed}", pf, EB(ColProg, ry + 4, 80, 24));
+                c.AddStaticText($"{mark} {counts}", pf, EB(ColProg, ry + 4, 80, 24));
             }
 
             switch (row)
@@ -708,10 +725,18 @@ namespace Tallybook
                     if (pin.QuestGiver != null) title += $"  (for {pin.QuestGiver})";
                     if (pin.Active && pin.Complete) title += " — got it";
                     else if (pin.Active && pin.Craftable) title += " — ready to craft";
+                    // Batched recipes say how many rounds cover what is still missing —
+                    // pot loads for cooking, barrel seals (with the wait) for ferments —
+                    // so a big cook is planned as batches, not as a mystery.
+                    if (pin.Active && !pin.Complete)
+                    {
+                        string batches = TallyTree.BatchText(pin.CountInItems - pin.Have, pin.Group);
+                        if (batches != null) title += $" — {batches}";
+                    }
                     double titleW = ColProg - nameX - 10;
                     FittedText(c, title, titleFont, EB(nameX, ry + 3, titleW, 26), titleW);
 
-                    Progress(pin.Have, pin.Count, !pin.Active);
+                    Progress(pin.Have, pin.CountInItems, !pin.Active, pin.SelfNode?.Req);
 
                     // Plain text input, not AddNumberInput: the number input draws its own
                     // up/down spinner arrows, which duplicate the − / + buttons flanking it.
@@ -719,6 +744,12 @@ namespace Tallybook
                     c.AddSmallButton("-", () => { StepCount(pin, -1); return true; }, EB(ColWant, y, 26, 26), EnumButtonStyle.Small);
                     c.AddTextInput(EB(ColWant + 30, y, 46, 26), val => OnCountTyped(pin, val), font, "cnt-" + pin.Key);
                     c.AddSmallButton("+", () => { StepCount(pin, +1); return true; }, EB(ColWant + 80, y, 26, 26), EnumButtonStyle.Small);
+                    if (pin.LiquidUnits)
+                    {
+                        // The one place the unit switch could surprise: the field itself.
+                        c.AddHoverText("Litres — liquids are counted in L.", font, 200,
+                            EB(ColWant + 30, y, 46, 26));
+                    }
 
                     if (pin.QuestGiver != null)
                     {
@@ -781,6 +812,20 @@ namespace Tallybook
                         }
                     }
 
+                    // Liquid pins carry the volume calculator in a column of their own —
+                    // "five barrels" instead of litre arithmetic — leaving Expand/Collapse
+                    // and the recipe cycler exactly where every other pin has them (a first
+                    // version displaced those, and a liquid with twenty recipes silently
+                    // planned down the first one with no visible way to choose — Mark).
+                    if (pin.LiquidUnits && pin.QuestGiver == null)
+                    {
+                        c.AddSmallButton("Volume Calc", () => { OpenLiquidCalc(pin); return true; },
+                            EB(ColCalc, y, 110, 26), EnumButtonStyle.Small);
+                        c.AddHoverText(
+                            "Volume calculator — plan by containers (barrels, buckets…) instead of litres.",
+                            font, 260, EB(ColCalc, y, 110, 26));
+                    }
+
                     // Back to where pinning started: the handbook page IS pin.Key, so the
                     // page that opens is exactly the variant that was pinned (spec: the
                     // handbook owns recipe layouts; this list owns the counting).
@@ -801,9 +846,14 @@ namespace Tallybook
 
                     var nodeFont = font.Clone().WithColor(StatusColor(node.Have, node.Needed));
                     string name = node.Req.DisplayName + (node.ReadyToCraft ? "  (ready to craft)" : "");
+                    if (node.Expanded)
+                    {
+                        string batches = TallyTree.BatchText(node.Needed - node.Have, node.Choice);
+                        if (batches != null) name += $"  ({batches})";
+                    }
                     FittedText(c, name, nodeFont, EB(nx, ry + 4, NameW(indent), 24), NameW(indent));
 
-                    Progress(node.Have, node.Needed, false);
+                    Progress(node.Have, node.Needed, false, node.Req);
 
                     if (node.Expanded)
                     {
@@ -827,6 +877,8 @@ namespace Tallybook
                         c.AddSmallButton("Expand", () => TryExpand(nr.Pin, node),
                             EB(ColAct1, y, 80, 26), EnumButtonStyle.Small);
                     }
+
+                    RowHandbookButton(node.Req, y);
                     break;
                 }
 
@@ -840,6 +892,8 @@ namespace Tallybook
                     FittedText(c, tr.Tool.DisplayName + " (tool)", toolFont,
                         EB(nx, ry + 4, NameW(indent), 24), NameW(indent));
                     c.AddStaticText(tr.Tool.Present ? "√ carried" : "× missing", toolFont, EB(ColProg, y + 4, 100, 24));
+
+                    RowHandbookButton(tr.Tool, y);
                     break;
                 }
 
@@ -1248,7 +1302,12 @@ namespace Tallybook
             }
         }
 
-        bool OpenHandbookFor(Pin pin)
+        bool OpenHandbookFor(Pin pin) => OpenHandbookForStack(pin.Stack, pin.DisplayName);
+
+        /// <summary>Every row is somebody's item — ingredient and tool rows share the pin
+        /// rows' whole handbook flow (first-open dance, page-build wait, fallbacks), keyed
+        /// on the row's sample stack.</summary>
+        bool OpenHandbookForStack(ItemStack stack, string displayName)
         {
             // Derive the page from the stack, NOT from pin.Key: a key carries the quest giver
             // ("…|for:Agnieszka") so an errand and your own goal can be separate rows, and the
@@ -1256,10 +1315,10 @@ namespace Tallybook
             // must take the same IHandBookPageCodeProvider hop the game's own
             // open-handbook-for-stack flow takes, or any collectible that names its
             // representative page (meals, mod classes) sends us to a code the index never held.
-            string page = RecipeProbe.HandbookPageCode(pin.Stack, capi.World);
+            string page = RecipeProbe.HandbookPageCode(stack, capi.World);
             if (page == null)
             {
-                notice = $"No handbook page for {pin.DisplayName}.";
+                notice = $"No handbook page for {displayName}.";
                 Recompose();
                 return true;
             }
@@ -1278,11 +1337,11 @@ namespace Tallybook
             // is paused (an already-open handbook pauses singleplayer) — a delayed callback
             // would not fire until unpause, and registering one then is the crash a ModDB
             // report caught in developer mode.
-            capi.Event.EnqueueMainThreadTask(() => ShowHandbookPage(pin, page), "tallybook-showpage");
+            capi.Event.EnqueueMainThreadTask(() => ShowHandbookPage(stack, displayName, page), "tallybook-showpage");
             return true;
         }
 
-        void ShowHandbookPage(Pin pin, string page)
+        void ShowHandbookPage(ItemStack stack, string displayName, string page)
         {
             var handbook = HandbookPin.FindDialog(capi);
             if (handbook == null)
@@ -1297,9 +1356,9 @@ namespace Tallybook
             // as the button being broken no matter how well the landing works afterwards.
             if (HandbookPin.StillLoadingPages(handbook))
                 capi.ShowChatMessage(
-                    $"Tallybook: the handbook is rebuilding its pages — {pin.DisplayName} will open when it finishes.");
+                    $"Tallybook: the handbook is rebuilding its pages — {displayName} will open when it finishes.");
 
-            WaitForPagesThenShow(pin, page, handbook,
+            WaitForPagesThenShow(stack, displayName, page, handbook,
                 deadline: Environment.TickCount64 + 60_000);
         }
 
@@ -1317,7 +1376,7 @@ namespace Tallybook
         /// the loading flag being stuck forever; hitting it says so in chat, because
         /// half-acting on an empty index is exactly the blank screen this exists to avoid.
         /// </summary>
-        void WaitForPagesThenShow(Pin pin, string page, GuiDialogHandbook handbook, long deadline)
+        void WaitForPagesThenShow(ItemStack stack, string displayName, string page, GuiDialogHandbook handbook, long deadline)
         {
             // Closed while we were waiting: the player changed their mind — reopening the
             // handbook at them every frame is not landing a page, it is a fight.
@@ -1328,7 +1387,7 @@ namespace Tallybook
                 if (Environment.TickCount64 < deadline)
                 {
                     capi.Event.EnqueueMainThreadTask(
-                        () => WaitForPagesThenShow(pin, page, handbook, deadline),
+                        () => WaitForPagesThenShow(stack, displayName, page, handbook, deadline),
                         "tallybook-showpage");
                     return;
                 }
@@ -1341,16 +1400,16 @@ namespace Tallybook
 
             // Attribute-carrying variants can name a page the handbook does not index; the
             // plain item's page is the honest second choice.
-            string basePage = pin.Stack?.Collectible == null
+            string basePage = stack?.Collectible == null
                 ? null
-                : RecipeProbe.HandbookPageCode(new ItemStack(pin.Stack.Collectible), capi.World);
+                : RecipeProbe.HandbookPageCode(new ItemStack(stack.Collectible), capi.World);
 
             if (basePage != null && basePage != page && handbook.OpenDetailPageFor(basePage)) return;
 
             // No code we can derive names an indexed page. Searching by display name lands
             // the player on a list with the right entry in it — self-explanatory on screen —
             // where stopping at the root reads as the button doing nothing at all.
-            string name = pin.DisplayName;
+            string name = displayName;
             if (!string.IsNullOrWhiteSpace(name))
             {
                 handbook.Search(name);
@@ -1359,7 +1418,8 @@ namespace Tallybook
             }
             else
             {
-                capi.ShowChatMessage($"Tallybook: no handbook page for {pin.Code}.");
+                capi.ShowChatMessage(
+                    $"Tallybook: no handbook page for {stack?.Collectible?.Code?.ToShortString() ?? "this item"}.");
             }
         }
 
@@ -1638,24 +1698,72 @@ namespace Tallybook
             c.AddStaticText($"{choices.Count} ways to make {what}:", font, EB(8, y, DW - 16, 26));
             y += 34;
 
-            for (int i = 0; i < choices.Count; i++)
+            // Past a handful of choices the two-line layout runs off the screen — Aqua
+            // Vitae has thirty-two paths. Compact mode groups them: when the choices span
+            // several recipe KINDS (an alloy, nine melt-downs and a grid recycler), the
+            // method is the story — "Alloyed in a crucible" vs "Smelted…" vs "Crafting
+            // grid" (Mark: "separate smelting methods from crafting"). When they are all
+            // one kind, the origin is (Fruit / Grain via PathCategory). Sorted, two
+            // columns, one line per path either way.
+            if (choices.Count > 8)
+            {
+                bool mixedKinds = choices.Select(g => g.KindLabel()).Distinct().Count() > 1;
+                var byCategory = choices
+                    .GroupBy(g => mixedKinds ? g.KindLabel() : svc.Probe.PathCategory(g))
+                    .OrderBy(grp => string.IsNullOrEmpty(grp.Key) ? "~" : grp.Key,
+                        StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                double colW = (DW - 16) / 2.0;
+
+                foreach (var cat in byCategory)
+                {
+                    string head = string.IsNullOrEmpty(cat.Key) ? "Other" : cat.Key;
+                    c.AddStaticText($"—  {head}  ({cat.Count()})  —", quiet, EB(8, y, DW - 16, 22));
+                    y += 26;
+
+                    var entries = cat
+                        .OrderBy(g => g.MaterialsBrief ?? g.Materials ?? "", StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    int perColumn = (entries.Count + 1) / 2;
+                    for (int i = 0; i < entries.Count; i++)
+                    {
+                        var choice = entries[i];
+                        bool chosen = choice == current;
+                        double x = 8 + (i / perColumn) * colW;
+                        double ey = y + (i % perColumn) * 28;
+
+                        var entryFont = font.Clone().WithColor(TallybookConfig.ParseColor(
+                            chosen ? config.ColorSatisfied : config.ColorNone));
+                        string brief = choice.MaterialsBrief ?? choice.Materials ?? "?";
+                        FittedText(c, $"{(chosen ? "▶" : " ")} {brief}",
+                            entryFont, EB(x, ey + 2, colW - 92, 24), colW - 92);
+
+                        var picked = choice;
+                        c.AddSmallButton(chosen ? "In use" : "Use",
+                            () => { UseRecipe(picked); return true; },
+                            EB(x + colW - 86, ey, 80, 26), EnumButtonStyle.Small);
+                    }
+                    y += perColumn * 28 + 6;
+                }
+            }
+            else for (int i = 0; i < choices.Count; i++)
             {
                 var choice = choices[i];
                 bool chosen = choice == current;
 
                 var nameFont = font.Clone().WithColor(TallybookConfig.ParseColor(
                     chosen ? config.ColorSatisfied : config.ColorNone));
-
-                c.AddStaticText($"{(chosen ? "▶" : " ")} Makes {choice.OutputQuantity} × {choice.OutputName}",
-                    nameFont, EB(8, y, 320, 24));
+                string materials = string.IsNullOrEmpty(choice.Materials) ? "?" : choice.Materials;
 
                 var picked = choice;
+                c.AddStaticText($"{(chosen ? "▶" : " ")} {choice.MakesLabel()}",
+                    nameFont, EB(8, y, 320, 24));
+
                 c.AddSmallButton(chosen ? "In use" : "Use this",
                     () => { UseRecipe(picked); return true; },
                     EB(DW - 120, y - 2, 104, 26), EnumButtonStyle.Small);
                 y += 24;
 
-                string materials = string.IsNullOrEmpty(choice.Materials) ? "?" : choice.Materials;
                 FittedText(c, materials, quiet, EB(28, y, DW - 160, 22), DW - 160);
                 y += 28;
             }
@@ -1672,6 +1780,215 @@ namespace Tallybook
             choosingFor = null;
             choosingNode = null;
             BackToList();
+        }
+
+        // ------------------------------------------------------------- liquid calculator
+
+        Pin calcPin;
+        int calcContainerIdx;
+        int calcCount = 1;
+        long lastCalcTypingMs;
+
+        void OpenLiquidCalc(Pin pin)
+        {
+            calcPin = pin;
+            calcContainerIdx = 0;
+            calcCount = 1;
+            screen = TbScreen.LiquidCalc;
+            Recompose();
+        }
+
+        /// <summary>
+        /// Plan a liquid in container terms — "five barrels of acid" — instead of doing
+        /// litre arithmetic by hand. Every liquid container this world has is offered,
+        /// largest first (which puts the barrel on top without matching any name); the
+        /// result lands in the pin's count, in litres, where the scaled ingredient rows and
+        /// pot-load estimate already live.
+        /// </summary>
+        void ComposeLiquidCalc(GuiComposer c)
+        {
+            const int MaxRows = 12;
+            var font = TableFont();
+            var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
+            double y = 40;
+
+            var pin = calcPin;
+            var options = svc.Probe.LiquidContainerOptions();
+            if (pin == null || options.Count == 0)
+            {
+                c.AddStaticText("No liquid containers known in this world.", font, EB(8, y, DW - 16, 26));
+                c.AddSmallButton("Back", () => { BackToList(); return true; }, EB(8, y + 40, 90, 30));
+                return;
+            }
+            if (calcContainerIdx >= options.Count) calcContainerIdx = 0;
+
+            c.AddStaticText($"How much {pin.DisplayName}? Pick a container to fill:",
+                font, EB(8, y, DW - 16, 26));
+            y += 34;
+
+            // Two columns so the small containers stay visible instead of falling off a
+            // capped list (Mark wanted to see them) — capacity order runs down the left
+            // column first, so barrels still lead.
+            int shown = Math.Min(options.Count, MaxRows * 2);
+            int perColumn = (shown + 1) / 2;
+            double colW = (DW - 16) / 2.0;
+            double rowsTop = y;
+            for (int i = 0; i < shown; i++)
+            {
+                bool chosen = i == calcContainerIdx;
+                var rowFont = font.Clone().WithColor(TallybookConfig.ParseColor(
+                    chosen ? config.ColorSatisfied : config.ColorNone));
+                var opt = options[i];
+
+                double x = 8 + (i / perColumn) * colW;
+                double ry2 = rowsTop + (i % perColumn) * 30;
+
+                c.AddInteractiveElement(new GuiElementItemIcon(
+                    capi, new List<ItemStack> { opt.Sample }, config, EB(x + 2, ry2 + 3, 20, 20)));
+                FittedText(c, $"{(chosen ? "▶" : " ")} {opt.Name} — {LitresLabel(opt.CapacityLitres)} L",
+                    rowFont, EB(x + 28, ry2 + 4, colW - 110, 24), colW - 110);
+
+                int picked = i;
+                c.AddSmallButton(chosen ? "Picked" : "Pick",
+                    () => { calcContainerIdx = picked; Recompose(); return true; },
+                    EB(x + colW - 76, ry2, 70, 26), EnumButtonStyle.Small);
+            }
+            y = rowsTop + perColumn * 30;
+            if (options.Count > shown)
+            {
+                c.AddStaticText($"…and {options.Count - shown} more containers.",
+                    quiet, EB(38, y + 2, DW - 60, 22));
+                y += 26;
+            }
+
+            y += 10;
+            c.AddStaticText("How many:", font, EB(8, y + 4, 100, 26));
+            c.AddSmallButton("-", () => { StepCalcCount(-1); return true; },
+                EB(112, y, 26, 26), EnumButtonStyle.Small);
+            c.AddTextInput(EB(142, y, 46, 26), OnCalcCountTyped, font, "calccnt");
+            c.AddSmallButton("+", () => { StepCalcCount(+1); return true; },
+                EB(192, y, 26, 26), EnumButtonStyle.Small);
+            y += 38;
+
+            int litres = CalcLitres(options);
+            string summary = $"{calcCount} × {options[calcContainerIdx].Name} = {litres} L";
+
+            // The number the player is really planning around: how many batches — pot
+            // loads or barrel seals — producing this much takes.
+            var batchGroup = pin.Group != null && (pin.Group.Cooking != null || pin.Group.Barrel != null)
+                ? pin.Group
+                : pin.Groups.FirstOrDefault(g => g.Cooking != null || g.Barrel != null);
+            if (batchGroup != null && pin.SelfNode?.Req != null)
+            {
+                int items = (int)Math.Round(litres * pin.SelfNode.Req.ItemsPerLitre);
+                string batches = TallyTree.BatchText(items, batchGroup);
+                if (batches != null) summary += $"   —   about {batches}";
+            }
+            c.AddStaticText(summary, quiet, EB(8, y, DW - 16, 26));
+            y += 40;
+
+            c.AddSmallButton($"Set {litres} L", () => { ApplyLiquidCalc(litres); return true; },
+                EB(8, y, 140, 30));
+            c.AddSmallButton("Back", () => { calcPin = null; BackToList(); return true; },
+                EB(160, y, 90, 30));
+
+            // The liquid row's action columns are spent on the Volume Calc button, so the
+            // recipe fold toggle (and, through it, the chooser) lives here instead.
+            if (pin.Groups.Count > 0)
+            {
+                c.AddSmallButton(pin.GatherOnly ? "Show recipe" : "Hide recipe", () =>
+                {
+                    var p = pin;
+                    calcPin = null;
+                    BackToList();
+                    if (p.GatherOnly) ExpandOrChoose(p, null, p.Groups);
+                    else Collapse(p);
+                    return true;
+                }, EB(262, y, 120, 30));
+                c.AddHoverText(pin.GatherOnly
+                        ? "Unfold the recipe under the pin (and pick one, when there are several)."
+                        : "Fold the recipe away and just count the liquid.",
+                    font, 260, EB(262, y, 120, 30));
+            }
+
+            // Aqua Vitae distills from twenty-odd different spirits — a liquid with several
+            // recipes must offer the choice here, because its row has no cycler (found by
+            // Mark: the pin silently expanded down the apple path with no way to switch).
+            if (pin.Groups.Count > 1)
+            {
+                int idx = pin.Groups.IndexOf(pin.Group) + 1;
+                string label = idx > 0 ? $"Recipe {idx}/{pin.Groups.Count}…" : $"Recipe: {pin.Groups.Count} ways…";
+                var chooseFor = pin;
+                c.AddSmallButton(label, () =>
+                {
+                    choosingFor = chooseFor;
+                    choosingNode = null;
+                    calcPin = null;
+                    screen = TbScreen.ChooseRecipe;
+                    Recompose();
+                    return true;
+                }, EB(394, y, 150, 30));
+                c.AddHoverText(
+                    $"This liquid can be made {pin.Groups.Count} different ways — pick which "
+                    + "path the ingredient list should plan for.",
+                    font, 280, EB(394, y, 150, 30));
+            }
+        }
+
+        static string LitresLabel(float litres)
+            => litres.ToString("0.##", CultureInfo.InvariantCulture);
+
+        int CalcLitres(List<RecipeProbe.ContainerOption> options)
+        {
+            float cap = options[calcContainerIdx].CapacityLitres;
+            return (int)Math.Clamp(Math.Round(calcCount * cap), 1, 9999);
+        }
+
+        void StepCalcCount(int delta)
+        {
+            calcCount = Math.Clamp(calcCount + delta, 1, 999);
+            Recompose();
+        }
+
+        void OnCalcCountTyped(string val)
+        {
+            if (restoringInputs) return;
+            if (!int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) || n <= 0) return;
+            calcCount = Math.Min(999, n);
+
+            // The summary line goes stale until a recompose, but recomposing steals focus —
+            // same conflict the count column has, same answer: wait for a typing pause.
+            lastCalcTypingMs = capi.World.ElapsedMilliseconds;
+            capi.Event.RegisterCallback(_ =>
+            {
+                if (IsOpened() && screen == TbScreen.LiquidCalc
+                    && capi.World.ElapsedMilliseconds - lastCalcTypingMs >= 850) Recompose();
+            }, 900, permittedWhilePaused: true);
+        }
+
+        void RestoreCalcInput()
+        {
+            restoringInputs = true;
+            try
+            {
+                SingleComposer.GetTextInput("calccnt")
+                    ?.SetValue(calcCount.ToString(CultureInfo.InvariantCulture));
+            }
+            finally { restoringInputs = false; }
+        }
+
+        void ApplyLiquidCalc(int litres)
+        {
+            var pin = calcPin;
+            calcPin = null;
+            BackToList();
+            if (pin == null) return;
+
+            svc.Store.SetCount(pin, Math.Clamp(litres, 1, 9999));
+
+            // The calculator's whole point is "what do I need for this much" — returning to
+            // a folded pin would be a dead end, so unfold it, the same act as Expand.
+            if (pin.GatherOnly && pin.Groups.Count > 0) ExpandOrChoose(pin, null, pin.Groups);
         }
 
         /// <summary>Ask which recipe when there is more than one way; just unfold when there

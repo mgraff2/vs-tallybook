@@ -155,6 +155,26 @@ calls `Assembly.LoadFrom` and `GetMembers`. Note:
   where there is no registration hook. Prefer a postfix that only *appends* to what the game
   returned, catch and log a failure to apply, and never patch something whose failure costs
   the player progress that cannot be recovered.
+- **Grid-recipe ingredient matching is two-step, and liquids live entirely in step two.**
+  `SatisfiesAsIngredient` is only half the grid's check: `RecipeBase.MatchStackToIngredient`
+  then calls `inputStack.Collectible.MatchesForCrafting(stack, recipe, ingredient)`, a
+  virtual any collectible may override. `BlockLiquidContainerBase` uses it for liquid
+  recipes, whose JSON names the *vessel* as the ingredient and hides the liquid in
+  attributes: per-ingredient `recipeAttributes.requiresContent`+`requiresLitres`, or
+  recipe-level `attributes.liquidContainerProps`. Anything that reproduces "would this
+  craft?" from `SatisfiesAsIngredient` alone will call an empty bucket a bucket of water.
+  Both attribute channels are round-tripped in `ToBytes`/`FromBytes` (verified by decompile,
+  1.22.6), so clients see them; litres convert to portion items via
+  `WaterTightContainableProps.ItemsPerLitre` (`BlockLiquidContainerBase.GetContainableProps`,
+  static), contents read via `GetContent(stack)` (instance), and the content check itself is
+  `JsonItemStack.Matches(world, contentStack)` — delegate to it rather than reimplementing.
+- **Grid recipes are not the whole crafting surface.** Vanilla 1.22 produces real items in
+  the cooking pot (`recipes/cooking/*.json` with a `cooksInto` output: acids, glue, potash,
+  leather), and that registry is separately client-readable and fully resolved:
+  `capi.GetCookingRecipes()` (`ApiAdditions` → `RecipeRegistrySystem.CookingRecipes`).
+  `CookingRecipeIngredient.Matches(stack)` is the game's own matcher, `PortionSizeLitres`
+  marks liquid ingredients. Anything reasoning about "how is this item made" from
+  `capi.World.GridRecipes` alone silently misses these.
 
 ---
 

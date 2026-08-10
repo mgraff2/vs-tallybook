@@ -389,11 +389,23 @@ namespace Tallybook
             var pin = svc.Store.Add(stack);
             if (pin == null) return;
 
+            // A fresh pin never auto-expands — not even with a single recipe, and not even
+            // with a remembered choice. This rule tightened three times (Mark, 0.3.9):
+            // first for many-path liquids ("it should wait for me to expand it"), then for
+            // stale remembered picks (a test-time click resurrected "Distilled Mead"), and
+            // finally for everything ("Sulfuric acid auto expands to its components, I
+            // thought we weren't doing that anymore?"). The pin counts; Expand is the
+            // player's act, and a remembered pick merely preselects there.
+            if (pin.SelfNode == null) pin.GatherOnly = true;
+
             svc.Resolve(pin);
             svc.RecountAll();
-            capi.ShowChatMessage(pin.HasRecipe
-                ? $"Tallybook: pinned {pin.DisplayName} x{pin.Count} — press L to manage your list."
-                : $"Tallybook: pinned {pin.DisplayName} x{pin.Count} — no crafting recipe known, kept as a reminder.");
+            string note = pin.Groups.Count > 1
+                ? $"{pin.Groups.Count} ways to make it — Expand in the list to choose."
+                : pin.Groups.Count == 1
+                    ? "Expand in the list to see the recipe."
+                    : "no crafting recipe known, kept as a reminder.";
+            capi.ShowChatMessage($"Tallybook: pinned {pin.DisplayName} x{pin.Count} — {note}");
         }
 
         /// <summary>

@@ -208,6 +208,145 @@ Observed on a real modded client (~30,300 grid recipes), not theorised:
   so variant conversions (dye white wool red) survive.
 - **Ingredient `Name` survives expansion** ("wood"), which is what lets a collapsed row read
   "Board (any wood)" rather than an anonymous "any".
+- **A liquid ingredient is a container ingredient wearing a side-channel (ModDB report,
+  0.3.9; verified by decompiling 1.22.6).** The recipe JSON names the *vessel* — and the
+  liquid rides in attributes `SatisfiesAsIngredient` never reads: per-ingredient
+  `recipeAttributes.requiresContent`+`requiresLitres` (dough), or recipe-level
+  `attributes.liquidContainerProps` (bandage) which only liquid-container collectibles ever
+  consult. The grid's real check is a *second* step after SatisfiesAsIngredient:
+  `RecipeBase.MatchStackToIngredient` calls `inputStack.Collectible.MatchesForCrafting(...)`,
+  which `BlockLiquidContainerBase` overrides to demand `content ≥ ItemsPerLitre × litres` of
+  the matching liquid. So before 0.3.9 an **empty** bowl counted as "bowl of water" — a
+  false green the grid refuses. Both attribute channels survive server→client sync (round-
+  tripped in `ToBytes`/`FromBytes`, checked in the decompile), so a client-side mod sees
+  everything. Tallybook's handling (`RecipeProbe.LiquidDemandFor` + the liquid branch of
+  `InventorySnapshot`): the row *is the liquid*, counted in portion items
+  (litres × `WaterTightContainableProps.ItemsPerLitre`, displayed as litres), matched by the
+  game's own `JsonItemStack.Matches` and only while inside a vessel the recipe accepts; the
+  liquid also joins `MaterialSignature` in place of the vessel, so dough's three
+  per-container recipes read as one recipe accepting bucket/bowl/jug instead of three
+  identical choices. Self rows of pinned liquids count container contents
+  (`CountContainerContents`) — a portion can never sit in a bare slot — but errand pins keep
+  that off, since a hand-over check inspects slot stacks and a jug of honey is not ten honey.
+  The handbook linking a liquid ingredient's icon to the *container's* page is vanilla
+  behaviour, not ours.
+- **The full recipe-source roster is grid + cooking + barrel + two attribute-derived kinds
+  (0.3.9, built for Mark's "barrel of brandy back to the orchard" ask).** All verified by
+  decompile against 1.22.6:
+  - **Barrel recipes**: `RecipeRegistrySystem.BarrelRecipes`, client-resolved in FromBytes
+    like cooking; `BarrelRecipeIngredient : CraftingRecipeIngredient` (so
+    `SatisfiesAsIngredient` matches barrel *contents* too) plus `Litres`;
+    `BarrelOutputStack.Litres` — the resolved output stack size does NOT carry litres,
+    convert via the liquid's ItemsPerLitre. Wildcards arrive pre-expanded, as with grid.
+    Seal batching: crafts-per-seal = biggest `BlockBarrel.CapacityLitres` ÷ the craft's
+    largest liquid amount (`TallyTree.BarrelSeals`).
+  - **Distillation is not a recipe, it is an attribute**: `distillationProps` on the input
+    liquid (`DistilledStack` + `Ratio`), read exactly as `BlockEntityBoiler` reads it
+    (`ItemAttributes["distillationProps"].AsObject<DistillationProps>(null)`); output
+    accumulates at `Ratio` per unit input, so litres in = litres out ÷ ratio (vanilla 0.05
+    → 20 L ferment per litre of spirit — the shocking number is correct).
+  - **Pressing likewise**: `juiceableProperties` on the fruit (`LitresPerItem`,
+    `LiquidStack`), read as `BlockEntityFruitPress.getJuiceableProps` does, including the
+    `AsObject(null, code.Domain)` domain argument.
+  - **Grinding and crushing are first-class collectible FIELDS, not attributes**
+    (`CollectibleObject.GrindingProps.GroundStack`, `CrushingProps.CrushedStack` +
+    `Quantity` NatFloat — use `.avg`): sulfur chunks → powdered sulfur, grain → flour
+    (completing the whiskey chain), ore → grits. Same synthesized-group pattern
+    ("grind:/crush:" signatures, `MethodLabel` carries the human word).
+  - **Smelting likewise** (`CombustibleProps.SmeltedStack` + `SmeltedRatio` — 20 nuggets →
+    1 copper ingot; `SmeltingType` gives the honest verb: Smelt/Cook/Bake/Fire/Convert,
+    `RequiresContainer` adds "in a crucible"). Everything burnable has CombustibleProps;
+    only `SmeltedStack != null` is a recipe, and **self-smelts are dropped** (an ingot
+    "smelts into" itself for casting — bookkeeping, not a recipe; found by Mark on bismuth
+    bronze). **Smelt groups insert BEFORE grid groups** — where both exist the grid entry
+    is a recycler (anvil → ingots), and Mark's rule is "anvil chisel will be the least used
+    method". `InputsPerCraft` on the group carries the ratio into the requirement builder.
+    Note: metal items (chain, plate, rod…) all smelt back into ingots — TRUE conversions
+    (scrap recovery), kept but sectioned; the *real* alloy-ingot path is:
+  - **Crucible alloys** (`RecipeRegistrySystem.MetalAlloys` → `AlloyRecipe`:
+    `MetalAlloyIngredient : JsonItemStack` + `MinRatio`/`MaxRatio`). The JSON names ingots,
+    but that is the *unit the ratios are written against*, not what the crucible accepts
+    (Mark, twice: "alloyed from bits, not ingots", then "an ingot won't fit in a crucible")
+    — rows are per METAL in metal units (ingot-equivalent = 100), counting ONLY forms that
+    smelt into that ingot (nuggets/bits at 100 × smeltedStackSize ÷ smeltedRatio = 5 each).
+    **The ingot itself is deliberately not counted** even though the data gives it a melt
+    entry (ratio 1 into itself): the crucible refuses whole ingots in play, and the honesty
+    rule is count-only-what-the-mechanism-accepts, same as liquids in unaccepted vessels —
+    a player chisels ingots into bits and the bits count. Row names use the game's
+    `material-{variant}` lang convention ("Bismuth bronze"), the same names the handbook's
+    "Alloyed from" line uses — never the ingot's item name. `Requirement.UnitsPerItem`
+    drives weighted counting. One craft = `AlloyCraftSize` (smallest whole-midpoint batch;
+    bismuth bronze: 20). Alloy groups insert FIRST, ahead of smelting.
+    **Alloying is continuous** — one craft = ONE output at midpoint units (60/25/15 per
+    bismuth bronze ingot), scaling linearly; a first version batched to whole-ingot
+    midpoints and charged 20 ingots' materials for one (found by Mark against a reference
+    alloy calculator). Do not reintroduce batch rounding: the crucible pours any amount.
+  - **Anvil smithing** (`capi.GetSmithingRecipes()` → `SmithingRecipe : LayeredVoxelRecipe`:
+    single `Ingredient`, `Output`, `Voxels` bool[,,]; wildcards pre-expanded). Input count
+    is voxel-based, computed exactly as the handbook does:
+    `ceil(trueVoxels / IAnvilWorkable.VoxelCountForHandbook(stack))` (decompile-verified;
+    fallback 42). This closes the iron chain: ore nuggets smelt to `ironbloom` (bloomery),
+    the bloom is SMITHED into the ingot — iron ingots finally decompose honestly, the very
+    case the GatherOnly design note cites as unshowable. Smith groups insert after
+    smelt/alloy, before grid.
+  - **Choosers that mix kinds section by method** (`RecipeVariantGroup.KindLabel`), not by
+    origin walk — PathCategory's per-input families made bismuth bronze read as ten
+    categories of one entry each (Mark's screenshot). Origin categories apply only when
+    every choice is the same kind (Aqua Vitae).
+  - RecipeProbe synthesizes one group per source (`Pattern` "barrel:/distill:/press:" keeps
+    signatures stable); `FindExpansionGroups` consults every source, which is what lets
+    spirit → ferment → juice → fruit chain through manual expands with no auto-recursion.
+  - **Giant choosers group by origin, not by name** (`RecipeProbe.PathCategory`, asked for
+    by Mark when Aqua Vitae hit thirty-two paths): follow single-ingredient conversions
+    through all the indexes, stopping the moment an ingredient declares a real
+    **food category** — the game's own classification (`FoodNutritionProperties.FoodCategory`;
+    liquids carry theirs in `WaterTightContainableProps.NutritionPropsPerLitre`). Cider
+    declares Fruit-or-Grain *per variant* (mead is Fruit by the game's own account) while
+    spirits say NoNutrition and are walked through — so every spirit path resolves one hop
+    down, and first-pass code-family labels ("Juice", "Spiritportion", "Beehiveframe +
+    Honeycomb") collapsed into Fruit/Grain once the food data was consulted (Mark's
+    screenshot). Forks recurse with unanimity (apple juice made two ways is still apples);
+    code families (shared-name-tail, then capitalized code segment) remain the fallback for
+    non-food chains. Berry-vs-orchard is deliberately NOT split: the game records no such
+    distinction on items, and inferring it from names is prohibited. Kicks in past 8
+    choices, generic across recipe kinds. Note `FoodCategory` defaults to Fruit(0) when
+    JSON omits it — acceptable because the game's own tooltips surface the category, so
+    authors set it deliberately.
+- **Cooking-pot recipes are a second, client-readable recipe registry (found via Mark's
+  sulfuric acid repro, 0.3.9).** Vanilla 1.22 produces real items in the cooking pot —
+  acids, glue, potash, sulfate, leather (`assets/survival/recipes/cooking/*.json` with a
+  `cooksInto` output; sulfuric acid is 1 L water + 2 powdered sulfur + 1 saltpeter → 100
+  portion items = 1 L). Grid recipes are NOT the whole crafting surface. Access:
+  `capi.GetCookingRecipes()` (ApiAdditions → `RecipeRegistrySystem.CookingRecipes`), fully
+  resolved on the client (`CookingRecipe.FromBytes` resolves ingredients and cooksInto —
+  decompile-verified). `CookingRecipeIngredient` carries `MinQuantity`/`MaxQuantity`,
+  `ValidStacks` (alternatives) and `PortionSizeLitres` for liquids; its `Matches(stack)` is
+  the game's own matcher — delegate to it. Two product decisions in
+  `RecipeProbe.BuildCookingRequirements`: recipes *without* `cooksInto` (meals) are skipped —
+  a meal's identity lives in its container's attributes, a different product — and the
+  liquid ingredient counts from **any** carried container (`Requirement.AnyVessel`), because
+  cooking pours the liquid into the pot rather than demanding a vessel in a grid slot. The
+  pot itself is deliberately not synthesized as a tool row: the recipe data does not name
+  it, and inventing the code by name would guess. Batch size IS readable off the data:
+  `BlockCookingContainer.MaxServingSize` (vanilla clay pot 6, from `servingCapacity`), so
+  `TallyTree.PotLoads` = ceil(servings needed / best pot's servings) — scan the world's
+  blocks for the max, so a modded bigger pot improves the answer for free.
+- **The liquid-container catalogue is capacity-sorted, never name-matched.**
+  `RecipeProbe.LiquidContainerOptions` lists every `BlockLiquidContainerBase` with
+  `CapacityLitres > 0` (a public virtual property — read per block instance), sorted
+  descending — which puts the 50 L barrel first without the word "barrel" appearing
+  anywhere in code. Containers are liquid-agnostic in VS (containable-ness lives on the
+  liquid's props), so one list serves every liquid. **Dedupe is by code family (first path
+  segment) + capacity, not display name (found by Mark):** jug colours share a name, but
+  Eternal Stew's cauldrons are "Copper cauldron"/"Iron cauldron"/… and name-keyed dedupe
+  listed every metal. Merged families take the words their variants share (SharedNameTail —
+  the shears trick) as their label.
+- **A pinned liquid's `Count` is litres, not portion items (Mark, 0.3.9 — "show units").**
+  `Pin.LiquidUnits`/`CountInItems` convert at the seams; `Have` and all tree math stay in
+  portion items. Set via the self requirement's `ShowLitres` (from
+  `GetContainableProps(stack).Containable`), cleared for errand pins whose counts come from
+  dialogue in items. Anything comparing `Have` to `Count` directly is a unit bug — compare
+  to `CountInItems` (this is why `Pin.Complete` uses it).
 - **The handbook groups more coarsely than we do, deliberately.** It shows one cycling preview
   per item (`SlideshowGridRecipeTextComponent`, "flips through given array of grid recipes
   every second"), splittable by `GridRecipe.RecipeGroup` — documented as "info used by the
@@ -622,9 +761,15 @@ touches the story, re-verify against the new files before touching the steps.
 These are deliberate and each one has a failure mode behind it (spec §2, §2a, §4):
 
 - **A recipe existing does not mean it is how the item is obtained.** `Pin.GatherOnly`
-  counts an item without decomposing it; Expand/Collapse on the pin row toggles it. Only
-  handbook pins start expanded — pinning there is an act of reading a recipe (Mark) —
-  everything else starts as counting. Iron ingots are the case that forced this: their sole *grid* recipe is
+  counts an item without decomposing it; Expand/Collapse on the pin row toggles it. Handbook
+  **No pin starts expanded — ever.** A fresh handbook pin arrives as counting; Expand is
+  the player's act (opens the chooser when several recipes exist; a remembered preference
+  only preselects there). This rule tightened three times in 0.3.9 (Mark): many-path
+  liquids ("it should wait for me to expand it"), then stale remembered picks ("Distilled
+  Mead" resurrected by a test-time click), then single-recipe pins too ("Sulfuric acid auto
+  expands to its components, I thought we weren't doing that anymore?"). The original
+  "pinning from the handbook is an act of reading a recipe" rationale is fully superseded —
+  do not resurrect it. Iron ingots are the case that forced this: their sole *grid* recipe is
   chiselling an iron anvil back into ingots, so a decomposed ingot pin demands an anvil the
   player does not have, while smelting — the real source — is not a grid recipe and cannot
   be shown. Errand copies (`Gather`) start gather-only for the same reason.

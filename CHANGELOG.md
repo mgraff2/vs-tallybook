@@ -1,5 +1,116 @@
 # Changelog
 
+## 0.3.9 — unreleased
+
+- Fixed: recipes that call for a liquid — dough, alcohol-soaked bandages, ink and quill,
+  modded dyes and acids — listed the empty container ("Bowl") instead of what actually
+  matters, and worse, counted an *empty* bowl as satisfying the row while the crafting grid
+  would refuse it. Liquid ingredients now show the liquid itself with litres ("Water (in
+  Bowl / Bucket) 0.5/1 L"), count only liquid sitting in a vessel the recipe accepts, and
+  use the game's own content matcher so the row can never claim materials the grid rejects.
+  Reported on ModDB. (The handbook itself linking a liquid ingredient's icon to the
+  container's page is vanilla behaviour Tallybook cannot change.)
+- Recipes that differ only in which vessel holds the liquid (dough via bucket, bowl or jug)
+  are now one recipe with one liquid row that accepts any of the vessels, instead of three
+  seemingly identical choices.
+- Pinned liquids (milk, honey, a modded acid) are now counted from what your carried
+  containers hold — a liquid can never sit in a bare inventory slot, so before this a
+  pinned liquid could never be "had". Errand pins still count only slot stacks, since a
+  hand-over check does not accept a jug of the goods.
+- New: cooking-pot recipes. Vanilla 1.22 cooks sulfuric and nitric acid, glue, potash,
+  sulfate, leather and more into existence in a cooking pot (`cooksInto`), and none of that
+  was visible to Tallybook — pinning sulfuric acid said "no recipe known". Such items now
+  expand like anything else: sulfuric acid shows 1 L of water (counted from any carried
+  container — the pot takes a pour, no specific vessel), two powdered sulfur and one
+  saltpeter, with the chooser noting "cooked in a pot". Meal recipes stay out deliberately;
+  a meal's identity lives in its bowl's attributes and is a different product entirely.
+- Expanding a liquid ingredient row keeps the chain walkable across recipe kinds: the acid
+  inside a grid recipe's jug expands into its cooking recipe, whose own water row expands no
+  further.
+- Fixed: a liquid with many recipes — Aqua Vitae distills from every spirit in the game —
+  silently expanded down the first path (apple) with no way to choose another. Two changes:
+  a freshly pinned item with **several** recipes now starts as plain counting, and Expand
+  opens the recipe chooser (single-recipe handbook pins still start expanded, and a
+  remembered choice is honoured); and liquid rows got their standard Expand/Collapse and
+  recipe-cycler buttons back — Volume Calc moved to a column of its own (the list is a
+  little wider for it). The chooser states liquid outputs in litres ("Makes 1 L of Aqua
+  Vitae") and compacts to one line per choice when there are many, so twenty brandy paths
+  fit on screen.
+- Big choosers now **group and sort their paths by origin**: Aqua Vitae's thirty-two ways
+  arrange under "Fruit" (every juice path *and* mead) and "Grain" (the mashes), each
+  category sorted, in two columns. Categories come from the game's own food classification
+  met while walking each chain (cider declares Fruit or Grain per variant), falling back to
+  ingredient code families — derived entirely from data, so any other many-path item
+  (modded or vanilla) gets the same treatment automatically. Berries and orchard fruit
+  share "Fruit" deliberately: the game records no distinction between them, and guessing by
+  name is against house rules.
+- New: **crucible alloys**. Bismuth bronze ingot's real recipe now leads its chooser —
+  one row per metal, named bare ("Copper", never "Copper ingot"), in the game's own metal
+  units: "1200 units Copper — bits, nuggets or any meltable (50–70%)" counts nuggets and
+  bits at 5 units each, exactly as the crucible will. Whole ingots deliberately count
+  nothing — a crucible refuses them; chisel them into bits and the bits count. Ratio
+  windows come from the game's alloy registry; quantities use the midpoint at the smallest
+  whole batch. The melt-something-back-down entries and the anvil chisel are still there,
+  sectioned below it.
+- Fixed: an ingot "made by smelting an ingot" no longer appears — an item that smelts into
+  itself is the crucible's casting bookkeeping, not a recipe (same rule as the
+  self-consuming grid pseudo-recipes).
+- Choosers that mix recipe **kinds** now group by method — "Alloyed in a crucible" /
+  "Smelted in a crucible" / "Crafting grid" — instead of by each input's name; origin
+  grouping (Fruit / Grain) still applies when every path is the same kind.
+- Fixed: alloy quantities were charged in whole 20-ingot batches — wanting one bismuth
+  bronze ingot demanded 1200 units of copper (found against a reference alloy calculator).
+  Alloying is continuous: one ingot now reads 60/25/15 units, scaling linearly with the
+  pin count.
+- New: **anvil smithing** as a recipe step, closing the iron chain: iron ingot → 1 iron
+  bloom ("smithed on an anvil") → 20 iron nuggets (bloomery). Plates, chains, tools and
+  everything else hammered on an anvil expands too, with input counts computed the way the
+  handbook computes them (recipe voxels against what one workpiece provides).
+- New: **smelting** as a recipe step. Copper ingots finally expand the way anyone actually
+  makes them — twenty nuggets smelted in a crucible — instead of only offering "chisel a
+  copper anvil back into ingots"; where both exist, smelting is listed first and the
+  recycler last. The same data covers every metal and ore, plus baking (dough → bread),
+  cooking over fire (raw → cooked meat) and kiln firing (raw → fired pottery), each labeled
+  with its real method. Chains link up: ingot → nuggets → crushed ore.
+- New: **quern grinding and pulverizer crushing** as recipe steps. Powdered sulfur expands
+  to sulfur chunks ("ground in a quern"), grain grinds to flour — completing the whiskey
+  chain down to the harvest — and ores crush to grits. Derived from the game's own
+  grinding/crushing properties on each item, the same way distillation and pressing are.
+- **No pin auto-expands anymore, full stop.** Every fresh pin — single recipe, many
+  recipes, remembered choice or not — arrives as plain counting; Expand is always your
+  act, the chat message says what it will show, and a remembered choice only preselects in
+  the chooser.
+- New: **barrel, distillation and fruit-press recipes** — the whole spirit chain now
+  unrolls. Pin a barrel of brandy (via Volume Calc) and expand: the boiler step shows the
+  litres of ferment it takes (at vanilla's ratio, 20 L of cider per litre of spirit — the
+  math is brutal, which is why a planner helps), the ferment expands to fruit juice or
+  honey or a grain mash (all the barrel alternatives the game defines), and juice expands
+  to the fruit that gets pressed. Each step is a deliberate expand with honest litres, and
+  rows say their batching: "3 barrel seals (~7 days each)" alongside cooking's pot loads,
+  sized to the biggest barrel in the world. Barrel recipes cover far more than ferments —
+  tannin, lime water, dyes, cheese and some thirty other products all decompose now.
+- Every ingredient and tool row under an expanded pin now has its own **Handbook** button,
+  opening the page for the item the row's icon shows (for a liquid row, the liquid itself).
+  Same behaviour as the pin's button: waits out handbook rebuilds, falls back to the base
+  item's page, then to a name search.
+- A pinned liquid's count is now in **litres**: pin sulfuric acid and set 12 to mean 12 L
+  (the count field says so on hover), and its header reads "3/12 L" instead of portion-item
+  noise like "300/12". Errand pins keep counting items, since their numbers come from
+  dialogue.
+- Cooking pins plan in **pot loads**: the row says how many times the pot must be filled
+  for what is still missing ("Sulfuric acid — 2 pot loads"), based on the best pot the
+  world has (vanilla's clay pot cooks 6 servings at once; a modded bigger pot raises the
+  math automatically). The recipe chooser also states the per-pot cap for liquids ("cooked
+  in a pot, up to 6 L per pot").
+- New: a **volume calculator** on every liquid pin's row (the "Volume Calc" button). Plan
+  in containers instead of litres: pick a container — every liquid container in the world
+  is listed, largest first, so barrels lead — choose how many, and the calculator shows the
+  total ("5 × Barrel = 250 L — about 42 pot loads to cook") and sets it as the pin's goal,
+  unfolding the recipe so the scaled ingredient list is right there. Capacities are read
+  from the game's own blocks: a vanilla barrel holds 50 L, buckets 10 L, and modded
+  containers report their real sizes. On liquid rows the calculator takes the place of the
+  Expand/Collapse button; showing or hiding the recipe moved inside the calculator screen.
+
 ## 0.3.8 — 2026-08-09
 
 - Fixed: a crash when clicking while the game was paused — the handbook pauses singleplayer

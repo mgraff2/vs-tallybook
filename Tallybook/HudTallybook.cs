@@ -468,7 +468,7 @@ namespace Tallybook
                 lines.Add(new HudLine
                 {
                     Text = indented ? "  " + row.Name : row.Name,
-                    Trailing = $"{row.Have}/{row.Needed}",
+                    Trailing = row.Req?.CountText(row.Have, row.Needed) ?? $"{row.Have}/{row.Needed}",
                     Color = Status(row.Have, row.Needed),
                     Stacks = row.Req?.SampleStacks(capi.World)
                 });
@@ -479,6 +479,10 @@ namespace Tallybook
             // glyph the font lacks draws as a tofu box (verified against the shipped TTFs).
             string Mark(Pin p) => p.Complete ? "√" : p.Craftable ? "▶" : "•";
 
+            // Litres for liquid pins, items for everything else — same text the dialog shows.
+            string PinCounts(Pin p)
+                => p.SelfNode?.Req?.CountText(p.Have, p.CountInItems) ?? $"{p.Have}/{p.Count}";
+
             if (config.HudGroupByItem)
             {
                 foreach (var pin in goals)
@@ -486,7 +490,7 @@ namespace Tallybook
                     lines.Add(new HudLine
                     {
                         Text = $"{Mark(pin)} {pin.DisplayName}",
-                        Trailing = $"{pin.Have}/{pin.Count}",
+                        Trailing = PinCounts(pin),
                         Color = pin.Complete || pin.Craftable ? satisfied : null,
                         Bold = true,
                         Stacks = One(pin.Stack)
@@ -504,7 +508,7 @@ namespace Tallybook
                 // more of it than fits, with the icon cycling through them to match.
                 lines.Add(new HudLine
                 {
-                    Text = string.Join("   ", goals.Select(p => $"{Mark(p)} {p.DisplayName} {p.Have}/{p.Count}")),
+                    Text = string.Join("   ", goals.Select(p => $"{Mark(p)} {p.DisplayName} {PinCounts(p)}")),
                     Color = goals.All(p => p.Complete || p.Craftable) ? satisfied : null,
                     Bold = true,
                     Stacks = goals.Select(p => p.Stack).Where(s => s != null).ToList(),

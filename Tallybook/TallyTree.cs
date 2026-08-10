@@ -60,6 +60,45 @@ namespace Tallybook
             return (wanted + outputQuantity - 1) / outputQuantity;
         }
 
+        /// <summary>How many times the pot must be filled and cooked to cover a deficit —
+        /// each pot load cooks up to ServingsPerBatch servings at once. 0 when the group is
+        /// not a cooking recipe or nothing is missing.</summary>
+        public static int PotLoads(int deficitItems, RecipeVariantGroup group)
+        {
+            if (group?.Cooking == null || group.ServingsPerBatch < 1) return 0;
+            int servings = CraftsFor(Math.Max(0, deficitItems), group.OutputQuantity);
+            return (servings + group.ServingsPerBatch - 1) / group.ServingsPerBatch;
+        }
+
+        /// <summary>How many barrel seals cover a deficit — a seal processes as many crafts
+        /// as fit the barrel by litres (the craft's largest liquid amount against the
+        /// biggest barrel's capacity). 0 for non-barrel groups or nothing missing.</summary>
+        public static int BarrelSeals(int deficitItems, RecipeVariantGroup group)
+        {
+            if (group?.Barrel == null || group.BatchLitres <= 0 || group.LitresPerCraft <= 0) return 0;
+            int crafts = CraftsFor(Math.Max(0, deficitItems), group.OutputQuantity);
+            if (crafts <= 0) return 0;
+            int craftsPerSeal = Math.Max(1, (int)(group.BatchLitres / group.LitresPerCraft));
+            return (crafts + craftsPerSeal - 1) / craftsPerSeal;
+        }
+
+        /// <summary>The batching suffix for a row, whatever kind its recipe is: "2 pot
+        /// loads", "3 barrel seals (~7 days each)", or null when there is nothing to say.</summary>
+        public static string BatchText(int deficitItems, RecipeVariantGroup group)
+        {
+            int loads = PotLoads(deficitItems, group);
+            if (loads > 0) return $"{loads} pot load{(loads == 1 ? "" : "s")}";
+
+            int seals = BarrelSeals(deficitItems, group);
+            if (seals > 0)
+            {
+                int days = (int)Math.Round(group.SealHours / 24.0);
+                string each = days > 0 ? $" (~{days} day{(days == 1 ? "" : "s")} each)" : "";
+                return $"{seals} barrel seal{(seals == 1 ? "" : "s")}{each}";
+            }
+            return null;
+        }
+
         /// <summary>
         /// Recompute the whole tree under a pin from live inventory counts.
         ///
@@ -76,7 +115,8 @@ namespace Tallybook
             // and answering it is the same question the rest of the mod answers.
             if (pin.SelfNode != null)
             {
-                pin.SelfNode.Needed = pin.Count;
+                // CountInItems, not Count: a liquid pin's Count is litres, the math is items.
+                pin.SelfNode.Needed = pin.CountInItems;
                 pin.SelfNode.Have = inv.Count(pin.SelfNode.Req);
             }
 
@@ -84,7 +124,7 @@ namespace Tallybook
 
             // Deficit at the root, exactly as at every level below it (spec §2a): already
             // carrying two of the four you pinned means gathering ingredients for two.
-            int deficit = Math.Max(0, pin.Count - pin.Have);
+            int deficit = Math.Max(0, pin.CountInItems - pin.Have);
             int rootCrafts = CraftsFor(deficit, pin.Group.OutputQuantity);
             foreach (var node in pin.RootNodes)
             {
@@ -115,7 +155,10 @@ namespace Tallybook
         /// pin's own code plus every expanded ancestor's accepted codes.
         /// </summary>
         public static bool WouldCycle(Requirement req, HashSet<string> ancestorCodes)
-            => req.ExactCodes.Overlaps(ancestorCodes);
+            => req.ExactCodes.Overlaps(ancestorCodes)
+               // A liquid row's ExactCodes are its vessels; the thing an expansion would
+               // craft is the liquid, so that is what must not already be an ancestor.
+               || (req.LiquidCode != null && ancestorCodes.Contains(req.LiquidCode));
 
         /// <summary>
         /// Leaf rows only — the HUD's gather list (spec §2a): expanding a node moves it from

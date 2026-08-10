@@ -100,9 +100,20 @@ namespace Tallybook
 
         [JsonIgnore] public int Have => SelfNode?.Have ?? 0;
 
+        /// <summary>For a pinned liquid, Count is in LITRES — the only unit anyone discusses
+        /// a liquid in ("3" means three litres of acid, not three hundredth-litre portions) —
+        /// while Have and the tree math stay in portion items. This is the converter.</summary>
+        [JsonIgnore]
+        public bool LiquidUnits => SelfNode?.Req?.ShowLitres == true;
+
+        [JsonIgnore]
+        public int CountInItems => LiquidUnits
+            ? System.Math.Max(1, (int)System.Math.Round(Count * SelfNode.Req.ItemsPerLitre))
+            : Count;
+
         /// <summary>Got what was asked for. Outranks "ready to craft": no reason to build
         /// what is already in the bag.</summary>
-        [JsonIgnore] public bool Complete => Have >= Count;
+        [JsonIgnore] public bool Complete => Have >= CountInItems;
 
         [JsonIgnore] public bool HasRecipe => Group != null;
         [JsonIgnore] public string DisplayName => Stack?.GetName() ?? Code;

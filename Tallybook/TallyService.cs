@@ -77,6 +77,14 @@ namespace Tallybook
             // not decomposed.
             if (pin.QuestGiver != null)
             {
+                // An errand's hand-over check inspects slot stacks, so liquid inside a jug
+                // must not count toward it — a container of the goods is not the goods here.
+                // Units stay items too: the requested count came from dialogue, in items.
+                if (pin.SelfNode.Req != null)
+                {
+                    pin.SelfNode.Req.CountContainerContents = false;
+                    pin.SelfNode.Req.ShowLitres = false;
+                }
                 pin.Groups = new List<RecipeVariantGroup>();
                 SetGroup(pin, null, rememberPref: false);
                 return true;
@@ -270,6 +278,10 @@ namespace Tallybook
                 {
                     if (codes.Add(c)) added.Add(c);
                 }
+                // A liquid row's expansion makes the liquid, so the liquid — not just its
+                // vessels — is what a descendant must not need again.
+                if (node.Req.LiquidCode != null && codes.Add(node.Req.LiquidCode))
+                    added.Add(node.Req.LiquidCode);
                 if (FindPath(node.Children, target, codes)) return true;
                 foreach (var c in added) codes.Remove(c);
             }
@@ -287,6 +299,7 @@ namespace Tallybook
             Store.RetryUnresolved(Resolve);
 
             var snapshot = new InventorySnapshot(
+                capi.World,
                 Probe.CarriedInventories(),
                 config.IncludeMountBags ? Probe.OwnedAnimalBagStacks(config.MountBagRange) : null);
             foreach (var pin in Store.Pins) TallyTree.Recompute(pin, snapshot);
