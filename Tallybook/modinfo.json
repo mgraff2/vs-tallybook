@@ -2,7 +2,7 @@
   "type": "code",
   "name": "Tallybook",
   "modid": "tallybook",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Crafting shopping list, villager quest tracker, and spoiler-free story guide. Pin any item for live inventory-tracked counts, have fetch errands picked up and mapped automatically, and follow the vanilla story one revealed step at a time. Fully client-side, works on any server, supports every content mod's recipes and errands with zero compat patches.",
   "authors": [ "Kaminion" ],
   "side": "Client",

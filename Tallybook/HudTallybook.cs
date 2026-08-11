@@ -204,6 +204,10 @@ namespace Tallybook
         /// stay off across relogs.</summary>
         public bool UserVisible;
 
+        /// <summary>Site quests for the side-quests section — set once the tracker exists.
+        /// Null-safe throughout: the HUD predates the tracker by a few frames at startup.</summary>
+        public SiteQuests Sites;
+
         public HudTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc) : base(capi)
         {
             this.config = config;
@@ -256,8 +260,11 @@ namespace Tallybook
         public void Refresh()
         {
             // Unchecked pins are parked, not shopping — a list of only unchecked pins is an
-            // empty list as far as the HUD is concerned.
-            bool shouldShow = UserVisible && svc.Store.Pins.Any(p => p.Active) && capi.World?.Player != null;
+            // empty list as far as the HUD is concerned. A checked site quest alone is a
+            // list: the walk is the work.
+            bool shouldShow = UserVisible
+                && (svc.Store.Pins.Any(p => p.Active) || (Sites?.HudSites().Count ?? 0) > 0)
+                && capi.World?.Player != null;
             if (!shouldShow)
             {
                 if (IsOpened()) TryClose();
@@ -431,11 +438,31 @@ namespace Tallybook
             var active = svc.Store.Pins.Where(p => p.Active).ToList();
 
             // Errands first: they are someone else's deadline, and they name a place to walk
-            // back to, which the rest of the list never does.
+            // back to, which the rest of the list never does. Site quests are places too, so
+            // they live in the same section — checked ones only, the same contract as pins.
             var quests = active.Where(p => p.QuestGiver != null).ToList();
-            if (quests.Count > 0)
+            var siteQuests = Sites?.HudSites() ?? new List<SiteQuest>();
+            if (quests.Count > 0 || siteQuests.Count > 0)
             {
                 Header("— side quests —");
+                foreach (var sq in siteQuests)
+                {
+                    var count = Sites.LoreCount(sq);
+                    int have = count.HasValue && count.Value.Total > 0
+                        ? count.Value.Found : (sq.Visited ? 1 : 0);
+                    int needed = count.HasValue && count.Value.Total > 0 ? count.Value.Total : 1;
+                    string title = sq.Visited ? $"{sq.Title} — visited" : SiteQuests.VisitPhrase(sq.Title);
+                    var mapStack = Sites.SampleStackFor(sq);
+
+                    lines.Add(new HudLine
+                    {
+                        Text = title + WhereSite(sq),
+                        // The scan not having finished is "don't know", not zero.
+                        Trailing = count == null ? "…" : $"{have}/{needed}",
+                        Color = count == null ? none : Status(have, needed),
+                        Stacks = One(mapStack)
+                    });
+                }
                 foreach (var pin in quests)
                 {
                     lines.Add(new HudLine
@@ -565,6 +592,23 @@ namespace Tallybook
             return m > 5000 ? -1 : m;
         }
 
+        string WhereSite(SiteQuest sq)
+        {
+            int m = DistanceToSite(sq);
+            return m < 0 ? "" : $" ({m}m)";
+        }
+
+        /// <summary>Same rounding and cap as the errand distance — one display rule.</summary>
+        int DistanceToSite(SiteQuest sq)
+        {
+            var me = capi.World?.Player?.Entity?.Pos;
+            if (me == null) return -1;
+
+            double dx = me.X - sq.X, dz = me.Z - sq.Z;
+            int m = (int)(Math.Sqrt(dx * dx + dz * dz) / 5) * 5;
+            return m > 5000 ? -1 : m;
+        }
+
         /// <summary>
         /// The quest distances as currently displayed. Walking changes them, and nothing else
         /// would trigger a redraw — counts have not moved — so the anchor tick watches this.
@@ -578,6 +622,10 @@ namespace Tallybook
             {
                 if (pin.QuestGiver == null || !pin.Active) continue;
                 sb.Append(DistanceTo(pin)).Append(',');
+            }
+            foreach (var sq in Sites?.HudSites() ?? new List<SiteQuest>())
+            {
+                sb.Append(DistanceToSite(sq)).Append(',');
             }
             return sb.ToString();
         }

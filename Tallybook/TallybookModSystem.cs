@@ -32,6 +32,7 @@ namespace Tallybook
         QuestWaypoints questWaypoints;
         QuestHistory questHistory;
         StoryProgress story;
+        SiteQuests siteQuests;
         GuiDialogTallybook dialog;
         HudTallybook hud;
         HandbookReturnButton handbookReturn;
@@ -42,9 +43,19 @@ namespace Tallybook
 
         public override bool ShouldLoad(EnumAppSide side) => side == EnumAppSide.Client;
 
+        /// <summary>The per-build stamp from the csproj — what ".tallybook version" prints.
+        /// Two builds can share a mod version mid-iteration, and a stale staged zip looks
+        /// exactly like a fix not working (bit Mark on 0.3.10 and again on 0.3.11).</summary>
+        static string BuildStamp =>
+            System.Reflection.Assembly.GetExecutingAssembly()
+                .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+                .FirstOrDefault()?.InformationalVersion ?? "unknown";
+
         public override void StartClientSide(ICoreClientAPI api)
         {
             capi = api;
+            capi.Logger.Notification("[tallybook] {0}, {1}", Mod?.Info?.Version, BuildStamp);
 
             try
             {
@@ -261,6 +272,30 @@ namespace Tallybook
                         foreach (var line in story.Report()) capi.ShowChatMessage(line);
                         return TextCommandResult.Success("");
                     })
+                .EndSubCommand()
+                .BeginSubCommand("version")
+                    .WithDescription("Which Tallybook build is actually running — checks a restaged zip really loaded")
+                    .HandleWith(_ => TextCommandResult.Success(
+                        $"Tallybook {Mod?.Info?.Version}, {BuildStamp}. "
+                        + "If you just restaged the zip and this stamp looks old, the game is "
+                        + "still running the previous build — a full game restart is required."))
+                .EndSubCommand()
+                .BeginSubCommand("sites")
+                    .WithDescription("Map-artifact side quests: what the catalogue derived, scan state, progress. 'track <name>' re-adds a dismissed one")
+                    .WithArgs(api.ChatCommands.Parsers.OptionalAll("action"))
+                    .HandleWith(args =>
+                    {
+                        EnsureGui();
+                        string action = (args[0] as string)?.Trim();
+                        if (!string.IsNullOrEmpty(action)
+                            && action.StartsWith("track ", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return TextCommandResult.Success(
+                                siteQuests.Retrack(action.Substring("track ".Length)));
+                        }
+                        foreach (var line in siteQuests.Report()) capi.ShowChatMessage("  " + line);
+                        return TextCommandResult.Success("");
+                    })
                 .EndSubCommand();
 
             api.Event.PlayerJoin += OnPlayerJoin;
@@ -319,6 +354,16 @@ namespace Tallybook
                     if (questHistory?.CheckErrandCompletion() == true) questsMoved = true;
                     if (questsMoved) svc.RecountAll();
 
+                    // Map-artifact side quests: adopt newly read locator maps, notice
+                    // arrivals, count recovered writings. Gated on Ready like the waypoint
+                    // resolver — adopting into a store that has not loaded yet would be
+                    // writing over the player's file with an empty one.
+                    if (questWaypoints?.Ready == true && siteQuests?.Tick() == true)
+                    {
+                        svc.Store.Save();
+                        svc.RecountAll();
+                    }
+
                     // Same reason: a story step completing raises no event. A handful of
                     // variable reads when nothing moved.
                     story?.Poll();
@@ -336,14 +381,18 @@ namespace Tallybook
             questHistory = new QuestHistory(capi, svc.Store, quests);
             questWaypoints = new QuestWaypoints(capi, config, svc.Store);
             story = new StoryProgress(capi, svc, quests, questWaypoints);
+            siteQuests = new SiteQuests(capi, svc, questWaypoints);
             // The story block redraws with the same surfaces as every count, so its state
             // rides the shared change signature — and so does the set of quests awaiting a
-            // reward, or the "collect your reward" row could never appear or clear.
+            // reward, or the "collect your reward" row could never appear or clear. Site
+            // quests ride it for the same reason: arrival and a found writing change no
+            // store data the pin signature can see.
             svc.ExtraSignature = () => story.UiSignature() + "|rw:"
-                + string.Join(",", questHistory.AwaitingRewards().Select(a => a.Chain));
+                + string.Join(",", questHistory.AwaitingRewards().Select(a => a.Chain))
+                + "|sq:" + siteQuests.Signature();
             dialog = new GuiDialogTallybook(capi, config, svc, questHistory, questWaypoints,
-                                            story, SetHudVisible, () => hud?.Refresh());
-            hud = new HudTallybook(capi, config, svc);
+                                            story, siteQuests, SetHudVisible, () => hud?.Refresh());
+            hud = new HudTallybook(capi, config, svc) { Sites = siteQuests };
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
             questGlow = new QuestReadyGlow(capi, config, svc, questHistory);
             questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);
@@ -461,9 +510,11 @@ namespace Tallybook
             svc.Probe.InvalidateIndex();
             quests.InvalidateCatalogue();     // asset sets differ between servers
             story.InvalidateWorld();          // and story content with them
+            siteQuests.InvalidateWorld();     // locator items and lore likewise
             SubscribeToCarriedInventories();
             svc.Store.Load(svc.Resolve);
             BackfillQuestText();
+            DedupeQuestPins();
             AdoptVillageQuests();
             questHistory.Update();
             story.Poll();
@@ -524,6 +575,56 @@ namespace Tallybook
         }
 
         /// <summary>
+        /// Merge the same player-scope errand tracked under two names. The login scan names
+        /// givers after their dialogue file ("Luxuries"); a live conversation names the
+        /// entity ("Trader"); both paths ran and the player owed two iron pickaxes for one
+        /// errand (found by Mark). Player-scope only — the quest belongs to the player, so
+        /// one pin is the truth; entity-scope errands stay per-NPC, since two traders can
+        /// each genuinely want a quern. The file-derived name is kept (it is the stable one,
+        /// the login scan will use it forever), and anything only the removed twin knew —
+        /// position, text, maps, an active checkmark — migrates first.
+        /// </summary>
+        void DedupeQuestPins()
+        {
+            bool changed = false;
+            foreach (var group in svc.Store.Pins
+                .Where(p => p.QuestGiver != null)
+                .GroupBy(p => (p.Code, p.Count))
+                .Where(g => g.Count() > 1)
+                .Select(g => g.ToList())
+                .ToList())
+            {
+                var def = group
+                    .Select(p => quests.DefFor(p.QuestGiver, p.Code, p.Count))
+                    .FirstOrDefault(d => d != null);
+                if (def == null || !quests.DefIsPlayerScoped(def)) continue;
+
+                var keeper = group.FirstOrDefault(p =>
+                        string.Equals(p.QuestGiver, def.NpcName, StringComparison.OrdinalIgnoreCase))
+                    ?? group.FirstOrDefault(p => p.QuestX != 0 || p.QuestZ != 0)
+                    ?? group[0];
+
+                foreach (var twin in group)
+                {
+                    if (twin == keeper) continue;
+                    if (keeper.QuestX == 0 && keeper.QuestY == 0 && keeper.QuestZ == 0)
+                    {
+                        keeper.QuestX = twin.QuestX; keeper.QuestY = twin.QuestY; keeper.QuestZ = twin.QuestZ;
+                    }
+                    if ((keeper.QuestText == null || keeper.QuestText.Count == 0) && twin.QuestText?.Count > 0)
+                        keeper.QuestText = twin.QuestText;
+                    if ((keeper.QuestMaps == null || keeper.QuestMaps.Count == 0) && twin.QuestMaps?.Count > 0)
+                        keeper.QuestMaps = twin.QuestMaps;
+                    if (twin.Active) keeper.Active = true;
+
+                    svc.Store.Remove(twin);
+                    changed = true;
+                }
+            }
+            if (changed) svc.Store.Save();
+        }
+
+        /// <summary>
         /// Pick up village errands you are already on, without needing to go and talk to
         /// anyone. Their state lives on the player and is synced here, so the dialogue files
         /// plus those variables are enough — including for quests accepted long before this
@@ -544,12 +645,22 @@ namespace Tallybook
                     string key = QuestWatcher.OfferKey(offer.NpcName, req);
                     if (!svc.Store.OfferedQuests.Add(key)) continue;
 
+                    // Already tracked under another name: this scan attributes errands to
+                    // the dialogue FILE ("Luxuries") while a live conversation records the
+                    // entity's name ("Trader"), and everything here is player-scope, so the
+                    // same errand under both names is one quest twice — doubling the demand
+                    // (found by Mark, two iron pickaxe rows). Matched on the item alone,
+                    // not item+count: a count captured wrong by an older build must not
+                    // spawn a "corrected" twin beside itself. The offer key stays consumed.
+                    string reqCode = req.Stack?.Collectible?.Code?.ToShortString();
+                    if (svc.Store.Pins.Any(p => p.QuestGiver != null && p.Code == reqCode)) continue;
+
                     var pin = svc.Store.Add(req.Stack, req.Quantity, setCount: true, activate: false,
                                             questGiver: offer.NpcName);
                     if (pin == null) continue;
 
-                    if (offer.Briefing.Count > 0 && (pin.QuestText == null || pin.QuestText.Count == 0))
-                        pin.QuestText = offer.Briefing.ToList();
+                    if (req.Briefing.Count > 0 && (pin.QuestText == null || pin.QuestText.Count == 0))
+                        pin.QuestText = req.Briefing.ToList();
 
                     ApplyKnownPlace(pin);
                     svc.Resolve(pin);
@@ -789,6 +900,27 @@ namespace Tallybook
             int added = 0;
             foreach (var req in offer.Requirements)
             {
+                // The same player-scope errand may already be pinned under its dialogue
+                // file's name (the login scan says "Luxuries" where the live entity says
+                // "Trader"). That pin IS this errand — enrich it with what only standing
+                // here can teach (the NPC's position, a properly threaded briefing) and add
+                // nothing (found by Mark, two iron pickaxe rows).
+                string reqCode = req.Stack?.Collectible?.Code?.ToShortString();
+                var twin = svc.Store.Pins.FirstOrDefault(p => p.QuestGiver != null
+                    && p.QuestGiver != offer.NpcName
+                    && p.Code == reqCode && p.Count == req.Quantity);
+                if (twin != null
+                    && quests.DefIsPlayerScoped(quests.DefFor(twin.QuestGiver, twin.Code, twin.Count)))
+                {
+                    if (twin.QuestX == 0 && twin.QuestY == 0 && twin.QuestZ == 0 && offer.Pos != null)
+                    {
+                        twin.QuestX = offer.Pos.X; twin.QuestY = offer.Pos.Y; twin.QuestZ = offer.Pos.Z;
+                    }
+                    if (req.Briefing.Count > 0 && !QuestScanner.IsTranscript(twin.QuestText))
+                        twin.QuestText = req.Briefing.ToList();
+                    continue;
+                }
+
                 var pin = svc.Store.Add(req.Stack, req.Quantity, setCount: true, activate: false,
                                         questGiver: offer.NpcName);
                 if (pin == null) continue;
@@ -799,7 +931,7 @@ namespace Tallybook
                     pin.QuestY = offer.Pos.Y;
                     pin.QuestZ = offer.Pos.Z;
                 }
-                if (offer.Briefing.Count > 0) pin.QuestText = offer.Briefing.ToList();
+                if (req.Briefing.Count > 0) pin.QuestText = req.Briefing.ToList();
                 if (offer.Maps.Count > 0) pin.QuestMaps = offer.Maps.ToList();
                 svc.Resolve(pin);
                 added++;

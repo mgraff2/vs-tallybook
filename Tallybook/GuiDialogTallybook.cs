@@ -166,6 +166,9 @@ namespace Tallybook
         /// <summary>A quest handed in whose reward is uncollected — no pin behind it (the
         /// errand pin left with the goods), just the walk still owed to the player.</summary>
         class RewardRow : Row { public string Name; public string Giver; }
+        /// <summary>A map-artifact destination tracked as a side quest — no pin behind it
+        /// either; the goal is a place, and where writings are hidden there, a count.</summary>
+        class SiteRow : Row { public SiteQuest Site; }
         class InfoRow : Row
         {
             public string Text;
@@ -185,12 +188,13 @@ namespace Tallybook
         readonly Action onHudChanged;
         readonly QuestWaypoints waypoints;
         readonly StoryProgress story;
+        readonly SiteQuests sites;
 
         static double DefaultHudFontSize => CairoFont.WhiteSmallText().UnscaledFontsize;
 
         public GuiDialogTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc,
                                   QuestHistory history, QuestWaypoints waypoints,
-                                  StoryProgress story,
+                                  StoryProgress story, SiteQuests sites,
                                   Action<bool> setHudVisible, Action onHudChanged)
             : base(capi)
         {
@@ -200,6 +204,7 @@ namespace Tallybook
             this.history = history;
             this.waypoints = waypoints;
             this.story = story;
+            this.sites = sites;
             this.setHudVisible = setHudVisible;
             // OnCountsChanged is the single redraw signal: every store mutation funnels
             // through TallyService.RecountAll, whose signature covers structure and numbers.
@@ -259,6 +264,34 @@ namespace Tallybook
                 foreach (var waiting in history.AwaitingRewards())
                 {
                     allRows.Add(new RewardRow { Name = waiting.Name, Giver = waiting.Giver, Indent = 0 });
+                }
+            }
+
+            // Then the places: map-artifact destinations adopted as side quests.
+            if (tab == TbTab.Quests && sites != null)
+            {
+                foreach (var sq in svc.Store.SiteQuests.Where(s => !s.Dismissed))
+                {
+                    allRows.Add(new SiteRow { Site = sq, Indent = 0 });
+                    // Parked site quests keep their header row and nothing else — the same
+                    // contract as an unchecked pin.
+                    if (!sq.Active || !sq.TextExpanded) continue;
+
+                    // Only what has been found. The unfound writings' titles stay the
+                    // site's secret — the count above is the progress, the names are the
+                    // content it has not given up yet.
+                    foreach (var title in sites.FoundLoreTitles(sq))
+                    {
+                        string line = $"√ {title}";
+                        allRows.Add(new InfoRow { Text = line, Full = line, Indent = 1 });
+                    }
+                    var count = sites.LoreCount(sq);
+                    if (count.HasValue && count.Value.Total > count.Value.Found)
+                    {
+                        int left = count.Value.Total - count.Value.Found;
+                        string line = $"{left} writing(s) still hidden there.";
+                        allRows.Add(new InfoRow { Text = line, Full = line, Indent = 1 });
+                    }
                 }
             }
 
@@ -482,7 +515,8 @@ namespace Tallybook
             // rows, and a tab reading (0) over a table with a row in it is a lie.
             var awaiting = history?.AwaitingRewards()
                 ?? new List<(string Chain, string Name, string Giver)>();
-            int questCount = PinsForTab(TbTab.Quests).Count() + awaiting.Count;
+            int siteCount = sites == null ? 0 : svc.Store.SiteQuests.Count(s => !s.Dismissed);
+            int questCount = PinsForTab(TbTab.Quests).Count() + awaiting.Count + siteCount;
 
             // Open quests first, then what is finished — the archive reads as a story so far.
             var done = new List<QuestRecord>();
@@ -506,7 +540,7 @@ namespace Tallybook
 
             if (tab == TbTab.Quests) ComposeStoryBlock(c, ref y);
 
-            if (!PinsForTab(tab).Any() && !(tab == TbTab.Quests && awaiting.Count > 0))
+            if (!PinsForTab(tab).Any() && !(tab == TbTab.Quests && (awaiting.Count > 0 || siteCount > 0)))
             {
                 string empty = tab == TbTab.Quests
                     ? "No errands tracked."
@@ -527,7 +561,8 @@ namespace Tallybook
 
             // One bulk toggle instead of a confirm dialog per item: unchecking loses nothing,
             // so it needs no confirmation — that is the whole point of parking over unpinning.
-            bool anyActive = svc.Store.Pins.Any(p => p.Active);
+            bool anyActive = svc.Store.Pins.Any(p => p.Active)
+                || svc.Store.SiteQuests.Any(s => !s.Dismissed && s.Active);
             c.AddSmallButton(anyActive ? "Uncheck all" : "Check all",
                 () => { svc.Store.SetAllActive(!anyActive); return true; },
                 EB(DW - 112, y - 2, 112, 26), EnumButtonStyle.Small);
@@ -733,6 +768,99 @@ namespace Tallybook
                               + "there and use .tallybook here, or name a map waypoint after them."
                             : $"Open the map centred on {who}.",
                         font, 260, EB(ColAct2, y, 40, 26));
+                    break;
+                }
+                case SiteRow sr:
+                {
+                    var sq = sr.Site;
+                    var count = sites?.LoreCount(sq);
+                    bool loreDone = count.HasValue && count.Value.Found >= count.Value.Total;
+
+                    // The same checkbox every pin has: unchecked parks it — off the HUD, no
+                    // announcements, row dimmed — and nothing is lost (Mark).
+                    c.AddSwitch(on =>
+                    {
+                        sq.Active = on;
+                        svc.Store.Save();
+                        svc.RecountAll();
+                    }, EB(ColCheck, y + 1, 25, 25), "sitact-" + sq.Key, 25);
+
+                    var mapStack = sites?.SampleStackFor(sq);
+                    Icon(mapStack == null ? null : new List<ItemStack> { mapStack });
+
+                    // The found-writings list opens under the row via the same leading toggle
+                    // an errand's conversation uses; the column is reserved either way so the
+                    // name column stays a column.
+                    double siteNameX = nx + 28;
+                    if (sq.Active && count.HasValue && count.Value.Total > 0)
+                    {
+                        c.AddSmallButton(sq.TextExpanded ? "−" : "+", () =>
+                        {
+                            sq.TextExpanded = !sq.TextExpanded;
+                            svc.Store.Save();
+                            Recompose();
+                            return true;
+                        }, EB(nx, y, 24, 26), EnumButtonStyle.Small);
+                        c.AddHoverText(sq.TextExpanded
+                                ? "Hide what you have found."
+                                : "See what you have found here so far.",
+                            font, 220, EB(nx, y, 24, 26));
+                    }
+
+                    var siteFont = CairoFont.WhiteSmallishText().WithFontSize((float)(TablePx + 2));
+                    if (!sq.Active)
+                        siteFont = siteFont.WithColor(TallybookConfig.ParseColor(config.ColorNone));
+                    else if (sq.Visited && loreDone)
+                        siteFont = siteFont.WithColor(TallybookConfig.ParseColor(config.ColorSatisfied));
+                    string siteTitle = sq.Visited ? $"{sq.Title} — visited" : SiteQuests.VisitPhrase(sq.Title);
+                    double siteTitleW = ColProg - siteNameX - 10;
+                    FittedText(c, siteTitle, siteFont, EB(siteNameX, ry + 3, siteTitleW, 26), siteTitleW);
+
+                    if (count == null)
+                    {
+                        // The lore scan has not finished for this world; a number here would
+                        // be a guess, and the row says so by saying nothing yet.
+                        c.AddStaticText("…", font.Clone().WithColor(GuiStyle.ColorParchment),
+                            EB(ColProg, ry + 4, 80, 24));
+                    }
+                    else if (count.Value.Total > 0)
+                    {
+                        Progress(count.Value.Found, count.Value.Total, !sq.Active);
+                        c.AddHoverText(
+                            $"You have found {count.Value.Found} of the {count.Value.Total} "
+                            + "writings hidden at this site.",
+                            font, 260, EB(ColProg, y, 90, 26));
+                    }
+                    else
+                    {
+                        Progress(sq.Visited ? 1 : 0, 1, !sq.Active);
+                        c.AddHoverText(
+                            "Nothing provable to collect here — reaching the place completes it.",
+                            font, 260, EB(ColProg, y, 90, 26));
+                    }
+
+                    // Position was captured at adoption, so unlike an errand's this button
+                    // always knows where it is going — even if the waypoint is deleted later.
+                    c.AddSmallButton("Map", () => ShowOnMapAt(
+                            new BlockPos((int)sq.X, (int)sq.Y, (int)sq.Z, 0), sq.Title),
+                        EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
+                    c.AddHoverText($"Open the map centred on {sq.Title}.",
+                        font, 240, EB(ColAct2, y, 40, 26));
+
+                    // One click, no hold: dismissing loses nothing — the quest is kept and
+                    // '.tallybook sites track <name>' brings it back.
+                    c.AddSmallButton("Dismiss", () =>
+                    {
+                        sq.Dismissed = true;
+                        svc.Store.Save();
+                        svc.RecountAll();
+                        Recompose();
+                        return true;
+                    }, EB(ColUnpin, y, 74, 26), EnumButtonStyle.Small);
+                    c.AddHoverText(
+                        "Set this site aside. Nothing is lost — '.tallybook sites track "
+                        + "<name>' brings it back.",
+                        font, 260, EB(ColUnpin, y, 74, 26));
                     break;
                 }
                 case PinRow pr:
@@ -1045,6 +1173,11 @@ namespace Tallybook
                     // Switches compose in the off state; setting On directly fires no callback.
                     var sw = SingleComposer.GetSwitch("act-" + row.Pin.Key);
                     if (sw != null) sw.On = row.Pin.Active;
+                }
+                foreach (var row in VisibleRows().OfType<SiteRow>())
+                {
+                    var sw = SingleComposer.GetSwitch("sitact-" + row.Site.Key);
+                    if (sw != null) sw.On = row.Site.Active;
                 }
             }
             finally { restoringInputs = false; }

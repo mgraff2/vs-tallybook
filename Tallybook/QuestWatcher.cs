@@ -109,13 +109,20 @@ namespace Tallybook
                 // dialogue file for, which is villagers named after their file — traders are
                 // exactly the ones it misses, so standing in front of one is the only chance
                 // their old unattributed paragraphs ever get their speaker back.
-                if (offer.Briefing.Count > 0)
+                //
+                // Per requirement, matched by item: an offer-wide rewrite stitched every
+                // thread this NPC carries onto every one of their pins (found by Mark — the
+                // gear pin retelling the pickaxe story).
+                foreach (var req in offer.Requirements)
                 {
+                    if (req.Briefing.Count == 0) continue;
+                    string reqCode = req.Stack?.Collectible?.Code?.ToShortString();
                     foreach (var pin in svc.Store.Pins)
                     {
-                        if (pin.QuestGiver == offer.NpcName && !QuestScanner.IsTranscript(pin.QuestText))
+                        if (pin.QuestGiver == offer.NpcName && pin.Code == reqCode
+                            && !QuestScanner.IsTranscript(pin.QuestText))
                         {
-                            pin.QuestText = offer.Briefing.ToList();
+                            pin.QuestText = req.Briefing.ToList();
                         }
                     }
                 }

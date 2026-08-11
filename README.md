@@ -107,6 +107,17 @@ where you are on request. Progress is per world and only moves forward, so losin
 handing an item over never un-completes a step. On worlds without story content the block
 never appears.
 
+**Map artifacts become side quests** too. Read a locator map — a treasure map, one of Better
+Ruins' ruin maps, any mod's map that marks your world map — and the place it marks joins the
+Side quests tab: *Visit the Abandoned Mine*. Standing at the site marks it visited, and where
+a site hides writings found nowhere else in the world — the Sunrift Experiment hides
+seventeen — the quest keeps counting after you arrive (`5/17`), read from your journal and
+your bags. The row's toggle lists what you have recovered so far; what you haven't stays the
+site's secret, only the count shows. Complete the set and the whole hunt moves to History.
+Story maps (the Devastation, Tobias' cave…) stay with the story block rather than doubling
+up here. Site quests carry the same checkbox as everything else — checked ones show on the
+K HUD with a live distance to the site, unchecked ones park quietly on the tab.
+
 Every pin tracks **its own acquisition**, not just its ingredients: the row reads
 `Low-quality soil 12/64` and fills in as you dig. That means items nothing crafts are worth
 pinning too — ores, hides, soil, an item a villager asked you to fetch — and a craftable
@@ -164,6 +175,10 @@ the handbook's front page instead of the item, run this and the line for that pi
 
 `.tallybook story` prints where you are in the storyline — completed and current steps only,
 never what comes next.
+
+`.tallybook sites` prints every destination this world's locator maps can mark, which of
+them hide provable writings, and where each tracked site quest stands; `.tallybook sites
+track <name>` brings back a site you dismissed.
 
 ## Install
 

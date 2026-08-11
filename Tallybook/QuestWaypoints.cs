@@ -183,6 +183,22 @@ namespace Tallybook
         }
 
         /// <summary>
+        /// The raw waypoint list for callers that capture what they read (site-quest
+        /// adoption), or null on a failed read. Same contract as every other read of this
+        /// list: a null or empty answer proves nothing and nothing may act on absence —
+        /// adoption only ever acts on presence, so a failed read simply adopts nothing.
+        /// </summary>
+        public List<Waypoint> TryReadOwnWaypoints()
+        {
+            try { return OwnWaypoints(); }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] could not read waypoints: {0}", e.Message);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Does a waypoint with exactly this title exist right now? True only on a successful
         /// read that finds it; an empty or failed read returns false, which callers must
         /// treat as "don't know" — the list is KNOWN to read back empty at random, so absence

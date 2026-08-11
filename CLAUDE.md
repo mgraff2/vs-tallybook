@@ -479,13 +479,22 @@ things the files genuinely cannot know should live on the pin.
   NPC for entity scope. An earlier build parked (unchecked) the pin instead, which left every
   finished errand sitting greyed-out on the Side quests tab for the player to sweep up (found
   by Mark, 0.3.9 play) — the History tab is where a finished errand lives, so the pin goes;
-  the check also sweeps up pins the parking build left behind (key already "done" + pin
-  inactive). Guards that matter: the once-guard is **ChainStates** (`errand:<giver>:<code>`),
-  not the history record — chain-owned errands (`…questcompleted`) add no record of their own,
-  and guarding on the record would redo those every second; a *checked* pin over a done errand
-  is the player's deliberate re-add and is never touched, so re-pinning stays possible; and
-  without the errand this fixes, a handed-in quest looked *less* done afterwards — the goods
-  leave the inventory, so 8/8 fell to 0/8 on a finished quest.
+  the check also sweeps up any pin over a recorded-done errand, checked or not. Guards that
+  matter: the once-guard is **ChainStates** (`errand:<giver>:<code>`), not the history record
+  — chain-owned errands (`…questcompleted`) add no record of their own, and guarding on the
+  record would redo those every second; and without the errand this fixes, a handed-in quest
+  looked *less* done afterwards — the goods leave the inventory, so 8/8 fell to 0/8 on a
+  finished quest.
+  **The old "a checked pin over a done errand is a deliberate re-add and is never touched"
+  exception is gone (0.3.11) — it protected a bug, not a choice (found by Mark: "Rusty gear
+  √ 221/1", immortal).** A barter's gates never close (`requestprice1` stays true forever),
+  so the watcher re-offered every finished purchase each conversation, minting *checked*
+  pins nobody asked for that the exception then refused to remove — archive, re-offer,
+  re-add, every chat. Both halves are fixed together and must stay together: `Scan` and
+  `LiveVillageQuests` skip a line whose `DoneSetters` variables already read true (in
+  conversation both scopes are readable; at login player-scope only), so a finished
+  hand-over is never offered; and the sweep removes done pins regardless of Active, which
+  is safe precisely *because* nothing can legitimately create one any more.
 - **"Done — go and collect" is a state the surfaces act on, not just a History caption.**
   `QuestHistory.AwaitingRewards()` lists chains at stage completed with a reward step still
   open; the Side quests tab renders each as a RewardRow (no pin behind it — the errand pin
@@ -607,11 +616,48 @@ asset, and collect `player.inventory` conditions.
   The rule applies to cosmetics too: QuestReadyGlow shipped on `GetEntitiesAround` and no orb
   ever appeared over a ready quest giver (found by Mark, first hand-in) — a silent empty
   result looks exactly like the feature being broken, because it is.
-- **The player's journal is readable client-side** (not yet used): `ModJournal` keeps a
-  private `ownJournal` (`Journal.Entries` → `JournalEntry{ EntryId, LoreCode, Title, Chapters }`)
-  and `DidDiscoverLore(playerUid, code, chapterId)` is public. So showing collected lore
-  beside a quest is possible; *relating* the two is the open problem — nothing links a lore
-  code to a quest chain, so any connection is a heuristic over codes and titles.
+- **The player's journal is readable client-side — but ONLY via `ownJournal` (used by site
+  quests, 0.3.11; corrected by decompile).** `ModJournal` keeps a private client-side
+  `ownJournal` (`Journal.Entries` → `JournalEntry{ EntryId, LoreCode, Title, Chapters }`),
+  synced in full at join and incrementally after. The public
+  `DidDiscoverLore(playerUid, code, chapterId)` looks tempting but reads
+  `journalsByPlayerUid` — the SERVER-side dictionary — and is always empty on a client, so
+  calling it client-side silently answers "never discovered anything". Reflect into
+  `ownJournal` (`SiteQuests.JournalLoreCodes`). A lore *item* is stamped with
+  `attributes.category`, which selects the lore pool; the journal entry's `LoreCode` is the
+  lore asset's `code` (`config/lore/*.json` — a vanilla convention, client-readable via
+  `capi.Assets`, where `category` defaults to the code when omitted). A read item also
+  carries `discoveryCode` naming its code directly.
+- **`quantity` is a documented ALIAS of `stacksize` on `JsonItemStack` (decompile-verified;
+  found via Mark's Forlorn Hope map purchase, 0.3.11).** Better Ruins writes
+  `{ code: 'gear-rusty', quantity: 10 }` where vanilla writes `stacksize: 10`; the game
+  accepts both, so the parser must too — reading only one captured a ten-gear price as one
+  gear, and the wrong count then strands the pin (DefFor deliberately has no code-only
+  fallback). Related decompile fact: the game's inventory-condition check
+  (`DialogueComponent.FindDesiredItem` → `matches`) wants the whole quantity in a SINGLE
+  slot (`itemstack.StackSize >= wantStack.StackSize`) — ten gears split 5+5 do not satisfy
+  the dialogue line even though our summed Have says 10/10.
+- **A giver has two names, and player-scope errands must merge across them (found by Mark,
+  0.3.11 — two iron-pickaxe rows for one quest).** The login scan names errands after the
+  dialogue FILE ("Luxuries"); the live conversation names the ENTITY ("Trader"); `Pin.Key`
+  carries the giver, so both paths minted pins. `DefIsPlayerScoped` is the rule: gates all
+  player-scope means the quest belongs to the player — one pin, whoever voices it (BR
+  traders are player-scope; vanilla traders are entity-scope and correctly stay per-NPC).
+  `DedupeQuestPins` merges survivors at login (file-derived name wins — it is the stable
+  one), and both adoption paths skip twins. The same divergence broke completion matching:
+  `DefForConversation` is the recovery — while talking to an NPC, the file they actually
+  speak from (`dialogueLoc`) identifies their errands, immune to name and count drift.
+  Conversation-time is the only safe moment for that looser match; the file, not a name, is
+  doing the identifying.
+- **Briefings are per-REQUIREMENT, never per-offer (found by Mark, 0.3.11 — the gear pin
+  retelling the pickaxe story).** One conversation carries several unrelated barters;
+  `QuestRequirement.Briefing` is scoped to the gate variables that set that errand, and
+  every path that writes `Pin.QuestText` uses it. An offer-wide briefing is a mash of every
+  thread the NPC knows.
+- **`QuestDef.Receives` — what the hand-over gives back** (giveitemstack triggerdata along
+  the same forward walk DoneSetters makes): archived as "Received: …" lines so a barter's
+  History record names what was bought. `DlgComp.trigger` is captured for this — the
+  give/take direction matters.
 - **Not yet handled:** `player.inventorywildcard` (a wildcard-coded inventory condition, e.g.
   `hoovedwearables-middleback-saddle*` in treasurehunter.json) and `triggerdata` hand-over
   quantities. Both are real requirement sources this scanner ignores.
@@ -730,6 +776,57 @@ asset, and collect `player.inventory` conditions.
   table and persistence are all reused. `Store.Add(..., setCount: true)` raises an existing
   pin to the requested count instead of adding to it — an errand needs exactly 10, and
   pinning it twice must not ask for 20.
+
+## Site quests (`SiteQuests` + `SiteLoreScan`) — map artifacts as side quests
+
+Built for Mark's ask: "Abandoned Mine" and "The Sunrift Experiment" waypoints (Better Ruins
+map artifacts) as side quests — the mine a single "visit" step, the Sunrift visit-then-
+collect with the 17-writings count on the row. Everything is derived, nothing mod-named:
+
+- **A locator map is the game's own convention** (`ItemLocatorMap`, decompile-verified
+  1.22.6): item attribute `locatorProps{ schematiccode, waypointtext, waypointicon,
+  offset, randomX/Z }`; reading one plants a pinned waypoint titled exactly
+  `Lang.Get(waypointtext)` at the structure centre (+offset, + per-item random for
+  approximate maps). The catalogue (`SiteQuests.Catalogue`) is every item carrying
+  locatorProps, grouped **by resolved waypoint title** — the waypoint is all we ever see,
+  and mine1/mine2 both title theirs "Abandoned Mine" while vanilla's treasures/dungeon maps
+  share one schematic code under two titles, so neither code nor title alone is the key.
+- **Adoption is waypoint-driven and once-ever per title+position** (`SaveFile.OfferedSites`,
+  same contract as OfferedQuests). Position is captured onto the quest at adoption — the
+  live waypoint read fails intermittently and the player may delete the marker; the Map
+  button draws only from the captured fields. Story-map titles
+  (`StoryProgress.StoryLocationLangKeys`) are deliberately not adopted: those walks belong
+  to the story block, and a second "visit the Devastation" row is the same fact twice.
+- **Visited = stood within 64 blocks horizontally** of the captured position, latched
+  forever. Y is ignored — the centre of an underground complex sits far under its doormat.
+- **"Writings found" counts only site-EXCLUSIVE lore.** `SiteLoreScan` scans worldgen
+  schematics of every lore-defining source (the game install + mod zips via
+  `Mod.SourcePath`) for lore categories — via `stackrandomizer-*` tokens mapped to their
+  category pools **read from the live item registry** (resolved per-variant attributes;
+  never re-parse the randomizer JSON) plus escaped `category:` attributes — and calls a
+  category site-exclusive when every schematic that can place it belongs to the site.
+  Exclusive is the honesty bar: a writing that can drop in any village chest proves
+  nothing. Structure configs (relaxed JSON, unquoted keys) are token-associated by regex,
+  not parsed; `.tallybook sites` prints what came out so a misread is visible. The scan is
+  background + cached (`ModData/tallybook/site-lore-cache.json`, fingerprinted by source
+  sizes/mtimes); until it lands, sites show "…" and nothing completes — "don't know yet"
+  must not read as "nothing to collect".
+- **Found = journal ∪ carried, latched** (`SiteQuest.LoreFound`, monotonic): journal codes
+  via `ownJournal` reflection (see journal bullet above — the public API lies client-side),
+  carried via `discoveryCode` (read) or `category` (sealed; credited only when the category
+  maps to exactly one code — anything looser is a guess). Reading a writing consumes the
+  item into the journal, which is why the latch and the journal, not the inventory count,
+  are the record.
+- **Completion archives to History and removes the row** (errand contract): visited + every
+  exclusive writing found. Found titles are listed; unfound titles are never shown anywhere
+  — the count is progress, the names are content the site has not given up (same spoiler
+  rule as everything else). Dismiss is one click and loses nothing;
+  `.tallybook sites track <name>` re-adds.
+- Rows are `SiteRow`s — no Pin behind them, like RewardRow; state rides `ExtraSignature`
+  ("|sq:") so arrival, a found writing, and the scan landing all redraw the surfaces.
+- Known limit: waypoint titles are resolved with the *server's* language at planting and
+  matched against the *client's* Lang here — a locale mismatch between them means no
+  adoption. Accepted; the alternative was matching against every language file.
 
 ## Story stepping (`StoryProgress`) — reveal gates are the product
 
@@ -998,7 +1095,11 @@ tallybook zips) for local/friend testing first. **A restaged zip needs a full ga
 load** — rejoining the world from a running client hits "Assembly with same name is already
 loaded" in client-main.log and the session keeps running the *old* build (or none), which
 tests the previous code while looking like the fix didn't work (bit Mark mid-iteration on
-0.3.10). When a staged fix "changes nothing", check that log line before doubting the fix. Publish only on explicit go-ahead: dated
+0.3.10 — and again on 0.3.11, when the zip was never staged at all: only 0.3.10 sat in
+Mods while two rounds of fixes were tested against it). When a staged fix "changes
+nothing", run **`.tallybook version`** first — it prints the per-build timestamp compiled
+into the DLL (`InformationalVersion` in the csproj), so "which build is actually running"
+has an in-game answer; the same stamp is logged at startup. Publish only on explicit go-ahead: dated
 CHANGELOG entry, README version refs, commit, tag `vX.Y.Z`, push,
 `gh release create vX.Y.Z dist\tallybook_X.Y.Z.zip --title "Tallybook X.Y.Z"`. ModDB upload
 is manual. **Run `.\tools\compat-test.ps1` and `.\tools\version-sweep.ps1` before every

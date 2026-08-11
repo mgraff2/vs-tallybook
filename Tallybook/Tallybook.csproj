@@ -6,10 +6,15 @@
     <Nullable>disable</Nullable>
     <AssemblyName>Tallybook</AssemblyName>
     <RootNamespace>Tallybook</RootNamespace>
-    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <NoWarn>$(NoWarn);MSB3277</NoWarn>
     <VintageStoryPath Condition="'$(VintageStoryPath)' == ''">$(APPDATA)\Vintagestory</VintageStoryPath>
+    <!-- A per-build stamp, logged at startup and printed by ".tallybook version". Two builds
+         can share a version number mid-iteration, and "the fix didn't work" has twice turned
+         out to be the previous DLL still running — this makes that checkable in-game. -->
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <InformationalVersion>build-$([System.DateTime]::UtcNow.ToString(yyyyMMdd-HHmm))</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

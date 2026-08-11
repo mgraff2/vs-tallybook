@@ -18,6 +18,12 @@ namespace Tallybook
         public ItemStack Stack;
         public int Quantity;
         public string Name => Stack?.GetName() ?? "?";
+
+        /// <summary>What was said about THIS request — scoped to its own gate variables. A
+        /// conversation can carry several unrelated barters (the Luxuries trader prices one
+        /// map in an iron pickaxe and another in ten gears), and an offer-wide briefing
+        /// stitched both threads into one transcript on every pin (found by Mark).</summary>
+        public List<string> Briefing = new List<string>();
     }
 
     /// <summary>
@@ -34,6 +40,22 @@ namespace Tallybook
         public List<string> Maps = new List<string>();
         internal List<QuestScanner.DlgCond> Gates = new List<QuestScanner.DlgCond>();
         public List<string> Briefing = new List<string>();
+
+        /// <summary>The dialogue asset this errand came from ("domain:config/dialogue/x.json").
+        /// What lets a pin be matched to its def *in conversation* when every name has
+        /// drifted — the NPC in front of you knows exactly which file it speaks from.</summary>
+        public string File;
+
+        /// <summary>What the hand-over gives back (giveitemstack along the same forward walk
+        /// DoneSetters makes) — "Map to the Forlorn Hope Tower". A barter's history record
+        /// should say what was bought, not just what was paid (Mark).</summary>
+        public List<string> Receives = new List<string>();
+
+        /// <summary>What the quest is ABOUT, when the data can say: the destination of the
+        /// locator map the hand-over gives ("Forlorn Hope Tower", from the map item's own
+        /// location name). "Rusty gear for Trader" is the subset, not the quest — the record
+        /// gets the quest's name and the items go under it (Mark).</summary>
+        public string Title;
 
         /// <summary>What was said when the goods changed hands — the player's turn-in line
         /// and the NPC's response, recovered from the dialogue graph like the briefing is.
@@ -124,6 +146,9 @@ namespace Tallybook
             public Dictionary<string, string> setVariables;
             public DlgText[] text;
 
+            /// <summary>"giveitemstack" / "takefrominventory" — which way the goods move.</summary>
+            public string trigger;
+
             /// <summary>What the step hands over — including the locator maps that quests
             /// come with, which is how an errand knows there is a place attached to it.</summary>
             public StackSpec triggerdata;
@@ -133,7 +158,10 @@ namespace Tallybook
         // evaluated later, when the answer can have changed. The rest of the dialogue shape
         // stays private — it is a parsing detail and nothing outside needs it.
         internal class DlgCond { public string variable; public string isValue; public string isNotValue; }
-        class StackSpec { public string type; public string code; public int stacksize = 1; }
+        // quantity is a documented ALIAS of stacksize on the game's JsonItemStack — Better
+        // Ruins writes `quantity: 10` where vanilla writes `stacksize`, and reading only one
+        // key captured the Luxuries trader's ten-gear price as a single gear (found by Mark).
+        class StackSpec { public string type; public string code; public int stacksize = 1; public int quantity = 1; }
 #pragma warning restore 0649
 
         /// <summary>The NPC whose conversation window is open, or null.</summary>
@@ -205,9 +233,23 @@ namespace Tallybook
                     var gates = conds.Where(c => !IsInventoryCondition(c)).ToList();
                     if (gates.Count == 0 || !gates.All(g => GateMet(g, npc))) continue;
 
+                    // A hand-over that already happened is not an offer. Barter gates stay
+                    // open forever (the Luxuries trader's price flag never clears), so
+                    // without this every conversation re-tracked the finished purchase, the
+                    // sweep archived it, and the next poll re-added it — an immortal pin
+                    // (found by Mark: "Rusty gear √ 221/1" on a map bought days ago). In
+                    // conversation both variable scopes are readable, so the answer is real.
+                    var done = DoneSetters(file, line);
+                    if (done.Count > 0 && done.Any(d => GateMet(d, npc))) continue;
+
                     string gateKey = string.Join("&", gates
                         .Select(g => $"{g.variable}={g.isValue}/{g.isNotValue}")
                         .OrderBy(s => s, StringComparer.Ordinal));
+
+                    // The words belong to the requirement, not the offer: one conversation
+                    // can carry several unrelated barters, and pooling their briefings
+                    // stitched the pickaxe thread onto the gear pin and vice versa (Mark).
+                    var said = Briefing(file, gates);
 
                     var thisLine = new List<QuestRequirement>();
                     foreach (var w in wanted)
@@ -216,6 +258,7 @@ namespace Tallybook
                         if (req == null) continue;
                         string key = $"{req.Stack.Collectible.Code}|{req.Quantity}";
                         if (!seen.Add(key)) continue;
+                        req.Briefing = said.ToList();
                         thisLine.Add(req);
                     }
                     if (thisLine.Count > 0)
@@ -229,9 +272,9 @@ namespace Tallybook
                         allGates.AddRange(gates);
                     }
 
-                    foreach (var said in Briefing(file, gates))
+                    foreach (var s in said)
                     {
-                        if (!offer.Briefing.Contains(said)) offer.Briefing.Add(said);
+                        if (!offer.Briefing.Contains(s)) offer.Briefing.Add(s);
                     }
                 }
             }
@@ -248,9 +291,14 @@ namespace Tallybook
                 if (lines.Count < 2) continue;
 
                 // The other lines are the alternatives. The note names every acceptable
-                // option, tracked one included — "any of these" should mean these.
+                // option, tracked one included — "any of these" should mean these — and it
+                // rides the tracked requirement's own briefing, where its errand is.
                 string note = AlternativesNote + string.Join(", ",
                     lines.SelectMany(l => l).Select(r => r.Name).Distinct());
+                foreach (var req in lines[0])
+                {
+                    if (!req.Briefing.Contains(note)) req.Briefing.Add(note);
+                }
                 if (!offer.Briefing.Contains(note)) offer.Briefing.Add(note);
             }
 
@@ -402,6 +450,62 @@ namespace Tallybook
                       ?? (idx + 1 < file.components.Length ? file.components[idx + 1]?.code : null);
             }
             return result;
+        }
+
+        /// <summary>
+        /// What the same forward walk hands BACK — the giveitemstack steps a turn-in flows
+        /// into. This is what a barter buys: the ten gears' walk gives the Forlorn Hope map,
+        /// the pickaxe's gives the sunrift map. Named from the item itself, like the tied
+        /// maps are. When a received item is a locator map, its destination becomes the
+        /// quest's title ("Forlorn Hope Tower" — the same Lang key the map's waypoint uses),
+        /// because the place, not the payment, is what the quest is about.
+        /// </summary>
+        List<string> ReceivedItems(DlgFile file, DlgText turnInLine, out string questTitle)
+        {
+            var names = new List<string>();
+            questTitle = null;
+            string cur = turnInLine?.jumpTo;
+
+            for (int hop = 0; hop < 6 && cur != null; hop++)
+            {
+                int idx = Array.FindIndex(file.components, c => c?.code == cur);
+                if (idx < 0) break;
+                var comp = file.components[idx];
+
+                if (comp.trigger == "giveitemstack" && comp.triggerdata?.code != null)
+                {
+                    var loc = new AssetLocation(comp.triggerdata.code);
+                    ItemStack stack = null;
+                    if (comp.triggerdata.type == "block")
+                    {
+                        var block = capi.World.GetBlock(loc);
+                        if (block != null) stack = new ItemStack(block);
+                    }
+                    else
+                    {
+                        var item = capi.World.GetItem(loc);
+                        if (item != null) stack = new ItemStack(item);
+                    }
+                    string name = stack?.GetName();
+                    if (!string.IsNullOrEmpty(name) && !names.Contains(name)) names.Add(name);
+
+                    if (questTitle == null)
+                    {
+                        string key = stack?.Collectible?.Attributes?["locatorProps"]?["waypointtext"]?.AsString();
+                        if (!string.IsNullOrEmpty(key))
+                        {
+                            string t = Lang.Get(key);
+                            // Lang returning the key means no translation; the map's own
+                            // name still says where it leads and beats a raw key.
+                            questTitle = !string.IsNullOrEmpty(t) && t != key ? t : name;
+                        }
+                    }
+                }
+
+                cur = comp.jumpTo
+                      ?? (idx + 1 < file.components.Length ? file.components[idx + 1]?.code : null);
+            }
+            return names;
         }
 
         List<string> MapsForGates(DlgFile file, IEnumerable<DlgCond> gates)
@@ -558,17 +662,26 @@ namespace Tallybook
                         // person — which is why only this path is fussy.
                         if (!gates.Any(g => g.isValue != null)) continue;
 
+                        // Already handed over: not an errand to adopt. Player-scope completion
+                        // flags are readable here (entity-scope ones are not — those errands
+                        // resolve in conversation instead).
+                        var done = DoneSetters(file, line);
+                        if (done.Any(d => d.variable?.StartsWith("player.") == true && GateMet(d, null))) continue;
+
+                        var said = Briefing(file, gates);
                         foreach (var w in wanted)
                         {
                             var req = ToRequirement(w);
                             if (req == null) continue;
                             string key = $"{req.Stack.Collectible.Code}|{req.Quantity}";
-                            if (seen.Add(key)) offer.Requirements.Add(req);
+                            if (!seen.Add(key)) continue;
+                            req.Briefing = said.ToList();
+                            offer.Requirements.Add(req);
                         }
 
-                        foreach (var said in Briefing(file, gates))
+                        foreach (var s in said)
                         {
-                            if (!offer.Briefing.Contains(said)) offer.Briefing.Add(said);
+                            if (!offer.Briefing.Contains(s)) offer.Briefing.Add(s);
                         }
                     }
                 }
@@ -1043,13 +1156,16 @@ namespace Tallybook
                                 NpcName = npc,
                                 ItemCode = code,
                                 Quantity = req.Quantity,
+                                File = loc.ToString(),
                                 // This errand's maps, tied by shared gate variable — never
                                 // everything the file hands out.
                                 Maps = MapsForGates(file, gates),
                                 Gates = gates,
                                 Briefing = Briefing(file, gates),
                                 HandIn = HandInTranscript(file, line),
-                                Done = DoneSetters(file, line)
+                                Done = DoneSetters(file, line),
+                                Receives = ReceivedItems(file, line, out string questTitle),
+                                Title = questTitle
                             });
                         }
                     }
@@ -1178,6 +1294,65 @@ namespace Tallybook
                 ?? all.FirstOrDefault(d => d.NpcName == giver && d.ItemCode == itemCode);
         }
 
+        /// <summary>
+        /// The def behind a pin, resolved through the NPC being TALKED TO: the errand must
+        /// come from the dialogue file this entity actually speaks, and the pin's giver must
+        /// be either the entity's live name or the file's. This is the match of last resort
+        /// for pins whose recorded name and count have both drifted (the Luxuries trader's
+        /// live name is "Trader", and a quantity captured wrong strands the pin) — safe only
+        /// in conversation, because the file, not a name, is doing the identifying.
+        /// </summary>
+        public QuestDef DefForConversation(Entity npc, string giver, string itemCode)
+        {
+            if (npc == null || itemCode == null) return null;
+
+            string file = DialogueFileOf(npc);
+            if (file == null) return null;
+
+            string liveName = NonBlank(npc.GetName(), "");
+            return QuestCatalogue().FirstOrDefault(d =>
+                string.Equals(d.File, file, StringComparison.OrdinalIgnoreCase)
+                && d.ItemCode == itemCode
+                && (string.Equals(giver, liveName, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(giver, d.NpcName, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        /// <summary>
+        /// Does this errand's state live entirely on the player? Player-scope quests are one
+        /// quest per player no matter which entity voices them — so a pin recovered from the
+        /// file (giver "Luxuries") and one captured in conversation (giver "Trader") are the
+        /// same errand, and keeping both doubles the demand. Entity-scope errands stay
+        /// per-NPC: two traders can each genuinely want a quern.
+        /// </summary>
+        public bool DefIsPlayerScoped(QuestDef def)
+        {
+            var real = def?.Gates?
+                .Where(g => g?.variable != null && g.variable != "player.inventory")
+                .ToList();
+            return real != null && real.Count > 0
+                && real.All(g => g.variable.StartsWith("player."));
+        }
+
+        /// <summary>The dialogue asset the NPC in front of you speaks from, as
+        /// "domain:config/dialogue/x.json" — comparable with <see cref="QuestDef.File"/>.</summary>
+        public string DialogueFileOf(Entity npc)
+        {
+            try
+            {
+                var bh = npc?.GetBehavior<EntityBehaviorConversable>();
+                if (bh == null) return null;
+
+                var loc = AccessTools.Field(typeof(EntityBehaviorConversable), "dialogueLoc")
+                    ?.GetValue(bh) as AssetLocation;
+                if (loc == null) return null;
+
+                var withExt = loc.Clone();
+                if (!withExt.Path.EndsWith(".json")) withExt.Path += ".json";
+                return withExt.ToString();
+            }
+            catch { return null; }
+        }
+
         /// <summary>Are this errand's gates satisfied for the player right now? Entity-scope
         /// gates live on an NPC that may not be loaded, so they read as unmet — fail toward
         /// "no", never toward a claim we cannot support.</summary>
@@ -1269,7 +1444,7 @@ namespace Tallybook
             }
             if (stack == null) return null;
 
-            return new QuestRequirement { Stack = stack, Quantity = Math.Max(1, spec.stacksize) };
+            return new QuestRequirement { Stack = stack, Quantity = Math.Max(1, Math.Max(spec.stacksize, spec.quantity)) };
         }
 
         /// <summary>

@@ -86,6 +86,18 @@ namespace Tallybook
 
         // ---- the chain (docs/story-progression-1.22.md) --------------------------------
 
+        /// <summary>
+        /// Waypoint titles (as lang keys) the story steps below already watch. The site-quest
+        /// adopter skips these: the walk to the Devastation belongs to the story block, and a
+        /// second row saying "visit the Devastation" would be the same fact rendered twice.
+        /// Authored from the same file-verified list as the steps — keep the two in step.
+        /// </summary>
+        public static readonly string[] StoryLocationLangKeys =
+        {
+            "location-treasurehunter", "location-resonancearchives", "location-lazaret",
+            "location-village", "location-cavetobias", "location-devastationarea",
+        };
+
         List<Step> BuildSteps()
         {
             return new List<Step>

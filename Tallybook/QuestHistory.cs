@@ -146,6 +146,7 @@ namespace Tallybook
                 }
 
                 if (UpdateMilestones()) changed = true;
+                if (RepairErrandRecords()) changed = true;
                 if (changed) store.Save();
                 return changed;
             }
@@ -220,20 +221,29 @@ namespace Tallybook
                     if (pin.QuestGiver == null) continue;
 
                     // The once-guard is ChainStates, not the record: chain-owned errands add
-                    // no record of their own, and guarding on the record alone would redo
-                    // those every second — fighting a player who deliberately re-pinned.
+                    // no record of their own, and guarding on the record would redo those
+                    // every second.
                     string key = $"errand:{pin.QuestGiver}:{pin.Code}";
                     if (store.ChainStates.TryGetValue(key, out string already))
                     {
-                        // Earlier builds parked the pin here instead of removing it, so a
-                        // finished errand could still be sitting unchecked on the list.
-                        // Sweep those up; a *checked* pin over a done errand is the player's
-                        // deliberate re-add and stays.
-                        if (already == "done" && !pin.Active && store.Remove(pin)) changed = true;
+                        // A pin over a recorded-done errand goes, checked or not. The old
+                        // "a checked pin is the player's deliberate re-add" exception turned
+                        // out to protect a bug, not a choice: the watcher re-offered every
+                        // finished barter (its gates never close), minting checked pins
+                        // nobody asked for that this guard then refused to touch — an
+                        // immortal "√ 221/1" (found by Mark). The watcher no longer offers
+                        // done errands, so nothing legitimate can sit here any more.
+                        if (already == "done" && store.Remove(pin)) changed = true;
                         continue;
                     }
 
-                    var def = scanner.DefFor(pin.QuestGiver, pin.Code, pin.Count);
+                    // The name-and-count lookup first; failing that, the NPC being talked to
+                    // identifies the errand by the file they speak from — the recovery for
+                    // pins whose captured giver ("Trader" vs the file's "Luxuries") or
+                    // quantity drifted, which otherwise never archive at all (found via
+                    // Mark's Forlorn Hope map purchase sitting complete forever).
+                    var def = scanner.DefFor(pin.QuestGiver, pin.Code, pin.Count)
+                              ?? scanner.DefForConversation(npc, pin.QuestGiver, pin.Code);
                     if (def == null || !scanner.DefIsDone(def, npc)) continue;
 
                     store.ChainStates[key] = "done";
@@ -250,11 +260,25 @@ namespace Tallybook
                         {
                             if (!text.Contains(said)) text.Add(said);
                         }
+                        // The items are the subset, the quest is the thing: the summary line
+                        // and what the hand-over gave back ("Received: Map to the Forlorn
+                        // Hope Tower"), or the archive reads as gears vanishing for nothing
+                        // (Mark).
+                        string handed = HandedLine(def, pin.QuestGiver);
+                        if (handed != null && !text.Contains(handed)) text.Insert(0, handed);
+                        foreach (var got in def.Receives)
+                        {
+                            string line = $"Received: {got}.";
+                            if (!text.Contains(line)) text.Add(line);
+                        }
 
                         store.QuestHistory.Add(new QuestRecord
                         {
                             Chain = key,
-                            Name = $"{pin.DisplayName} for {pin.QuestGiver}",
+                            // Named for what it was about when the data says — the map's
+                            // destination ("Forlorn Hope Tower") — with the paid goods as
+                            // the fallback identity it always had.
+                            Name = def.Title ?? $"{pin.DisplayName} for {pin.QuestGiver}",
                             Stage = "completed",
                             Day = capi.World.Calendar?.TotalDays,
                             Text = text
@@ -275,6 +299,88 @@ namespace Tallybook
                 capi.Logger.Warning("[tallybook] errand completion check failed: {0}", e.Message);
                 return false;
             }
+        }
+
+        /// <summary>"Handed in: 10 x Rusty gear to Trader." — the errand's items as the
+        /// sub-line of its record. Null when the item cannot be named in this world.</summary>
+        string HandedLine(QuestDef def, string giver)
+        {
+            try
+            {
+                var loc = new Vintagestory.API.Common.AssetLocation(def.ItemCode);
+                var item = capi.World.GetItem(loc);
+                var block = item == null ? capi.World.GetBlock(loc) : null;
+                string name = item != null ? new Vintagestory.API.Common.ItemStack(item).GetName()
+                    : block != null ? new Vintagestory.API.Common.ItemStack(block).GetName()
+                    : null;
+                if (name == null) return null;
+
+                int qty = Math.Max(1, def.Quantity);
+                return $"Handed in: {qty} x {name} to {giver}.";
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Bring errand records written by earlier builds up to the current shape: named for
+        /// what the quest was about (the bought map's destination) with the handed-in items
+        /// as sub-lines. Runs on the tick, so every guard is an equality check and every
+        /// append is idempotent — a record already in shape costs a few comparisons. Matching
+        /// is by the chain key's own giver and item; an item with several catalogue entries
+        /// only matches through its giver, never by guess.
+        /// </summary>
+        bool RepairErrandRecords()
+        {
+            bool changed = false;
+            foreach (var rec in store.QuestHistory)
+            {
+                if (rec?.Chain == null || !rec.Chain.StartsWith("errand:")) continue;
+
+                // errand:{giver}:{code} — the code itself may carry a domain colon.
+                var parts = rec.Chain.Split(new[] { ':' }, 3);
+                if (parts.Length < 3) continue;
+                string giver = parts[1], code = parts[2];
+
+                var candidates = scanner.QuestCatalogue().Where(d => d.ItemCode == code).ToList();
+                var def = candidates.FirstOrDefault(d =>
+                        string.Equals(d.NpcName, giver, StringComparison.OrdinalIgnoreCase))
+                    ?? (candidates.Count == 1 ? candidates[0] : null);
+
+                // Ambiguous by name (the giver was recorded from a live entity — "Trader" —
+                // while defs carry file names), but the record already holds the words that
+                // were said, and those identify the errand: the def whose recovered briefing
+                // and hand-in lines are the ones archived here. Zero overlap stays unmatched
+                // — a guess renames someone's history (this is why the Forlorn Hope record
+                // did not regroup on the first pass: several errands want rusty gears, and
+                // the unique-item rule refused them all).
+                if (def == null && rec.Text != null && rec.Text.Count > 0)
+                {
+                    def = candidates
+                        .Select(d => (Def: d,
+                            Overlap: d.HandIn.Concat(d.Briefing).Count(l => rec.Text.Contains(l))))
+                        .Where(x => x.Overlap > 0)
+                        .OrderByDescending(x => x.Overlap)
+                        .Select(x => x.Def)
+                        .FirstOrDefault();
+                }
+                if (def == null) continue;
+
+                if (def.Title != null && rec.Name != def.Title)
+                {
+                    rec.Name = def.Title;
+                    changed = true;
+                }
+
+                var text = rec.Text ?? (rec.Text = new List<string>());
+                string handed = HandedLine(def, giver);
+                if (handed != null && !text.Contains(handed)) { text.Insert(0, handed); changed = true; }
+                foreach (var got in def.Receives)
+                {
+                    string line = $"Received: {got}.";
+                    if (!text.Contains(line)) { text.Add(line); changed = true; }
+                }
+            }
+            return changed;
         }
 
         /// <summary>

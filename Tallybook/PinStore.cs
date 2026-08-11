@@ -202,6 +202,14 @@ namespace Tallybook
         /// Monotonic because half the underlying signals are transient — an item handed
         /// over or a waypoint read that fails must never un-happen a step.</summary>
         public Dictionary<string, string> StoryStates = new Dictionary<string, string>();
+
+        /// <summary>Map-artifact destinations tracked as side quests.</summary>
+        public List<SiteQuest> SiteQuests = new List<SiteQuest>();
+
+        /// <summary>Locator waypoints already offered as site quests (title@x,z). The
+        /// adoption pass runs every tick, so without this a dismissed site would return
+        /// every second — same contract as OfferedQuests.</summary>
+        public List<string> OfferedSites = new List<string>();
     }
 
     public class PinStore
@@ -216,6 +224,8 @@ namespace Tallybook
         public List<QuestRecord> QuestHistory { get; private set; } = new List<QuestRecord>();
         public Dictionary<string, string> ChainStates { get; private set; } = new Dictionary<string, string>();
         public Dictionary<string, string> StoryStates { get; private set; } = new Dictionary<string, string>();
+        public List<SiteQuest> SiteQuests { get; private set; } = new List<SiteQuest>();
+        public HashSet<string> OfferedSites { get; private set; } = new HashSet<string>();
         public event Action OnChanged;
 
         public PinStore(ICoreClientAPI capi)
@@ -281,8 +291,14 @@ namespace Tallybook
 
         public void SetAllActive(bool active)
         {
-            if (!pins.Any(p => p.Active != active)) return;
+            bool moved = pins.Any(p => p.Active != active)
+                || SiteQuests.Any(s => !s.Dismissed && s.Active != active);
+            if (!moved) return;
             foreach (var pin in pins) pin.Active = active;
+            foreach (var s in SiteQuests)
+            {
+                if (!s.Dismissed) s.Active = active;
+            }
             Changed();
         }
 
@@ -385,7 +401,9 @@ namespace Tallybook
                     NpcPlaces = NpcPlaces,
                     QuestHistory = QuestHistory,
                     ChainStates = ChainStates,
-                    StoryStates = StoryStates
+                    StoryStates = StoryStates,
+                    SiteQuests = SiteQuests,
+                    OfferedSites = OfferedSites.ToList()
                 };
                 File.WriteAllText(path, JsonConvert.SerializeObject(file, Formatting.Indented));
             }
@@ -428,6 +446,8 @@ namespace Tallybook
             QuestHistory = new List<QuestRecord>();
             ChainStates = new Dictionary<string, string>();
             StoryStates = new Dictionary<string, string>();
+            SiteQuests = new List<SiteQuest>();
+            OfferedSites = new HashSet<string>();
             try
             {
                 string path = SavePath;
@@ -451,6 +471,8 @@ namespace Tallybook
                     if (loaded?.QuestHistory != null) QuestHistory = loaded.QuestHistory;
                     if (loaded?.ChainStates != null) ChainStates = loaded.ChainStates;
                     if (loaded?.StoryStates != null) StoryStates = loaded.StoryStates;
+                    if (loaded?.SiteQuests != null) SiteQuests = loaded.SiteQuests.Where(s => s?.Key != null).ToList();
+                    if (loaded?.OfferedSites != null) OfferedSites = new HashSet<string>(loaded.OfferedSites);
                 }
             }
             catch (Exception e)

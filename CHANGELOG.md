@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.3.11 — unreleased
+
+- New: map artifacts become side quests. Reading a locator map (Better Ruins' ruin maps,
+  vanilla treasure maps — anything using the game's locator-map convention) plants a titled
+  waypoint; Tallybook adopts it on the Side quests tab as a place to go. Standing at the
+  site (within ~64 blocks) marks it visited. Sites with nothing further to prove — the
+  Abandoned Mine — complete on arrival and move to History.
+- New: where a site hides writings that exist *nowhere else* in worldgen — the Sunrift
+  Experiment's 17, the Coal Mine's miner's log — the quest continues past the visit and
+  counts them ("5/17"), read from your journal and your bags. The row's toggle lists what
+  you have found (never what you haven't — titles stay the site's secret, only the count
+  shows), and completing the set archives the whole hunt to History. Derived per world by
+  scanning the installed content's worldgen for site-exclusive lore, cached after the first
+  look; no mod is special-cased.
+- Story-map waypoints (the archives, the Devastation, Tobias' cave…) are deliberately not
+  adopted — those walks already belong to the story block.
+- New: `.tallybook sites` ties the whole thing out — every locator destination this world's
+  items can mark, which have provable writings, and where each tracked site stands. A
+  dismissed site comes back with `.tallybook sites track <name>`.
+- Fixed: Better Ruins' trader barters were captured with the wrong amount — the Luxuries
+  trader's "10 rusty gears for the Forlorn Hope map" tracked as a single gear, because BR
+  writes `quantity:` where vanilla writes `stacksize:` and the game accepts both (they are
+  documented aliases). Both keys are read now.
+- Fixed: the same errand could appear twice — once "(for Luxuries)" from the login scan
+  (named after the dialogue file) and once "(for Trader)" from the live conversation (named
+  after the entity) — doubling what you owed. Player-scope errands are now recognised as one
+  quest regardless of which name captured them: existing duplicates merge at login (keeping
+  position, text and checkmarks), and both capture paths refuse to create a twin.
+- Fixed: a completed trader barter could sit on the Side quests tab forever — a drifted
+  giver name or amount meant the finished errand never matched its dialogue entry. While you
+  are talking to an NPC, their own dialogue file now identifies the errand as a fallback, so
+  the purchase archives to History on your next chat with them. The record also says what
+  the hand-over gave back ("Received: Map to the Forlorn Hope Tower"), so a barter no longer
+  reads as goods vanishing for nothing.
+- Fixed: an errand's saved conversation could retell every thread its NPC carries — the
+  gear pin narrating the iron-pickaxe story and vice versa. Briefings are now scoped to the
+  thread that actually set each errand.
+- Fixed: a finished trader barter came back forever — its dialogue gates never close, so
+  every conversation re-offered the completed purchase as a fresh errand, and the sweep's
+  "checked pins are deliberate" exception then refused to remove it (the immortal
+  "Rusty gear √ 221/1"). A hand-over that already happened is no longer offered at all,
+  and a pin over a recorded-done errand now leaves the list regardless of its checkmark.
+- Changed: History names a barter for what it was **about** — the bought map's destination
+  ("Forlorn Hope Tower", "The Sunrift Experiment") — with the items as sub-lines
+  underneath: "Handed in: 10 x Rusty gear to Trader.", the conversation, "Received: Map to
+  the Forlorn Hope Tower." Records written by earlier builds are reshaped on their own.
+- New: `.tallybook version` prints the exact build stamp of the running DLL — the check for
+  "I restaged the zip but nothing changed", which is usually the previous build still
+  loaded (a restaged zip needs a full game restart).
+- New: site quests carry the same checkbox as everything else (Mark) — unchecked parks one:
+  off the HUD, no arrival announcements, row dimmed; nothing is lost and facts still latch
+  quietly. "Uncheck all" covers them too.
+- New: checked site quests show on the K HUD in the side-quests section, with live distance
+  to the site ("The Sunrift Experiment 3/17 (140m)"), exactly like errands show their giver.
+- Fixed: History regrouping skipped records whose item several errands ask for (rusty gears
+  are wanted by half the world), leaving "Rusty gear for Trader" un-renamed. The record's
+  own archived transcript now identifies its errand — the words that were said are unique
+  where the item is not.
+
 ## 0.3.10 — 2026-08-10
 
 - Fixed: a finished errand stayed on the Side quests tab, unchecked, until you unpinned it
