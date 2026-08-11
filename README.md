@@ -5,7 +5,7 @@ Pin any item, and Tallybook tells you what you still need to gather — with liv
 inventory tracking and at-a-glance status. The handbook already answers "how do I make X";
 Tallybook answers "what do I still need, and am I done?"
 
-**Version 0.3.10**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
+**Version 0.3.11**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
 and nobody else needs it installed. The design is in
 [tallybook-mod-spec.md](tallybook-mod-spec.md).
 
@@ -182,7 +182,7 @@ track <name>` brings back a site you dismissed.
 
 ## Install
 
-Drop `tallybook_0.3.10.zip` into
+Drop `tallybook_0.3.11.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source

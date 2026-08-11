@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.11 — unreleased
+## 0.3.11 — 2026-08-11
 
 - New: map artifacts become side quests. Reading a locator map (Better Ruins' ruin maps,
   vanilla treasure maps — anything using the game's locator-map convention) plants a titled
