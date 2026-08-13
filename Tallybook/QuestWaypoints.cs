@@ -111,7 +111,25 @@ namespace Tallybook
             // Recorded before sending: if the command fails we would rather have no marker
             // than try again on the next change, and again, and again.
             pin.WaypointPlaced = true;
+            PlaceMarker(config.QuestWaypointIcon, config.QuestWaypointColor,
+                config.QuestWaypointPinned, pin.QuestX, pin.QuestY, pin.QuestZ, SafeTitle(pin));
+        }
 
+        void Clear(Pin pin)
+        {
+            pin.WaypointPlaced = false;
+            RemoveMarker(SafeTitle(pin), pin.QuestX, pin.QuestY, pin.QuestZ);
+        }
+
+        /// <summary>
+        /// Place a marker at an absolute position. The title must already be display-safe —
+        /// a constant, or something through SafeTitle's rules (non-blank, no newlines).
+        /// Callers own their own placed-flag, recorded before calling, per the contract at
+        /// the top of this class.
+        /// </summary>
+        public void PlaceMarker(string icon, string color, bool pinned,
+                                double x, double y, double z, string title)
+        {
             // InvariantCulture is load-bearing: on a locale that writes 131,5 the comma splits
             // one argument into two and every argument after it shifts.
             string C(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
@@ -127,21 +145,48 @@ namespace Tallybook
             double sx = spawn?.X ?? 0, sz = spawn?.Z ?? 0;
 
             capi.SendChatMessage(
-                $"/waypoint addati {config.QuestWaypointIcon} " +
-                $"{C(pin.QuestX - sx)} {C(pin.QuestY)} {C(pin.QuestZ - sz)} " +
-                $"{(config.QuestWaypointPinned ? "true" : "false")} " +
-                $"{config.QuestWaypointColor} {SafeTitle(pin)}",
+                $"/waypoint addati {icon} " +
+                $"{C(x - sx)} {C(y)} {C(z - sz)} " +
+                $"{(pinned ? "true" : "false")} " +
+                $"{color} {title}",
                 null);
         }
 
-        void Clear(Pin pin)
+        /// <summary>Remove our marker matching this title and absolute position, if the map
+        /// will show it to us right now — a failed read removes nothing, deliberately.</summary>
+        public void RemoveMarker(string title, double x, double y, double z)
         {
-            pin.WaypointPlaced = false;
-
-            int index = FindIndex(SafeTitle(pin), pin.QuestX, pin.QuestY, pin.QuestZ);
+            int index = FindIndex(title, x, y, z);
             if (index < 0) return;      // already gone, or we cannot see the list — leave it be
 
             capi.SendChatMessage($"/waypoint remove {index}", null);
+        }
+
+        /// <summary>
+        /// Like RemoveMarker, but reports whether the matter is SETTLED: true when the
+        /// marker was found and a remove sent, or when a successful read proved it absent;
+        /// false only when the list could not be read at all — including reading back
+        /// empty, which this list is known to do at random — meaning try again later.
+        /// This is what lets a caller retry safely: a retry loop can never send a remove
+        /// at anything but a marker actually present.
+        /// </summary>
+        public bool TryRemoveMarker(string title, double x, double y, double z)
+        {
+            List<Waypoint> list;
+            try { list = OwnWaypoints(); } catch { list = null; }
+            if (list == null || list.Count == 0) return false;
+
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                var wp = list[i];
+                if (wp?.Position == null || wp.Title != title) continue;
+                if ((int)wp.Position.X == (int)x && (int)wp.Position.Z == (int)z)
+                {
+                    capi.SendChatMessage($"/waypoint remove {i}", null);
+                    return true;
+                }
+            }
+            return true;    // a good read with no match: already gone
         }
 
         /// <summary>
@@ -338,6 +383,12 @@ namespace Tallybook
                 Place(pin);
                 placed++;
             }
+
+            // Spawn markers come back the same way: clearing the flags is enough — the
+            // tracker's next tick re-places whatever its state says should exist, so this
+            // stays one command placing at most one marker per point.
+            store.Spawn.HomeWaypointPlaced = false;
+            store.Spawn.TempWaypointPlaced = false;
             return placed;
         }
 
@@ -497,7 +548,9 @@ namespace Tallybook
         {
             var givers = new HashSet<string>(
                 store.Pins.Where(p => p.QuestGiver != null).Select(SafeTitle));
-            if (givers.Count == 0) return 0;
+            // The spawn markers are ours too — same command, same sweep, their own icon.
+            var spawnTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { SpawnTracker.HomeTitle, SpawnTracker.TempTitle };
 
             var list = OwnWaypoints();
             if (list == null) return 0;
@@ -506,8 +559,12 @@ namespace Tallybook
             for (int i = 0; i < list.Count; i++)
             {
                 var wp = list[i];
-                if (wp?.Title == null || !givers.Contains(wp.Title)) continue;
-                if (!string.Equals(wp.Icon, config.QuestWaypointIcon, StringComparison.OrdinalIgnoreCase)) continue;
+                if (wp?.Title == null) continue;
+                bool quest = givers.Contains(wp.Title)
+                    && string.Equals(wp.Icon, config.QuestWaypointIcon, StringComparison.OrdinalIgnoreCase);
+                bool spawn = spawnTitles.Contains(wp.Title)
+                    && string.Equals(wp.Icon, config.SpawnWaypointIcon, StringComparison.OrdinalIgnoreCase);
+                if (!quest && !spawn) continue;
                 indices.Add(i);
             }
 
@@ -527,6 +584,10 @@ namespace Tallybook
             {
                 if (pin.QuestGiver != null && pin.Active) pin.WaypointPlaced = true;
             }
+            // Same treatment for the spawn flags: "I removed it on purpose" and "it
+            // exists" want the same thing from the tracker's tick — leave it alone.
+            store.Spawn.HomeWaypointPlaced = true;
+            store.Spawn.TempWaypointPlaced = true;
             return indices.Count;
         }
     }

@@ -175,6 +175,20 @@ calls `Assembly.LoadFrom` and `GetMembers`. Note:
   `CookingRecipeIngredient.Matches(stack)` is the game's own matcher, `PortionSizeLitres`
   marks liquid ingredients. Anything reasoning about "how is this item made" from
   `capi.World.GridRecipes` alone silently misses these.
+- **A synced field is only as good as EVERY packet variant that writes it.** The game's
+  network packets are protobuf-shaped: a builder that omits a field sends ZERO, and client
+  `UpdateFromPacket` methods copy unconditionally. `Packet_PlayerData` alone has three
+  builders — full (`ToPacket`), sparse (`ToPacketForOtherPlayers`: no Deaths, no spawn), and
+  a deletion stub — so `ClientPlayer.SpawnPosition` can genuinely read `BlockPos(0,0,0)` (the
+  world corner) and `WorldData.Deaths` can read 0, at any time, meaning nothing. Vanilla
+  never notices, because vanilla never reads those fields client-side; a mod that does must
+  (a) decompile every `new Packet_X` construction site before trusting a field, and
+  (b) guard reads with a credibility test and treat a non-credible value exactly like a
+  failed read — it proves nothing, and the last known good state stands. Where a counter
+  must survive clobbering, persist it monotonically (ratchet up on credible reads, bump on
+  observed events, never lower). Also: the client handler DROPS player-data packets that
+  arrive before blocks are loaded ("Startup sequence wrong" in the log), so "the server
+  sent it" never implies "the client has it".
 
 ---
 

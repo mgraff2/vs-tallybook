@@ -15,7 +15,7 @@ namespace Tallybook
     /// <summary>Errands from villagers are a different kind of thing from things you decided
     /// to build, so they get their own tab rather than being mixed in and distinguished only
     /// by a label.</summary>
-    enum TbTab { Items, Quests, History }
+    enum TbTab { Items, Quests, History, World, Player }
 
     /// <summary>
     /// Text that must stay on its own row. GuiElementStaticText does not clip: a line longer
@@ -137,6 +137,11 @@ namespace Tallybook
         const double ColUnpin = 858;
         const double IndentW = 16;
 
+        // World tab columns. Setting names are short; values ("Approx. every 10-20 days,
+        // increase strength/frequency…") are where the room goes.
+        const double WColName = 8;
+        const double WColValue = 400;
+
         /// <summary>How long Unpin must be held. Long enough that a stray click cannot wipe a
         /// row, short enough that meaning it never feels like a punishment.</summary>
         const long HoldMs = 1000;
@@ -176,8 +181,32 @@ namespace Tallybook
             /// briefing is a paragraph and will always be.</summary>
             public string Full;
         }
+        /// <summary>A section title on the World tab — one of the create-world screen's
+        /// category headings.</summary>
+        class HeadingRow : Row { public string Text; }
+        /// <summary>One world rule: setting name and the value this world runs with.</summary>
+        class SettingRow : Row { public WorldSetting Setting; }
+        /// <summary>A Player-tab row: label, value, and optionally a place a Map button can
+        /// take you (absolute coordinates; all-zero means no button).</summary>
+        class SpawnRow : Row
+        {
+            public string Label, Value, Hover;
+            public double MapX, MapY, MapZ;
+        }
 
         List<Row> allRows = new List<Row>();
+
+        /// <summary>World tab model, built lazily per dialog-open (see BuildRows).</summary>
+        List<WorldSettingsSection> worldSections;
+
+        /// <summary>World tab filter text. Session state, reset on open — a filter that
+        /// quietly survived into the next look would read as missing settings.</summary>
+        string worldFilter = "";
+
+        /// <summary>Whether the recompose about to happen must hand focus back to the
+        /// filter box: recomposing steals focus, and a filter that drops its cursor after
+        /// every keystroke cannot be typed into at all.</summary>
+        bool refocusWorldFilter;
 
         readonly QuestHistory history;
 
@@ -189,12 +218,13 @@ namespace Tallybook
         readonly QuestWaypoints waypoints;
         readonly StoryProgress story;
         readonly SiteQuests sites;
+        readonly SpawnTracker spawnTracker;
 
         static double DefaultHudFontSize => CairoFont.WhiteSmallText().UnscaledFontsize;
 
         public GuiDialogTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc,
                                   QuestHistory history, QuestWaypoints waypoints,
-                                  StoryProgress story, SiteQuests sites,
+                                  StoryProgress story, SiteQuests sites, SpawnTracker spawnTracker,
                                   Action<bool> setHudVisible, Action onHudChanged)
             : base(capi)
         {
@@ -205,6 +235,7 @@ namespace Tallybook
             this.waypoints = waypoints;
             this.story = story;
             this.sites = sites;
+            this.spawnTracker = spawnTracker;
             this.setHudVisible = setHudVisible;
             // OnCountsChanged is the single redraw signal: every store mutation funnels
             // through TallyService.RecountAll, whose signature covers structure and numbers.
@@ -221,6 +252,9 @@ namespace Tallybook
             ignoreNextKeyPress = true;      // the opening hotkey's own char event
             notice = "";
             screen = TbScreen.List;
+            worldSections = null;           // world config can change between opens
+            worldFilter = "";
+
             svc.RecountAll();
             Recompose();
         }
@@ -257,6 +291,39 @@ namespace Tallybook
         void BuildRows()
         {
             allRows = new List<Row>();
+
+            if (tab == TbTab.World)
+            {
+                // Read per dialog-open, not per recompose: an admin can change world config
+                // mid-session, so a stale forever-cache would lie, while re-reading on every
+                // inventory-driven recompose would be pure waste for data this static.
+                worldSections ??= WorldRules.Read(capi);
+                string f = worldFilter?.Trim();
+                bool filtering = !string.IsNullOrEmpty(f);
+
+                foreach (var section in worldSections)
+                {
+                    // A matching category title keeps its whole section ("temporal" should
+                    // give all of temporal stability); otherwise rows match individually,
+                    // under their heading so a hit still says where it lives.
+                    var shown = !filtering || section.Title.Contains(f, StringComparison.OrdinalIgnoreCase)
+                        ? section.Settings
+                        : section.Settings.Where(s => MatchesWorldFilter(s, f)).ToList();
+                    if (shown.Count == 0) continue;
+
+                    allRows.Add(new HeadingRow { Text = section.Title });
+                    foreach (var s in shown) allRows.Add(new SettingRow { Setting = s });
+                }
+
+                if (filtering && allRows.Count == 0)
+                {
+                    string none = $"Nothing matches \"{f}\".";
+                    allRows.Add(new InfoRow { Text = none, Full = none, Indent = 0 });
+                }
+                return;
+            }
+
+            if (tab == TbTab.Player) { BuildPlayerRows(); return; }
 
             // Rewards first: a walk you can make right now beats a list of things to find.
             if (tab == TbTab.Quests && history != null)
@@ -333,6 +400,148 @@ namespace Tallybook
             }
         }
 
+        /// <summary>
+        /// The Player tab's rows: spawn points first — the walk home is the actionable part —
+        /// then the numbers. Everything here is either synced by the server (spawn point,
+        /// deaths), world config (budgets), or the player's own entity (class, stability);
+        /// distances are computed at compose time and deliberately kept OUT of the change
+        /// signature, so walking doesn't redraw the dialog every step.
+        /// </summary>
+        void BuildPlayerRows()
+        {
+            var spawn = capi.World?.DefaultSpawnPosition?.XYZ;
+            var plr = capi.World?.Player;
+            if (spawn == null || plr?.Entity == null || spawnTracker == null) return;
+            double sx = spawn.X, sz = spawn.Z;
+            var here = plr.Entity.Pos;
+
+            string Coords(double x, double y, double z)
+            {
+                string at = string.Create(CultureInfo.InvariantCulture,
+                    $"{(int)(x - sx)}, {(int)y}, {(int)(z - sz)}");
+                int dist = (int)Math.Sqrt((here.X - x) * (here.X - x) + (here.Z - z) * (here.Z - z));
+                return dist < 10 ? $"{at} — you are here" : $"{at} — {dist:n0} blocks away";
+            }
+
+            allRows.Add(new HeadingRow { Text = "Spawn points" });
+
+            int radius = capi.World.Config?.GetAsInt("spawnRadius", 0) ?? 0;
+            allRows.Add(new SpawnRow
+            {
+                Label = SpawnTracker.HomeTitle,
+                Value = Coords(spawn.X, spawn.Y, spawn.Z),
+                MapX = spawn.X, MapY = spawn.Y, MapZ = spawn.Z,
+                Hover = "Where you re-emerge when no returning point is set. Coordinates are "
+                    + "spawn-relative, the same numbers the coordinate overlay shows."
+                    + (radius > 0 ? $" Respawns scatter up to {radius} blocks around it." : ""),
+            });
+
+            var st = spawnTracker.State;
+            if (spawnTracker.HasTemp)
+            {
+                allRows.Add(new SpawnRow
+                {
+                    Label = SpawnTracker.TempTitle,
+                    Value = Coords(st.TempX, st.TempY, st.TempZ),
+                    MapX = st.TempX, MapY = st.TempY, MapZ = st.TempZ,
+                    Hover = "Your temporal-gear respawn point. Tallybook keeps a map marker "
+                        + "on it, and removes the marker when the point is used up or moved.",
+                });
+
+                int? left = spawnTracker.UsesLeft();
+                string leftText = left == null
+                    ? "not known — it was set before Tallybook was watching"
+                    : left == int.MaxValue
+                        ? "unlimited on this server"
+                        : st.UsesAtSet > 0 ? $"{left} of {st.UsesAtSet}" : left.ToString();
+                allRows.Add(new SpawnRow
+                {
+                    Label = "Respawns left there",
+                    Value = leftText,
+                    Hover = "Counted as deaths since the point was set, against the "
+                        + "temporalGearRespawnUses budget the server granted it. The server "
+                        + "keeps the real number to itself between logins, so the respawn "
+                        + "message in chat is the authority when they disagree.",
+                });
+            }
+            else
+            {
+                allRows.Add(new SpawnRow
+                {
+                    Label = SpawnTracker.TempTitle,
+                    Value = "none — set one with a temporal gear",
+                    Hover = "Using a temporal gear on the ground sets a personal respawn "
+                        + "point. When you set one, it appears here with a map marker and "
+                        + "a count of the respawns it has left.",
+                });
+            }
+
+            allRows.Add(new HeadingRow { Text = "You" });
+
+            allRows.Add(new SpawnRow
+            {
+                Label = "Deaths in this world",
+                Value = spawnTracker.Deaths.ToString("n0"),
+                Hover = "The highest count the server has ever told this client, plus deaths "
+                    + "Tallybook has watched happen. The game does not sync this number "
+                    + "reliably, so it can start low after installing and catch up the next "
+                    + "time the server mentions it.",
+            });
+
+            int lives = capi.World.Config?.GetAsInt("playerlives", -1) ?? -1;
+            if (lives >= 0)
+            {
+                allRows.Add(new SpawnRow
+                {
+                    Label = "Lives left",
+                    Value = Math.Max(0, lives - spawnTracker.Deaths).ToString("n0"),
+                    Hover = $"This server grants {lives} lives (the playerlives setting).",
+                });
+            }
+
+            string classCode = plr.Entity.WatchedAttributes?.GetString("characterClass");
+            if (!string.IsNullOrEmpty(classCode))
+            {
+                allRows.Add(new SpawnRow
+                {
+                    Label = "Character class",
+                    Value = Lang.GetIfExists("characterclass-" + classCode) ?? classCode,
+                });
+            }
+
+            if (capi.World.Config?.GetBool("temporalStability", true) == true)
+            {
+                double stab = plr.Entity.WatchedAttributes?.GetDouble("temporalStability", -1) ?? -1;
+                if (stab >= 0)
+                {
+                    allRows.Add(new SpawnRow
+                    {
+                        Label = "Temporal stability",
+                        Value = $"{(int)Math.Round(stab * 100)}%",
+                        Hover = "How firmly you are anchored in time. Drains near rifts and "
+                            + "in temporal storms; low stability invites the things that "
+                            + "live outside it.",
+                    });
+                }
+            }
+
+            string today = null;
+            try { today = capi.World.Calendar?.PrettyDate(); } catch { }
+            if (!string.IsNullOrEmpty(today))
+            {
+                allRows.Add(new SpawnRow { Label = "Today", Value = today });
+            }
+        }
+
+        /// <summary>Matched against everything a player might remember about a setting —
+        /// its label, its value, its raw code, and the description in its hover — so
+        /// "monsters", "graceTimer" and "grace" all find the grace timer.</summary>
+        static bool MatchesWorldFilter(WorldSetting s, string f)
+            => (s.Name?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (s.Value?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (s.Code?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (s.Hover?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false);
+
         void AddNodeRows(Pin pin, TallyNode node, int depth)
         {
             allRows.Add(new NodeRow { Pin = pin, Node = node, Indent = depth });
@@ -357,6 +566,7 @@ namespace Tallybook
         /// </summary>
         double RowHeight(Row row)
         {
+            if (row is HeadingRow) return RowH + 8;
             if (!(row is InfoRow ir)) return RowH;
 
             double w = DW - (ColName + row.Indent * IndentW) - 16;
@@ -406,7 +616,8 @@ namespace Tallybook
         {
             var starts = new List<int> { 0 };
             double used = 0, budget = Math.Max(120,
-                PageBudget - (tab == TbTab.Quests ? StoryBlockHeight() : 0));
+                PageBudget - (tab == TbTab.Quests ? StoryBlockHeight()
+                            : tab == TbTab.World ? WorldHeaderHeight() : 0));
 
             for (int i = 0; i < rows.Count; i++)
             {
@@ -421,6 +632,18 @@ namespace Tallybook
 
         void Recompose()
         {
+            // The World and Player tabs exist only while their options are on; a selection
+            // pointing at a tab that is no longer drawn would compose its rows under the
+            // wrong header.
+            if (tab == TbTab.World && !config.ShowWorldTab) { tab = TbTab.Items; page = 0; }
+            if (tab == TbTab.Player && !config.ShowPlayerTab) { tab = TbTab.Items; page = 0; }
+
+            // Whether the filter box holds the cursor is a fact about the composer being
+            // thrown away — read it before it goes, so RestoreCountInputs can hand focus
+            // back and typing survives the rebuild.
+            refocusWorldFilter = screen == TbScreen.List && tab == TbTab.World
+                && SingleComposer?.GetTextInput("world-filter")?.HasFocus == true;
+
             BuildRows();
             pageStarts = PageStarts(allRows);
 
@@ -488,7 +711,14 @@ namespace Tallybook
 
         void OnTabClicked(int index)
         {
-            var next = index == 2 ? TbTab.History : index == 1 ? TbTab.Quests : TbTab.Items;
+            // The handler receives the clicked tab's DataInt, not its array position
+            // (decompile-verified: SetValue calls handler(tabs[i].DataInt)) — so optional
+            // tabs keep stable identities here no matter which of them are showing.
+            var next = index == 4 ? TbTab.Player
+                : index == 3 ? TbTab.World
+                : index == 2 ? TbTab.History
+                : index == 1 ? TbTab.Quests
+                : TbTab.Items;
             if (next == tab) return;
             tab = next;
             page = 0;              // page numbers do not carry across two different lists
@@ -525,18 +755,24 @@ namespace Tallybook
                 done.AddRange(history.InProgress());
                 done.AddRange(history.Records());
             }
-            var tabs = new[]
+            var tabs = new List<GuiTab>
             {
                 new GuiTab { DataInt = 0, Name = $"Items ({itemCount})" },
                 new GuiTab { DataInt = 1, Name = $"Side quests ({questCount})" },
                 new GuiTab { DataInt = 2, Name = $"History ({done.Count})" },
             };
-            c.AddHorizontalTabs(tabs, EB(0, y, DW, 26), OnTabClicked,
+            // Opt-in (Options screen), and appended last so the fixed tabs' positions never
+            // move: no counts, because reference tabs have no work outstanding.
+            if (config.ShowWorldTab) tabs.Add(new GuiTab { DataInt = 3, Name = "World" });
+            if (config.ShowPlayerTab) tabs.Add(new GuiTab { DataInt = 4, Name = "Player" });
+            c.AddHorizontalTabs(tabs.ToArray(), EB(0, y, DW, 26), OnTabClicked,
                 CairoFont.WhiteSmallText(),
                 CairoFont.WhiteSmallText().WithWeight(Cairo.FontWeight.Bold), "tabs");
             y += 34;
 
             if (tab == TbTab.History) { ComposeHistory(c, done, ref y); return; }
+            if (tab == TbTab.World) { ComposeWorld(c, ref y); return; }
+            if (tab == TbTab.Player) { ComposePlayer(c, ref y); return; }
 
             if (tab == TbTab.Quests) ComposeStoryBlock(c, ref y);
 
@@ -654,6 +890,117 @@ namespace Tallybook
 
             c.AddGameOverlay(EB(0, y, DW, 2), GuiStyle.DialogBorderColor);
             y += 8;
+        }
+
+        /// <summary>
+        /// The world's rules: every world-config setting the installed mods declare, grouped
+        /// under the create-world screen's own category headings, resolved against what this
+        /// world actually runs with. Values that differ from the game's defaults draw in the
+        /// partial colour — "what has been changed on this server" being the question that
+        /// brings a player to this tab.
+        /// </summary>
+        /// <summary>The Player tab: a short table of rows BuildPlayerRows chose. No filter
+        /// and no column heads — a dozen self-labelled rows do not need furniture.</summary>
+        void ComposePlayer(GuiComposer c, ref double y)
+        {
+            var font = TableFont();
+
+            if (allRows.Count == 0)
+            {
+                c.AddStaticText("Nothing to show yet — the world is still loading.",
+                    font, EB(8, y + 8, DW, 26));
+                y += 60;
+                c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+                return;
+            }
+
+            foreach (var row in VisibleRows())
+            {
+                ComposeRow(c, row, ref y);
+            }
+
+            y += 8;
+            if (MaxPage > 0)
+            {
+                c.AddSmallButton("< Prev", () => { if (page > 0) { page--; Recompose(); } return true; },
+                    EB(DW / 2 - 130, y, 78, 28), EnumButtonStyle.Small);
+                c.AddStaticText($"Page {page + 1}/{MaxPage + 1}", font, EB(DW / 2 - 44, y + 5, 90, 24));
+                c.AddSmallButton("Next >", () => { if (page < MaxPage) { page++; Recompose(); } return true; },
+                    EB(DW / 2 + 52, y, 78, 28), EnumButtonStyle.Small);
+            }
+            c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+        }
+
+        string WorldIntroText()
+        {
+            var ba = capi.World.BlockAccessor;
+            return $"Seed {capi.World.Seed} — {ba.MapSizeX}×{ba.MapSizeZ} blocks, "
+                + $"{ba.MapSizeY} tall. Coloured values differ from the game's defaults; "
+                + "hover a setting for what it does.";
+        }
+
+        /// <summary>What the intro and filter row cost the table, measured the same way
+        /// ComposeWorld draws them — the pager must know where the rows actually start.</summary>
+        double WorldHeaderHeight()
+            => TbText.Wrap(TableFont(), WorldIntroText(), DW - 16).Count * LineStep + 6 + 34;
+
+        void ComposeWorld(GuiComposer c, ref double y)
+        {
+            var font = TableFont();
+            var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
+
+            foreach (var line in TbText.Wrap(quiet, WorldIntroText(), DW - 16))
+            {
+                c.AddStaticText(line, quiet, EB(8, y, DW - 16, 22));
+                y += LineStep;
+            }
+            y += 6;
+
+            bool filtering = !string.IsNullOrWhiteSpace(worldFilter);
+            if (allRows.Count == 0 && !filtering)
+            {
+                c.AddStaticText("No installed mod declares world settings.", font, EB(8, y + 8, DW, 26));
+                y += 60;
+                c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+                return;
+            }
+
+            c.AddStaticText("Filter", font, EB(8, y + 4, 56, 26));
+            c.AddTextInput(EB(66, y, 250, 26), OnWorldFilterTyped, font, "world-filter");
+            if (filtering)
+            {
+                c.AddSmallButton("×", () =>
+                {
+                    worldFilter = "";
+                    page = 0;
+                    Recompose();
+                    return true;
+                }, EB(322, y, 26, 26), EnumButtonStyle.Small);
+            }
+            y += 34;
+
+            var headFont = font.Clone().WithColor(GuiStyle.ColorParchment);
+            c.AddStaticText("Setting", headFont, EB(WColName, y, 200, 22));
+            c.AddStaticText("Value", headFont, EB(WColValue, y, 200, 22));
+            y += 22;
+            c.AddGameOverlay(EB(0, y, DW, 2), GuiStyle.DialogBorderColor);
+            y += 6;
+
+            foreach (var row in VisibleRows())
+            {
+                ComposeRow(c, row, ref y);
+            }
+
+            y += 8;
+            if (MaxPage > 0)
+            {
+                c.AddSmallButton("< Prev", () => { if (page > 0) { page--; Recompose(); } return true; },
+                    EB(DW / 2 - 130, y, 78, 28), EnumButtonStyle.Small);
+                c.AddStaticText($"Page {page + 1}/{MaxPage + 1}", font, EB(DW / 2 - 44, y + 5, 90, 24));
+                c.AddSmallButton("Next >", () => { if (page < MaxPage) { page++; Recompose(); } return true; },
+                    EB(DW / 2 + 52, y, 78, 28), EnumButtonStyle.Small);
+            }
+            c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
         }
 
         /// <summary>
@@ -1072,6 +1419,62 @@ namespace Tallybook
                     break;
                 }
 
+                case HeadingRow hr:
+                {
+                    var hf = CairoFont.WhiteSmallishText().WithFontSize((float)(TablePx + 2))
+                        .WithColor(GuiStyle.ColorParchment);
+                    c.AddStaticText(hr.Text, hf, EB(WColName, y + 10, DW - 16, 26));
+                    y += RowH + 8;
+                    return;
+                }
+                case SettingRow str:
+                {
+                    var s = str.Setting;
+
+                    // One hover per cell: the name's carries the description (and the full
+                    // name when the column cut it) — two hover elements on the same bounds
+                    // would fight, so FittedText is not used here.
+                    double nameW = WColValue - WColName - 12;
+                    string shownName = TbText.Fit(font, s.Name, nameW - 8);
+                    c.AddStaticText(shownName, font, EB(WColName, y + 4, nameW, 24));
+                    string hover = s.Hover;
+                    if (shownName != s.Name) hover = s.Name + (hover == null ? "" : "\n" + hover);
+                    if (hover != null)
+                        c.AddHoverText(hover, font, 340, EB(WColName, y + 4, nameW, 24));
+
+                    var vf = s.IsDefault
+                        ? font
+                        : font.Clone().WithColor(TallybookConfig.ParseColor(config.ColorPartial));
+                    double valW = DW - WColValue - 8;
+                    FittedText(c, s.Value, vf, EB(WColValue, y + 4, valW, 24), valW);
+                    break;
+                }
+                case SpawnRow spr:
+                {
+                    // Same shape as a SettingRow — label, value, hover on the label — plus
+                    // a Map button when the row names a place. The button follows the errand
+                    // rows' contract: it draws from captured coordinates, never a live map
+                    // read, so it cannot flicker out.
+                    double nameW = WColValue - WColName - 12;
+                    string shownLabel = TbText.Fit(font, spr.Label, nameW - 8);
+                    c.AddStaticText(shownLabel, font, EB(WColName, y + 4, nameW, 24));
+                    string hover = spr.Hover;
+                    if (shownLabel != spr.Label) hover = spr.Label + (hover == null ? "" : "\n" + hover);
+                    if (hover != null)
+                        c.AddHoverText(hover, font, 340, EB(WColName, y + 4, nameW, 24));
+
+                    bool hasPlace = spr.MapX != 0 || spr.MapY != 0 || spr.MapZ != 0;
+                    double valW = DW - WColValue - (hasPlace ? 64 : 8);
+                    FittedText(c, spr.Value, font, EB(WColValue, y + 4, valW, 24), valW);
+
+                    if (hasPlace)
+                    {
+                        var target = new BlockPos((int)spr.MapX, (int)spr.MapY, (int)spr.MapZ);
+                        c.AddSmallButton("Map", () => ShowOnMapAt(target, spr.Label),
+                            EB(DW - 56, y, 48, 26), EnumButtonStyle.Small);
+                    }
+                    break;
+                }
                 case InfoRow ir:
                 {
                     // Read as the transcript it is — the same shape the History page uses:
@@ -1148,6 +1551,12 @@ namespace Tallybook
 
             var bags = SingleComposer.GetSwitch("opt-mountbags");
             if (bags != null) bags.On = config.IncludeMountBags;
+
+            var worldTab = SingleComposer.GetSwitch("opt-worldtab");
+            if (worldTab != null) worldTab.On = config.ShowWorldTab;
+
+            var playerTab = SingleComposer.GetSwitch("opt-playertab");
+            if (playerTab != null) playerTab.On = config.ShowPlayerTab;
         }
 
         bool restoringInputs;
@@ -1161,8 +1570,29 @@ namespace Tallybook
             {
                 // Tabs compose with the first one active; re-assert the real selection. Must
                 // cover every tab — a missing case silently highlights the wrong one.
-                int active = tab == TbTab.History ? 2 : tab == TbTab.Quests ? 1 : 0;
+                // SetValue takes the ARRAY POSITION, unlike the click handler's DataInt
+                // (decompile-verified) — with optional tabs the two disagree, so the
+                // position is computed from which optional tabs are actually composed.
+                int active = tab switch
+                {
+                    TbTab.Player => 3 + (config.ShowWorldTab ? 1 : 0),
+                    TbTab.World => 3,
+                    TbTab.History => 2,
+                    TbTab.Quests => 1,
+                    _ => 0,
+                };
                 SingleComposer.GetHorizontalTabs("tabs")?.SetValue(active, false);
+
+                if (tab == TbTab.World)
+                {
+                    var filter = SingleComposer.GetTextInput("world-filter");
+                    if (filter != null)
+                    {
+                        filter.SetPlaceHolderText("type to filter…");
+                        filter.SetValue(worldFilter);
+                        if (refocusWorldFilter) SingleComposer.FocusElement(filter.TabIndex);
+                    }
+                }
 
                 // Visible pins only: inputs exist just for the composed page, and asking the
                 // composer for a key it never composed is unhealthy whether it throws or not.
@@ -1196,6 +1626,23 @@ namespace Tallybook
                 return;
             }
             svc.Store.SetCount(pin, Math.Min(9999, next));
+        }
+
+        /// <summary>
+        /// Filters live, recomposing per keystroke: the row list must answer the letters as
+        /// they land, and the recompose is what redraws it. The count fields defer instead —
+        /// but their recomposes only move numbers, while this one is the feature. Focus is
+        /// captured before the rebuild (Recompose) and handed back after (RestoreCountInputs);
+        /// lastCountTypingMs still stamps here so inventory-driven recounts hold off and
+        /// don't rebuild the same screen mid-word.
+        /// </summary>
+        void OnWorldFilterTyped(string val)
+        {
+            if (restoringInputs) return;
+            worldFilter = val ?? "";
+            page = 0;
+            lastCountTypingMs = capi.World.ElapsedMilliseconds;
+            Recompose();
         }
 
         void OnCountTyped(Pin pin, string val)
@@ -2302,6 +2749,22 @@ namespace Tallybook
                 + "toward Have. Only animals the game says are yours, and only bags on their "
                 + "backs: one lying on the ground or in a chest is not counted.",
                 v => { config.IncludeMountBags = v; svc.RecountAll(); });
+
+            Option("opt-worldtab", config.ShowWorldTab,
+                "Show the World tab",
+                "A reference card of this world's rules: every world-generation and gameplay "
+                + "setting with the value this world runs — changes from the game's defaults "
+                + "in colour — plus every mod the server runs, with versions. Handy on a "
+                + "server whose settings you didn't write yourself.",
+                v => config.ShowWorldTab = v);
+
+            Option("opt-playertab", config.ShowPlayerTab,
+                "Show the Player tab",
+                "Your spawn points — the world spawn and your temporal-gear returning point, "
+                + "each with a Map button and a map marker — plus respawns left there, "
+                + "deaths, and a few other numbers about you. The markers follow the point: "
+                + "set, moved, used up or turned off here, the map keeps up.",
+                v => config.ShowPlayerTab = v);
 
             y += 8;
             c.AddSmallButton("Back", () => { BackToList(); return true; }, EB(8, y, 90, 30));

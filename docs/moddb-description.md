@@ -5,23 +5,31 @@ HTML; the short summary is plain text (it is a plain field).
 
 ## Short summary (under 100 characters)
 
-Crafting shopping list, villager quest tracker, and spoiler-free story guide. Fully client-side.
+Crafting shopping list, quest tracker, story guide, and world/player reference. Fully client-side.
 
-(96 characters)
+(98 characters)
 
 ---
 
 ## Description (HTML — paste as-is)
 
-<p>Tallybook is three trackers in one: a Satisfactory-style crafting shopping list &mdash; pin any item, see exactly what you still need to gather, with counts that update the instant your inventory changes &mdash; a side quest tracker that picks up villager and trader errands by itself, counts them the same way, and keeps a map marker on whoever is waiting for the goods &mdash; and a spoiler-free story guide that walks you through the vanilla storyline one step at a time, advancing entirely from your own play. Fully client-side: works on any server, no server-side install needed.</p>
+<p>Tallybook is three trackers and a reference book in one: a Satisfactory-style crafting shopping list &mdash; pin any item, see exactly what you still need to gather, with counts that update the instant your inventory changes &mdash; a side quest tracker that picks up villager and trader errands by itself, counts them the same way, and keeps a map marker on whoever is waiting for the goods &mdash; a spoiler-free story guide that walks you through the vanilla storyline one step at a time, advancing entirely from your own play &mdash; and optional World and Player tabs that answer "what are this world's rules" and "where do I respawn, and how many times". Fully client-side: works on any server, no server-side install needed.</p>
 
 <p><strong>Shopping list.</strong> Pin an item from its handbook page &mdash; one click, and it's exactly the variant you were looking at, not a sibling that shares its name. Every pin tracks its own acquisition (Low-quality soil 12/64 fills in as you dig), so loot-only and gather-only items are first-class goals, not just craftables. Expand any craftable row to unfold its recipe beneath it, sized to what you still lack: need 4, carry 1, and the children ask for materials for 3. Nested as deep as you like, one deliberate click per level &mdash; never automatic, so recipe cycles and wrong guesses can't lie to you.</p>
 
 <p><strong>Alternative recipes are found automatically, whatever mod added them.</strong> When an item has more than one genuinely different recipe &mdash; vanilla's way versus a mod's blueprint-gated way &mdash; Expand asks which you mean, listing each option by what it takes and what you'd have to be holding. No per-mod compat code: whether two recipes are a real choice is decided by what they consume, so it works for content mods that haven't been written yet.</p>
 
+<p><strong>And the grid is not the whole story.</strong> Tallybook follows every way the game actually makes things: cooking-pot products (acids, glue, potash), barrel recipes, distilling, fruit pressing, grinding, crushing, smelting, crucible alloying (counted in nuggets and bits &mdash; the units a crucible really accepts, at the ratios you'd pour), and anvil smithing &mdash; so iron ingots finally decompose honestly: nuggets to bloom to hammered ingot. Liquids are tracked as litres in whatever container the recipe accepts, an empty bowl never counts as a bowl of water, and pinned liquids get a volume calculator for "how many buckets is that".</p>
+
 <p><strong>Side quests.</strong> Accept a fetch errand the way the game intends and Tallybook picks it up on its own &mdash; no button, no extra click. The row reads Raw hide (Small) for Gerhardt 3/10 and goes green when you can deliver. What the villager actually said is kept as a transcript under the row, re-readable a week later. Errands you were already on are recovered at login from the game's own dialogue files &mdash; including quests accepted before Tallybook was installed &mdash; and handed-in errands notice they're finished by themselves, moving to History instead of sitting at 0/10 forever because the goods left your bags.</p>
 
 <p><strong>Story guide.</strong> The vanilla storyline, one step at a time &mdash; starting from the very first one: a few rusty gears and a question for a wandering trader. A "story so far" block at the top of the Side quests tab shows the step you are on and nothing more, advancing by itself as you play: it watches the story's own progress flags, the maps and letters in your hands, and what NPCs tell you in conversation. Steps that need something fetched pin it automatically and retire it when the step is done. No spoilers by construction &mdash; a step only appears once the game itself has told you that much, and what comes next stays hidden everywhere, including in the .tallybook story command. Progress is per world and only moves forward, so a lost map or a handed-over item never un-completes a step.</p>
+
+<p><strong>Places worth walking to become side quests too.</strong> Read a ruin map or treasure map &mdash; Better Ruins' artifacts, vanilla treasure maps, anything using the game's locator-map convention &mdash; and the destination joins the Side quests tab as a place to visit. Standing at the site marks it visited, and where a site hides writings that exist nowhere else in the world, the quest counts them ("5/17") from your journal and your bags, listing what you have found and keeping the rest the site's secret.</p>
+
+<p><strong>World tab (optional, in Options).</strong> A reference card of this world's rules: every world-config setting the installed mods declare &mdash; world generation, survival challenges, temporal stability, all of it &mdash; grouped under the create-world screen's own headings, resolved to the labels that screen uses. Values the server changed from the game's defaults draw in colour with the default named on hover; a filter box finds settings by name, value, or description ("mobs" finds the grace timer). Below the settings: every mod this world runs, with versions &mdash; including server-side mods your client never loads. Handy on a server whose settings you didn't write.</p>
+
+<p><strong>Player tab (optional, in Options).</strong> Your spawn points, tracked: the world spawn and your temporal-gear returning point, each with coordinates, live distance, a Map button, and a maintained map marker that follows the point and leaves when it is used up or moved. "Respawns left there" counts your returning point's remaining uses against the server's budget &mdash; and drops as you die. Below that: your deaths in this world, lives left where the server grants a fixed number, character class, and temporal stability.</p>
 
 <p><strong>Map integration.</strong> Quest givers get a light-blue X on your map for as long as their errand is live, and every errand row has a Map button that opens the world map centred on them. An errand that came with a locator map points at the map's destination while you're still fetching &mdash; the lens is in the Devastation, and that's the walk you're making &mdash; then back at the giver once you have the goods. Locations are learned by talking to the NPC (never by proximity scanning), from your own waypoints when one names them, or told directly: stand at the forge and type .tallybook here Agnieszka.</p>
 
@@ -31,7 +39,7 @@ Crafting shopping list, villager quest tracker, and spoiler-free story guide. Fu
 
 <p><strong>Everything updates live.</strong> Counting is event-driven off your carried inventory &mdash; hotbar and backpacks, with an opt-in for saddlebags on animals you own. No polling, no nearby-chest scanning: the question is "what do I have on me", answered honestly.</p>
 
-<p><strong>How to open it:</strong> press L for the list (three tabs &mdash; Items, Side quests, History), K to toggle the HUD, and pin from any handbook page via its "Add to Tallybook" button. All keys rebindable under Settings &rarr; Controls.</p>
+<p><strong>How to open it:</strong> press L for the list (Items, Side quests, and History tabs, plus World and Player when you switch them on in Options), K to toggle the HUD, and pin from any handbook page via its "Add to Tallybook" button. All keys rebindable under Settings &rarr; Controls.</p>
 
 <p><strong>Good to know</strong></p>
 
@@ -40,9 +48,22 @@ Crafting shopping list, villager quest tracker, and spoiler-free story guide. Fu
 <li>Tallybook only ever reads. It never crafts for you, never moves your items, and never writes to your inventory &mdash; the worst bug it can have is a wrong number.</li>
 <li>Errands are counted, never decomposed: a fetch quest is a fetch, and its row won't sprout an anvil because the game technically has a recipe.</li>
 <li>One text-size slider (in Options) governs the HUD and the whole list window.</li>
-<li>Useful commands: .tallybook story (where you are in the storyline &mdash; never what comes next), .tallybook here &lt;name&gt; (set a quest giver's location to where you stand), .tallybook quests (every fetch errand your world's content describes, with your status), .tallybook recipes (every item craftable more than one way), .tallybook pages (diagnose a misbehaving Handbook button), .tallybook npcs, .tallybook relearn, .tallybook blankmarkers (finds untitled waypoints, which crash the vanilla map on hover &mdash; whoever made them).</li>
+<li>Useful commands: .tallybook story (where you are in the storyline &mdash; never what comes next), .tallybook here &lt;name&gt; (set a quest giver's location to where you stand), .tallybook quests (every fetch errand your world's content describes, with your status), .tallybook sites (every locator-map destination and tracked site), .tallybook recipes (every item craftable more than one way), .tallybook spawn (everything the spawn tracker can see, layer by layer), .tallybook version (which build is actually running), .tallybook pages (diagnose a misbehaving Handbook button), .tallybook npcs, .tallybook relearn, .tallybook blankmarkers (finds untitled waypoints, which crash the vanilla map on hover &mdash; whoever made them).</li>
 <li>Config at VintagestoryData/ModConfig/tallybook.json; per-world data at VintagestoryData/ModData/tallybook/.</li>
 <li>For Vintage Story 1.22.x (tested against every patch release, 1.22.0 through 1.22.6).</li>
+</ul>
+
+---
+
+## Changelog — 0.3.12 (HTML — paste as-is)
+
+<p><strong>Tallybook 0.3.12 &mdash; for Vintage Story 1.22.x</strong></p>
+
+<ul>
+<li><strong>New: World tab</strong> (opt-in &mdash; switch it on in Options). A reference card of this world's rules: every world-config setting the installed mods declare &mdash; world generation, survival challenges, temporal stability, spawn and death, multiplayer &mdash; grouped under the create-world screen's own category headings, showing the value this world actually runs with, resolved to the same labels the create screen uses ("5 days before monsters appear", not raw codes). Values changed from the game's defaults draw in colour, with the default and the setting's description on hover; settings added by a content mod say which mod. A filter box narrows the list as you type, matching names, values, codes and descriptions alike. The tab also lists every mod this world runs, with versions &mdash; the server's own announcement, so server-side-only mods appear too, plus your client-side mods. The top line carries the seed and world size.</li>
+<li><strong>New: Player tab</strong> (opt-in &mdash; switch it on in Options). Your spawn points and your numbers: the world spawn and your temporal-gear returning point, each with spawn-relative coordinates, live distance, a Map button, and a maintained map marker &mdash; the marker appears when a point is set, follows it when it moves, and leaves when the point is used up or cleared. "Respawns left there" counts your returning point's remaining uses against the server's temporalGearRespawnUses budget, dropping as you die; a point set before Tallybook was watching honestly says "not known" rather than guessing. Below that: deaths in this world, lives left when the server sets playerlives, character class, temporal stability, and today's date.</li>
+<li>New diagnostic: .tallybook spawn prints everything the spawn tracker can see, layer by layer, for when a number looks wrong.</li>
+<li>Under the hood, for the curious: the game syncs a player's own spawn point and death count to the client, but one packet variant leaves those fields empty and the death broadcast never updates the counter &mdash; so Tallybook treats non-credible values as meaning nothing, keeps its own forward-only death count (ratcheted by the server's announcements, bumped by deaths it watches happen), and computes returning-point expiry itself, since the server keeps the real remaining-uses number to itself between logins.</li>
 </ul>
 
 ---

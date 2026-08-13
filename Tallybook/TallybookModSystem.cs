@@ -30,6 +30,7 @@ namespace Tallybook
         QuestReadyGlow questGlow;
         QuestWatcher questWatcher;
         QuestWaypoints questWaypoints;
+        SpawnTracker spawnTracker;
         QuestHistory questHistory;
         StoryProgress story;
         SiteQuests siteQuests;
@@ -96,6 +97,14 @@ namespace Tallybook
                         return TextCommandResult.Success(removed > 0
                             ? $"Removing {removed} quest marker(s)."
                             : "No Tallybook quest markers found on your map.");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("spawn")
+                    .WithDescription("Show what the spawn tracker can see, layer by layer")
+                    .HandleWith(_ =>
+                    {
+                        EnsureGui();
+                        return TextCommandResult.Success(spawnTracker?.Diagnose() ?? "Not ready.");
                     })
                 .EndSubCommand()
                 .BeginSubCommand("markers")
@@ -364,6 +373,11 @@ namespace Tallybook
                         svc.RecountAll();
                     }
 
+                    // The player's spawn point: set/moved arrives by packet but consumed or
+                    // expired does not (the server keeps that to itself), so the tick is
+                    // where the arithmetic runs and the markers follow the transitions.
+                    if (spawnTracker?.Update() == true) svc.RecountAll();
+
                     // Same reason: a story step completing raises no event. A handful of
                     // variable reads when nothing moved.
                     story?.Poll();
@@ -382,6 +396,7 @@ namespace Tallybook
             questWaypoints = new QuestWaypoints(capi, config, svc.Store);
             story = new StoryProgress(capi, svc, quests, questWaypoints);
             siteQuests = new SiteQuests(capi, svc, questWaypoints);
+            spawnTracker = new SpawnTracker(capi, config, svc.Store, questWaypoints);
             // The story block redraws with the same surfaces as every count, so its state
             // rides the shared change signature — and so does the set of quests awaiting a
             // reward, or the "collect your reward" row could never appear or clear. Site
@@ -389,9 +404,11 @@ namespace Tallybook
             // store data the pin signature can see.
             svc.ExtraSignature = () => story.UiSignature() + "|rw:"
                 + string.Join(",", questHistory.AwaitingRewards().Select(a => a.Chain))
-                + "|sq:" + siteQuests.Signature();
+                + "|sq:" + siteQuests.Signature()
+                + "|sp:" + spawnTracker.Signature();
             dialog = new GuiDialogTallybook(capi, config, svc, questHistory, questWaypoints,
-                                            story, siteQuests, SetHudVisible, () => hud?.Refresh());
+                                            story, siteQuests, spawnTracker,
+                                            SetHudVisible, () => hud?.Refresh());
             hud = new HudTallybook(capi, config, svc) { Sites = siteQuests };
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
             questGlow = new QuestReadyGlow(capi, config, svc, questHistory);
@@ -525,6 +542,7 @@ namespace Tallybook
             // world that is not yet listening, and a saved errand must not re-mark itself just
             // because it was reloaded.
             questWaypoints.Ready = true;
+            spawnTracker.Ready = true;
         }
 
         /// <summary>

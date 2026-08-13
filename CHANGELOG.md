@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.12 — 2026-08-13
+
+- New: **World tab** (opt-in — switch it on in Options) — a fourth tab in the L window: a
+  reference card of this world's rules. Every world-config setting the installed mods declare (world generation, survival
+  challenges, temporal stability, spawn and death, multiplayer), grouped under the
+  create-world screen's own category headings, showing the value this world actually runs
+  with — resolved to the same labels the create screen uses, not raw codes. Values that
+  differ from the game's defaults draw in colour, with the default named on hover alongside
+  the setting's description; settings a content mod added say which mod on hover. The top
+  line carries the seed and world size. Settings the world carries that no installed mod
+  declares (a server-side mod's, or a removed mod's) are listed too, under "Other settings" —
+  the list never pretends to be complete when it isn't.
+- The World tab has a freeform filter box: matches against a setting's label, value, raw
+  code and description, so "monsters", "graceTimer" and "grace" all find the grace timer.
+  A matching category name keeps its whole section. Filters as you type.
+- New: **Player tab** (opt-in — switch it on in Options): your spawn points and your
+  numbers. The world spawn and your temporal-gear returning point each get coordinates
+  (spawn-relative, as the coordinate HUD shows them), a live distance, a Map button, and a
+  maintained map marker — the marker appears when a point is set, follows it when it
+  moves, and is removed when the point is used up, cleared, or the feature is switched
+  off. "Respawns left there" counts the returning point's remaining uses against the
+  server's temporalGearRespawnUses budget; the server keeps the real number to itself
+  between logins, so this is Tallybook's own death-count arithmetic from the moment the
+  point was set — a point that predates the mod honestly says "not known" rather than
+  guessing. Below that: deaths in this world (the server's per-world count — kept live by
+  watching your own deaths, since the game only re-syncs the counter at login), lives
+  left when the server sets playerlives, character class, temporal stability, and today's
+  date. `.tallybook spawn` prints everything the tracker can see, layer by layer, for
+  when a number looks wrong.
+- The World tab also lists every mod this world runs, with versions — the server's own
+  handshake announcement (which is the only place a server-side-only mod is visible to a
+  client), plus anything client-side the server never sees, Tallybook included. Hover names
+  the mod id and which side a mod lives on.
+
 ## 0.3.11 — 2026-08-11
 
 - New: map artifacts become side quests. Reading a locator map (Better Ruins' ruin maps,

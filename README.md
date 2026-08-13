@@ -5,7 +5,7 @@ Pin any item, and Tallybook tells you what you still need to gather — with liv
 inventory tracking and at-a-glance status. The handbook already answers "how do I make X";
 Tallybook answers "what do I still need, and am I done?"
 
-**Version 0.3.11**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
+**Version 0.3.12**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
 and nobody else needs it installed. The design is in
 [tallybook-mod-spec.md](tallybook-mod-spec.md).
 
@@ -22,7 +22,19 @@ and nobody else needs it installed. The design is in
 2. **Manage** — press **L** (rebindable): three tabs — **Items** for what you decided to build
    or collect, **Side quests** for errands villagers gave you, and **History** for what you
    have finished — each with a **Read** button for what the villager said at the time, and a
-   **Journal** button for the lore you collected along the way. The first two tabs are a table of icon,
+   **Journal** button for the lore you collected along the way. A fourth tab, **World**, can
+   be switched on in Options: a reference card of this world's rules — every world-config
+   setting the installed mods declare (world generation, survival challenges, temporal
+   stability, all of it), grouped under the create-world screen's own headings, with values
+   that differ from the game's defaults drawn in colour and each setting's description on
+   hover — plus the full list of mods this world runs, with versions, including server-side
+   mods your client never loads. A filter box narrows the list as you type, matching names,
+   values, codes and descriptions alike. Handy on a server where you didn't write the
+   settings yourself. A fifth tab, **Player** (also switched on in Options), tracks your
+   spawn points — the world spawn and your temporal-gear returning point, each with a Map
+   button and a maintained map marker that follows the point and leaves when it is used up
+   or moved — plus respawns left at the returning point, deaths in this world, lives left
+   where the server grants a fixed number, character class, and temporal stability. The first two tabs are a table of icon,
    item (indented to show the craft tree), have/need, how many you want, actions — with
    − / + steppers and direct count entry, colour-coded status, and tool checks. Unpinning is
    hold-to-confirm, never a dialog: hold the Unpin button for a second, through its countdown;
@@ -182,7 +194,7 @@ track <name>` brings back a site you dismissed.
 
 ## Install
 
-Drop `tallybook_0.3.11.zip` into
+Drop `tallybook_0.3.12.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source
@@ -369,6 +381,39 @@ is most of it. Manual pre-release checklist for what the server can't see:
     the last item and a gold shimmer must appear over them (colour correct, sitting just
     above the head on both a villager and a taller trader), and stop once the items leave
     your inventory. An NPC with two tracked requests must not glow until *both* are met.
+15. **World tab** — hidden until "Show the World tab" is switched on in Options (off by
+    default; flipping it on must add the tab on Back without reopening, flipping it off
+    while *on* the tab must land you back on Items, and the choice must survive a
+    restart). Once shown, the settings match what the world was created with: check a handful
+    against the create-world screen (or the server's serverconfig) including one you
+    deliberately changed — the changed one must draw in colour with its default named in
+    the hover, defaults must draw plain, and dropdown values must read as the create
+    screen's labels ("5 days before monsters appear"), not raw codes. Long values
+    (temporal storms) truncate with "…" and show in full on hover. The seed/size line must
+    match the coordinate HUD's world. On a world with a config-declaring content mod, its
+    settings must appear (hover naming the mod) with no per-mod code; paging must work on
+    a heavily modded world where the list runs past one screen. The Mods section must list
+    every mod with its version: on a dedicated server that includes server-side-only mods
+    (hover says so), and Tallybook itself must appear marked client-side — it is never in
+    the server's announcement, so its presence proves the union of both lists works.
+    The filter must narrow as you type *without losing the cursor* (type a whole word in
+    one go — every keystroke rebuilds the screen, so a dropped cursor truncates the word),
+    match by description ("mobs" finds the grace timer), keep section headings on hits,
+    clear via the × button, reset when the dialog is reopened, and say so when nothing
+    matches. While typing in it, pins changing in the background must not steal the box.
+16. **Player tab** — off until "Show the Player tab" is switched on in Options. Once on:
+    the world spawn row's coordinates must match the coordinate HUD's numbers for that
+    spot, its Map button must centre the map there, and a green "home" marker must appear
+    on the map. Use a temporal gear: within a second the returning point row must appear
+    with coordinates, distance, Map button, a second marker, and "Respawns left there"
+    showing the full temporalGearRespawnUses budget. Die once: the count must drop by one
+    (compare against the game's own "will vanish after N more uses" respawn message —
+    they must agree). Spend the last use: the row must revert to "none", the marker must
+    leave the map, and no marker may be re-planted afterwards (the stale synced packet is
+    latched out until relog). Deaths must match `/player` bookkeeping expectations and
+    rise by one per death. Switching the tab off must remove both markers; switching the
+    "quest map markers" master option off must too. A returning point that existed before
+    Tallybook was installed must show "not known" for respawns left, never a guess.
 
 ## Design notes
 

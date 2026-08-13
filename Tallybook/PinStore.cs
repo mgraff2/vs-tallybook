@@ -210,6 +210,10 @@ namespace Tallybook
         /// adoption pass runs every tick, so without this a dismissed site would return
         /// every second — same contract as OfferedQuests.</summary>
         public List<string> OfferedSites = new List<string>();
+
+        /// <summary>The player's spawn tracking (Player tab): returning point, its use
+        /// budget, marker flags.</summary>
+        public SpawnState Spawn = new SpawnState();
     }
 
     public class PinStore
@@ -226,6 +230,7 @@ namespace Tallybook
         public Dictionary<string, string> StoryStates { get; private set; } = new Dictionary<string, string>();
         public List<SiteQuest> SiteQuests { get; private set; } = new List<SiteQuest>();
         public HashSet<string> OfferedSites { get; private set; } = new HashSet<string>();
+        public SpawnState Spawn { get; private set; } = new SpawnState();
         public event Action OnChanged;
 
         public PinStore(ICoreClientAPI capi)
@@ -403,7 +408,8 @@ namespace Tallybook
                     ChainStates = ChainStates,
                     StoryStates = StoryStates,
                     SiteQuests = SiteQuests,
-                    OfferedSites = OfferedSites.ToList()
+                    OfferedSites = OfferedSites.ToList(),
+                    Spawn = Spawn
                 };
                 File.WriteAllText(path, JsonConvert.SerializeObject(file, Formatting.Indented));
             }
@@ -448,6 +454,7 @@ namespace Tallybook
             StoryStates = new Dictionary<string, string>();
             SiteQuests = new List<SiteQuest>();
             OfferedSites = new HashSet<string>();
+            Spawn = new SpawnState();
             try
             {
                 string path = SavePath;
@@ -473,6 +480,7 @@ namespace Tallybook
                     if (loaded?.StoryStates != null) StoryStates = loaded.StoryStates;
                     if (loaded?.SiteQuests != null) SiteQuests = loaded.SiteQuests.Where(s => s?.Key != null).ToList();
                     if (loaded?.OfferedSites != null) OfferedSites = new HashSet<string>(loaded.OfferedSites);
+                    if (loaded?.Spawn != null) Spawn = loaded.Spawn;
                 }
             }
             catch (Exception e)

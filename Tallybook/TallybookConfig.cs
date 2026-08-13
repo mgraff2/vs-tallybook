@@ -56,6 +56,23 @@ namespace Tallybook
         /// time, so flipping it needs no recompose.</summary>
         public bool HudCycleVariants { get; set; } = true;
 
+        /// <summary>Show the World tab — this world's rules (every world-config setting and
+        /// its value) and the mods it runs. Off by default (Mark): it is reference material,
+        /// not the daily loop, so it earns its header space only when asked for.</summary>
+        public bool ShowWorldTab { get; set; } = false;
+
+        /// <summary>Show the Player tab — spawn points (world spawn and the temporal-gear
+        /// returning point, with respawns left there), deaths, and the like. Off by default,
+        /// same reasoning as the World tab. Also gates the spawn map markers.</summary>
+        public bool ShowPlayerTab { get; set; } = false;
+
+        /// <summary>Map marker for spawn points, distinct from the quest blue so the way
+        /// home reads differently from an errand. Same contract as the quest marker
+        /// settings: settings rather than constants because the icon set lives in the
+        /// client and can change; a rejected icon is reported in chat and fixable here.</summary>
+        public string SpawnWaypointIcon { get; set; } = "home";
+        public string SpawnWaypointColor { get; set; } = "#66cc66";
+
         /// <summary>Count what is in bags on animals you own and are near — the one you are
         /// riding included — as well as what you are carrying. Off by default: "what do I
         /// have on me" is the question this mod answers, and quietly counting the pack mule
@@ -133,6 +150,11 @@ namespace Tallybook
             QuestWaypointIcon = QuestWaypointIcon.Trim().Replace(" ", "");
 
             if (ParseColor(QuestReadyGlowColor) == null) QuestReadyGlowColor = "#FFBE3C";
+
+            if (string.IsNullOrWhiteSpace(SpawnWaypointIcon)) SpawnWaypointIcon = "home";
+            if (ParseColor(SpawnWaypointColor) == null) SpawnWaypointColor = "#66cc66";
+            SpawnWaypointIcon = SpawnWaypointIcon.Trim().Replace(" ", "");
+            SpawnWaypointColor = SpawnWaypointColor.Trim().Replace(" ", "");
 
             // Carry an untouched old default forward rather than leaving existing players on
             // a colour that was changed precisely because it read badly.

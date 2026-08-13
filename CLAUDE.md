@@ -828,6 +828,136 @@ collect with the 17-writings count on the row. Everything is derived, nothing mo
   matched against the *client's* Lang here — a locale mismatch between them means no
   adoption. Accepted; the alternative was matching against every language file.
 
+## The World tab (`WorldRules`) — world config read where the game writes it
+
+One dialog tab, all derived, nothing mod-named (0.3.12, Mark's "so people know all the
+rules" ask). **Opt-in via Options (`ShowWorldTab`, default off — Mark): reference material
+earns its header space only when asked for.** The tab is appended *last* in the tabs array
+so the other tabs' indexes never move whether it is present or not, and `Recompose` resets
+a World selection to Items whenever the option is off — a selection pointing at an undrawn
+tab would compose its rows under the wrong header. Facts verified by reflection over the
+1.22.6 assemblies:
+
+- **Definitions live on `Mod.WorldConfig`** (`ModWorldConfiguration`: `PlayStyles` +
+  `WorldConfigAttributes`), client-readable via `capi.ModLoader.Mods`. There is **no asset
+  file** for them — vanilla's are a JSON blob embedded in the mod DLL's metadata (zip mods
+  carry it in modinfo.json), so `capi.Assets` can never find them; the Mod object is the
+  only road. `WorldConfigurationAttribute` carries Code/Category/DataType/Values/Names/
+  Default. Vanilla: 64 attributes in 5 categories, all on the survival mod.
+- **Live values are `capi.World.Config`** (ITreeAttribute, synced in ServerIdentification).
+  A key the tree does not carry means *the default is in effect* — that is how the game
+  reads it, so display it as the rule, never as missing. `GetAsString` reads any value
+  type; compare loosely (case-insensitive, numeric-equal — the tree stores what happens to
+  have been written: "0.5", "true", typed attributes whose ToString cases differ).
+- **Lang conventions** (all in game domain for vanilla): setting name
+  `worldattribute-<code>`, description `worldattribute-<code>-desc`, category
+  `worldconfig-category-<cat>`, dropdown value `worldconfig-<code>-<Name>` — keyed by the
+  **Names entry** (the human label), not the value code. Mod-declared settings: try the
+  mod's own domain first. `Lang.GetIfExists` returns null on a miss — use it instead of
+  the compare-to-key dance.
+- Product decisions: first definition of a code wins (mods load in dependency order, so
+  vanilla outranks a re-declaration); values differing from default draw in the partial
+  colour with the default named on hover — "what did this server change" is the question
+  that opens the tab; config keys no installed mod declares are still listed ("Other
+  settings") because a list that silently drops them claims a completeness it lacks.
+- The model is rebuilt per dialog-open (`worldSections = null` in OnGuiOpened): an admin
+  can change world config mid-session, and a forever-cache would lie — while per-recompose
+  reads would be waste, since every inventory tick recomposes the open dialog.
+- **The filter box survives the recompose-everything pattern by explicit focus
+  hand-back**, and this is the pattern for any live-filtering input in this dialog: the
+  keystroke handler recomposes immediately (the filtering IS the redraw — the count
+  fields' defer-while-typing approach would make the filter feel dead), `Recompose`
+  captures `GetTextInput("world-filter")?.HasFocus` off the composer being discarded, and
+  `RestoreCountInputs` re-seats text and focus (`FocusElement(input.TabIndex)` —
+  `TabIndex` is a public field on GuiElement, verified). The capture-before/restore-after
+  split matters because the old composer is the only thing that knows where the cursor
+  was. `lastCountTypingMs` is stamped on filter keystrokes too, so inventory recounts
+  hold off mid-word. Filter matches name, value, code AND hover text (descriptions —
+  "mobs" finds graceTimer); a matching section title keeps its whole section.
+- **The server's mod list is `ClientMain.ServerMods`** (private `List<ModId>`, fields
+  Id/Name/Version/RequiredOnClient — captured from the `Packet_ServerIdentification`
+  handshake, which also carries PlayStyle and the map size). It is the ONLY place a
+  server-side-only mod is visible to a client — `capi.ModLoader.Mods` holds what *this
+  client* loaded, which misses server-only mods and, inversely, is the only list that has
+  client-only mods (Tallybook itself). The tab's "Mods" section unions both, hover naming
+  the side; the reflected read fails soft to the client list alone.
+
+## The Player tab (`SpawnTracker`) — spawn points from what the server actually syncs
+
+Opt-in like the World tab (`ShowPlayerTab`). Decompile-verified facts (1.22.6) this is
+built on — the sync boundary is the whole design:
+
+- **The player's own spawn point IS synced**: `Packet_PlayerData.Spawnx/y/z` →
+  `ClientPlayer.SpawnPosition` (public property on the NoObf concrete class — IPlayer does
+  not expose it; reflected, fail-soft). The packet carries the personal point when one is
+  set, else the world default spawn's centre — distinguish by comparing X/Z against
+  `DefaultSpawnPosition`. It refreshes immediately on SET (`SetSpawnPosition` →
+  `SendOwnPlayerData`: temporal gear, admin command) — but **NOT on consumption**: the
+  respawn path (`OnPlayerRespawn` → `GetSpawnPosition(consumeSpawnUse:true)`) decrements
+  `RemainingUses` server-side, clears the point at 0, and sends only a chat line. The
+  client's copy is stale until relog.
+- **`RemainingUses` is never synced.** "Respawns left" is therefore arithmetic:
+  `temporalGearRespawnUses` config captured at the moment the point appears, minus deaths
+  since (`IWorldPlayerData.Deaths` IS synced, same packet — it is the server's persisted
+  per-world total, which also answers "deaths since inception" directly). The stamps only
+  exist from the moment the mod saw the point appear; a pre-existing point shows "not
+  known" — the honesty rule again. **"The moment it appears" means while we were already
+  watching**: `SpawnState.Observed` exists because the first-ever look cannot tell a
+  fresh point from an old one, and the first build stamped pre-existing points with a
+  fresh budget (found by Mark, first Player-tab test).
+- **A synced field is only as good as EVERY packet variant that writes it — protobuf
+  zero-fills whatever a builder omits (found by Mark, the -512372 readout).** The game
+  has THREE builders for `Packet_PlayerData`: `ToPacket` (full — Deaths and Spawnx/y/z
+  set), `ToPacketForOtherPlayers` (sparse — inventory and movement only, Deaths and
+  Spawn left at protobuf-default ZERO), and a ClientId=-99 deletion stub. The client's
+  `UpdateFromPacket` copies unconditionally, so whenever a sparse variant lands on a
+  player entry, Deaths reads 0 and SpawnPosition reads BlockPos(0,0,0) — **the world
+  corner**, which displayed as "spawn at -512372, -513987" seen from the map middle.
+  Vanilla never notices because vanilla never reads those fields client-side. Two rules
+  from this: **decompile every `new Packet_X` construction site before trusting a synced
+  field**, and **guard every read with a credibility test** — (0,0) is a sentinel for
+  "never filled", not a place. The login packet can also be dropped outright (the
+  handler discards player data arriving before BlocksReceivedAndLoaded, logging
+  "Startup sequence wrong"), so "the packet was sent" never implies "the client has it".
+- **The client's death counter also FREEZES between full packets** — the death broadcast
+  (id 45) triggers an event and writes nothing. `SpawnState.DeathsSeen` is therefore a
+  persisted MONOTONIC counter (the StoryStates pattern): ratcheted up by the synced
+  value when credible (>0), bumped live by own deaths via `capi.Event.PlayerDeath`
+  (fires with the dying player's IClientPlayer — filter by PlayerUID), never lowered.
+  A max-ratchet cannot double-count the same death from both sources.
+- **Marker removals queue and retry** (`SpawnState.PendingRemovals`): a removal attempted
+  against a failed waypoint-list read removes nothing, which left the old marker standing
+  when a returning point moved. `QuestWaypoints.TryRemoveMarker` reports *settled*
+  (removed, or a good read proved it absent) vs *unreadable* (retry later) — an empty
+  read counts as unreadable, since the list is known to read back empty at random. The
+  retry cannot spam: a remove command is only ever sent at a marker actually found.
+- **`.tallybook spawn`** prints every layer side by side (synced packet, tracked state,
+  arithmetic, config, marker flags) — when a surface disagrees with the world, run it
+  before theorising about which layer lies. The gear writes exactly the config value into
+  RemainingUses (decompiled `ItemTemporalGear`), so the arithmetic mirrors the server
+  unless an admin intervenes; the game's own respawn chat message is the authority.
+- **The ExpiredLatch exists because of that staleness**: when our arithmetic says the
+  point is spent, the synced packet still shows it, and without latching the stale
+  coordinates the tracker would re-adopt them as a fresh point every tick — removing and
+  replanting the marker forever. Latch on the expired point's coords; clear when they
+  change or read default.
+- Tracking runs even while the tab is off (a part-spent point must not read fresh when
+  the tab returns); only the **markers** are gated — on `ShowPlayerTab` AND on the
+  QuestWaypoints master option, whose description promises "Tallybook never touches your
+  waypoints". Markers follow the errand contract exactly: transitions only, flags + last
+  positions persisted (`SaveFile.Spawn`), placed via `QuestWaypoints.PlaceMarker` /
+  `RemoveMarker` (the generalised helpers), never reconciled against a live map read.
+- Other tab rows, all verified client-readable: character class
+  (`WatchedAttributes.GetString("characterClass")`, Lang `characterclass-<code>`),
+  temporal stability (`WatchedAttributes.GetDouble("temporalStability")`, 0..1, only when
+  the world config enables it), `playerlives` config for lives left, calendar
+  `PrettyDate()`. Distances to the spawn points are computed at compose time and kept OUT
+  of the change signature — walking must not redraw the dialog every step.
+- Tab mechanics note (decompile-verified): `AddHorizontalTabs`' click handler receives
+  the tab's **DataInt**, but `SetValue` takes the **array position** — with two optional
+  tabs these disagree, so the restore path computes position from which optional tabs are
+  composed. Optional tabs append last, fixed tabs never move.
+
 ## Story stepping (`StoryProgress`) — reveal gates are the product
 
 `StoryProgress` walks the player through the vanilla story chain. Its step list is authored
@@ -863,6 +993,16 @@ touches the story, re-verify against the new files before touching the steps.
   block's measured height on the Quests tab (`StoryBlockHeight`).
 
 ## Persistence — the list is the player's work, not our cache
+
+- **Limit client-accumulated history features — a lean, not a ban (Mark, 0.3.12 —
+  declined a deaths-over-time log).** The per-world save lives on one machine; a record
+  that only accumulates where it happened to be installed forks across machines and reads
+  as authoritative when it is not. Client-local persistence is at its best holding
+  *working notes* (pins, offered-flags, captured positions — things that re-derive or
+  self-heal); a feature whose whole value IS the accumulated record carries that
+  machine-forking weakness, so it needs to be worth it and honest about it. Prefer
+  surfacing what the server stores; take on ledgers of our own sparingly, with Mark's
+  sign-off.
 
 - **Never delete a pin because it failed to resolve (found by Mark, 0.3.4 — the entire list
   vanished).** `Load` used to `RemoveAll` pins whose code the world did not know, reasoning
