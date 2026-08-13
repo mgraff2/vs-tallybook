@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.13 — 2026-08-13
+
+- New: **spawn distance in the HUD** (checkbox on the Player tab). A "Spawn distance:
+  1,250 blocks" line at the top of the HUD, measuring to wherever you would respawn right
+  now — your temporal-gear returning point when one is set, otherwise the world spawn.
+  The exact same number the Player tab shows (it refreshes in 5-block steps while you
+  walk, and settles to the block when you stop). With the line enabled the HUD stays up
+  even when your list is empty.
+- An optional warning distance under it: past that many blocks from spawn, the line turns
+  a colour you pick from a dropdown (red by default — or orange, yellow, green, blue,
+  purple, white; any other hex written into the config file is honoured as Custom). A
+  leash length for how far you are comfortable ranging from a respawn. Leave it off and
+  the line never changes colour.
+
 ## 0.3.12 — 2026-08-13
 
 - New: **World tab** (opt-in — switch it on in Options) — a fourth tab in the L window: a

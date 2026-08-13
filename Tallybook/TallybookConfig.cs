@@ -66,6 +66,22 @@ namespace Tallybook
         /// same reasoning as the World tab. Also gates the spawn map markers.</summary>
         public bool ShowPlayerTab { get; set; } = false;
 
+        /// <summary>Show a HUD line with the distance back to your current spawn — the
+        /// temporal-gear returning point when one is set, else the world spawn. Lives on
+        /// the Player tab rather than Options, next to the spawn rows it echoes.</summary>
+        public bool HudSpawnDistance { get; set; } = false;
+
+        /// <summary>Turn that HUD line the warning colour once you are farther out than
+        /// HudSpawnDistanceWarnBlocks. Optional — off, the line never changes colour.</summary>
+        public bool HudSpawnDistanceWarn { get; set; } = false;
+
+        /// <summary>How far from spawn counts as "far", in blocks.</summary>
+        public int HudSpawnDistanceWarnBlocks { get; set; } = 1000;
+
+        /// <summary>The colour the spawn-distance line turns past the warning distance,
+        /// chosen from a dropdown on the Player tab (any hex works from the file).</summary>
+        public string HudSpawnDistanceWarnColor { get; set; } = "#FF4040";
+
         /// <summary>Map marker for spawn points, distinct from the quest blue so the way
         /// home reads differently from an errand. Same contract as the quest marker
         /// settings: settings rather than constants because the icon set lives in the
@@ -133,6 +149,8 @@ namespace Tallybook
         public void Clamp()
         {
             HudMaxRows = Math.Min(30, Math.Max(3, HudMaxRows));
+            HudSpawnDistanceWarnBlocks = Math.Min(1_000_000, Math.Max(1, HudSpawnDistanceWarnBlocks));
+            if (ParseColor(HudSpawnDistanceWarnColor) == null) HudSpawnDistanceWarnColor = "#FF4040";
             MountBagRange = Math.Min(64, Math.Max(1, MountBagRange));
             if (HudFontSize != 0) HudFontSize = Math.Min(32, Math.Max(8, HudFontSize));
             switch ((HudPosition ?? "").ToLowerInvariant())

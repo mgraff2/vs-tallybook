@@ -5,7 +5,7 @@ Pin any item, and Tallybook tells you what you still need to gather — with liv
 inventory tracking and at-a-glance status. The handbook already answers "how do I make X";
 Tallybook answers "what do I still need, and am I done?"
 
-**Version 0.3.12**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
+**Version 0.3.13**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
 and nobody else needs it installed. The design is in
 [tallybook-mod-spec.md](tallybook-mod-spec.md).
 
@@ -34,7 +34,10 @@ and nobody else needs it installed. The design is in
    spawn points — the world spawn and your temporal-gear returning point, each with a Map
    button and a maintained map marker that follows the point and leaves when it is used up
    or moved — plus respawns left at the returning point, deaths in this world, lives left
-   where the server grants a fixed number, character class, and temporal stability. The first two tabs are a table of icon,
+   where the server grants a fixed number, character class, and temporal stability. A
+   checkbox at the tab's foot puts a "Spawn distance: 1,250 blocks" line in the HUD,
+   measuring to wherever you would respawn right now, with an optional warning distance
+   past which the line turns a colour you pick. The first two tabs are a table of icon,
    item (indented to show the craft tree), have/need, how many you want, actions — with
    − / + steppers and direct count entry, colour-coded status, and tool checks. Unpinning is
    hold-to-confirm, never a dialog: hold the Unpin button for a second, through its countdown;
@@ -194,7 +197,7 @@ track <name>` brings back a site you dismissed.
 
 ## Install
 
-Drop `tallybook_0.3.12.zip` into
+Drop `tallybook_0.3.13.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source
@@ -414,6 +417,13 @@ is most of it. Manual pre-release checklist for what the server can't see:
     rise by one per death. Switching the tab off must remove both markers; switching the
     "quest map markers" master option off must too. A returning point that existed before
     Tallybook was installed must show "not known" for respawns left, never a guess.
+    The "Show my distance from spawn in the HUD" checkbox at the tab's foot must add a
+    "Spawn distance: N blocks" line to the top of the HUD whose number matches the Player
+    tab's exactly when standing still, and must keep the HUD visible with an empty list.
+    Enabling it must reveal the warning sub-row; with a warning distance below your
+    current distance the line must draw in the dropdown's colour, and raising the distance
+    above it must return the line to white. Typing in the blocks field must not lose
+    focus or fight the cursor, and the choices must survive a relog.
 
 ## Design notes
 

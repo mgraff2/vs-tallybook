@@ -29,7 +29,7 @@ Crafting shopping list, quest tracker, story guide, and world/player reference. 
 
 <p><strong>World tab (optional, in Options).</strong> A reference card of this world's rules: every world-config setting the installed mods declare &mdash; world generation, survival challenges, temporal stability, all of it &mdash; grouped under the create-world screen's own headings, resolved to the labels that screen uses. Values the server changed from the game's defaults draw in colour with the default named on hover; a filter box finds settings by name, value, or description ("mobs" finds the grace timer). Below the settings: every mod this world runs, with versions &mdash; including server-side mods your client never loads. Handy on a server whose settings you didn't write.</p>
 
-<p><strong>Player tab (optional, in Options).</strong> Your spawn points, tracked: the world spawn and your temporal-gear returning point, each with coordinates, live distance, a Map button, and a maintained map marker that follows the point and leaves when it is used up or moved. "Respawns left there" counts your returning point's remaining uses against the server's budget &mdash; and drops as you die. Below that: your deaths in this world, lives left where the server grants a fixed number, character class, and temporal stability.</p>
+<p><strong>Player tab (optional, in Options).</strong> Your spawn points, tracked: the world spawn and your temporal-gear returning point, each with coordinates, live distance, a Map button, and a maintained map marker that follows the point and leaves when it is used up or moved. "Respawns left there" counts your returning point's remaining uses against the server's budget &mdash; and drops as you die. Below that: your deaths in this world, lives left where the server grants a fixed number, character class, and temporal stability. A checkbox on the tab puts a "Spawn distance" line in the HUD &mdash; how far you are from wherever you would respawn right now &mdash; with an optional warning distance past which the line turns a colour you pick.</p>
 
 <p><strong>Map integration.</strong> Quest givers get a light-blue X on your map for as long as their errand is live, and every errand row has a Map button that opens the world map centred on them. An errand that came with a locator map points at the map's destination while you're still fetching &mdash; the lens is in the Devastation, and that's the walk you're making &mdash; then back at the giver once you have the goods. Locations are learned by talking to the NPC (never by proximity scanning), from your own waypoints when one names them, or told directly: stand at the forge and type .tallybook here Agnieszka.</p>
 
@@ -51,6 +51,17 @@ Crafting shopping list, quest tracker, story guide, and world/player reference. 
 <li>Useful commands: .tallybook story (where you are in the storyline &mdash; never what comes next), .tallybook here &lt;name&gt; (set a quest giver's location to where you stand), .tallybook quests (every fetch errand your world's content describes, with your status), .tallybook sites (every locator-map destination and tracked site), .tallybook recipes (every item craftable more than one way), .tallybook spawn (everything the spawn tracker can see, layer by layer), .tallybook version (which build is actually running), .tallybook pages (diagnose a misbehaving Handbook button), .tallybook npcs, .tallybook relearn, .tallybook blankmarkers (finds untitled waypoints, which crash the vanilla map on hover &mdash; whoever made them).</li>
 <li>Config at VintagestoryData/ModConfig/tallybook.json; per-world data at VintagestoryData/ModData/tallybook/.</li>
 <li>For Vintage Story 1.22.x (tested against every patch release, 1.22.0 through 1.22.6).</li>
+</ul>
+
+---
+
+## Changelog — 0.3.13 (HTML — paste as-is)
+
+<p><strong>Tallybook 0.3.13 &mdash; for Vintage Story 1.22.x</strong></p>
+
+<ul>
+<li><strong>New: spawn distance in the HUD</strong> (checkbox on the Player tab). A "Spawn distance: 1,250 blocks" line at the top of the HUD, measuring to wherever you would respawn right now &mdash; your temporal-gear returning point when one is set, otherwise the world spawn. It is the exact same number the Player tab shows, refreshing in 5-block steps as you walk; with the line enabled the HUD stays up even when your list is empty.</li>
+<li>An optional warning distance under it: past that many blocks from spawn, the line turns a colour you pick from a dropdown (red by default) &mdash; a leash length for how far you are comfortable ranging from a respawn. Leave it off and the line never changes colour.</li>
 </ul>
 
 ---

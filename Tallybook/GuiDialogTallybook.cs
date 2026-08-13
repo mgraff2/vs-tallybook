@@ -617,7 +617,8 @@ namespace Tallybook
             var starts = new List<int> { 0 };
             double used = 0, budget = Math.Max(120,
                 PageBudget - (tab == TbTab.Quests ? StoryBlockHeight()
-                            : tab == TbTab.World ? WorldHeaderHeight() : 0));
+                            : tab == TbTab.World ? WorldHeaderHeight()
+                            : tab == TbTab.Player ? SpawnHudControlsHeight : 0));
 
             for (int i = 0; i < rows.Count; i++)
             {
@@ -919,6 +920,8 @@ namespace Tallybook
                 ComposeRow(c, row, ref y);
             }
 
+            ComposeSpawnHudControls(c, font, ref y);
+
             y += 8;
             if (MaxPage > 0)
             {
@@ -930,6 +933,103 @@ namespace Tallybook
             }
             c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
         }
+
+        /// <summary>
+        /// The Player tab's own settings, at the foot of the table: a HUD line with the
+        /// distance back to your current spawn, and — only once that is on — an optional
+        /// warning distance that turns the line the partial colour when you range past it.
+        /// Same switch/label/"?" idiom as the Options screen; the distance is a typed field
+        /// guarded by the same restore/typing-grace machinery as the count fields.
+        /// </summary>
+        void ComposeSpawnHudControls(GuiComposer c, CairoFont font, ref double y)
+        {
+            var hint = font.Clone().WithColor(GuiStyle.LinkTextColor);
+
+            y += 6;
+            c.AddGameOverlay(EB(0, y, DW, 2), GuiStyle.DialogBorderColor);
+            y += 8;
+
+            c.AddSwitch(v =>
+            {
+                config.HudSpawnDistance = v;
+                capi.StoreModConfig(config, "tallybook.json");
+                onHudChanged?.Invoke();
+                Recompose();   // the warning sub-row appears and leaves with this switch
+            }, EB(8, y, 25, 25), "opt-spawndist", 25);
+            c.AddStaticText(TbText.Fit(font, "Show my distance from spawn in the HUD", 380),
+                font, EB(44, y + 4, 380, 26));
+            c.AddStaticText("?", hint, EB(430, y + 4, 16, 24));
+            c.AddHoverText("A HUD line with how far you are from where you would respawn "
+                + "right now — your temporal-gear returning point when one is set, "
+                + "otherwise the world spawn.", font, 340, EB(430, y + 4, 16, 24));
+            y += 32;
+
+            if (config.HudSpawnDistance)
+            {
+                c.AddSwitch(v =>
+                {
+                    config.HudSpawnDistanceWarn = v;
+                    capi.StoreModConfig(config, "tallybook.json");
+                    onHudChanged?.Invoke();
+                }, EB(40, y, 25, 25), "opt-spawnwarn", 25);
+                c.AddStaticText(TbText.Fit(font, "Colour it as a warning beyond", 240),
+                    font, EB(76, y + 4, 240, 26));
+                c.AddTextInput(EB(322, y, 76, 26), OnSpawnWarnBlocksTyped, font, "spawnwarn-blocks");
+                c.AddStaticText("blocks", font, EB(404, y + 4, 56, 26));
+
+                // The colour it turns. A dropdown of named colours rather than a hex field:
+                // choosing a colour by eye is the job, and the config file still accepts any
+                // hex — an unlisted one shows up here as Custom rather than being clobbered.
+                var (colorValues, colorNames, colorIdx) = SpawnWarnColorChoices();
+                c.AddDropDown(colorValues, colorNames, colorIdx, (code, _) =>
+                {
+                    config.HudSpawnDistanceWarnColor = code;
+                    capi.StoreModConfig(config, "tallybook.json");
+                    onHudChanged?.Invoke();
+                }, EB(466, y, 120, 26), "spawnwarn-color");
+
+                c.AddStaticText("?", hint, EB(600, y + 4, 16, 24));
+                c.AddHoverText("Optional. Past this many blocks from spawn, the HUD line "
+                    + "turns the colour picked here — a leash length for how far you are "
+                    + "comfortable ranging from a respawn. Leave the switch off and the "
+                    + "line never changes colour.", font, 340, EB(600, y + 4, 16, 24));
+                y += 32;
+            }
+        }
+
+        /// <summary>The warning-colour dropdown's entries, with the config's current colour
+        /// selected. A hex someone wrote into the file that matches no preset is offered as
+        /// Custom so the dropdown never lies about, or overwrites, their choice.</summary>
+        (string[] Values, string[] Names, int Selected) SpawnWarnColorChoices()
+        {
+            var presets = new (string Hex, string Name)[]
+            {
+                ("#FF4040", "Red"),
+                ("#FFA040", "Orange"),
+                ("#FFE060", "Yellow"),
+                ("#80FF80", "Green"),
+                ("#4FC3F7", "Blue"),
+                ("#C080FF", "Purple"),
+                ("#FFFFFF", "White"),
+            };
+
+            string current = config.HudSpawnDistanceWarnColor ?? "#FF4040";
+            var values = presets.Select(p => p.Hex).ToList();
+            var names = presets.Select(p => p.Name).ToList();
+
+            int idx = values.FindIndex(v => string.Equals(v, current, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0)
+            {
+                values.Insert(0, current);
+                names.Insert(0, $"Custom ({current})");
+                idx = 0;
+            }
+            return (values.ToArray(), names.ToArray(), idx);
+        }
+
+        /// <summary>What ComposeSpawnHudControls will add below the rows — the pager must
+        /// budget for it or the last row lands under the controls.</summary>
+        double SpawnHudControlsHeight => 14 + 32 + (config.HudSpawnDistance ? 32 : 0);
 
         string WorldIntroText()
         {
@@ -1594,6 +1694,16 @@ namespace Tallybook
                     }
                 }
 
+                if (tab == TbTab.Player)
+                {
+                    var sd = SingleComposer.GetSwitch("opt-spawndist");
+                    if (sd != null) sd.On = config.HudSpawnDistance;
+                    var sw = SingleComposer.GetSwitch("opt-spawnwarn");
+                    if (sw != null) sw.On = config.HudSpawnDistanceWarn;
+                    SingleComposer.GetTextInput("spawnwarn-blocks")?.SetValue(
+                        config.HudSpawnDistanceWarnBlocks.ToString(CultureInfo.InvariantCulture));
+                }
+
                 // Visible pins only: inputs exist just for the composed page, and asking the
                 // composer for a key it never composed is unhealthy whether it throws or not.
                 foreach (var row in VisibleRows().OfType<PinRow>())
@@ -1614,6 +1724,24 @@ namespace Tallybook
         }
 
         // ------------------------------------------------------------------ actions
+
+        /// <summary>The warning-distance field on the Player tab. Same contract as the
+        /// count fields: the guard keeps a restore's SetValue from reading as typing, the
+        /// stamp keeps inventory recomposes from stealing focus mid-number, and a value
+        /// that does not parse yet ("", mid-edit) changes nothing rather than clamping the
+        /// player's half-typed number out from under them.</summary>
+        void OnSpawnWarnBlocksTyped(string val)
+        {
+            if (restoringInputs) return;
+            lastCountTypingMs = capi.World.ElapsedMilliseconds;
+
+            if (!int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out int blocks)
+                || blocks < 1) return;
+
+            config.HudSpawnDistanceWarnBlocks = Math.Min(1_000_000, blocks);
+            capi.StoreModConfig(config, "tallybook.json");
+            onHudChanged?.Invoke();
+        }
 
         void StepCount(Pin pin, int delta)
         {

@@ -409,7 +409,7 @@ namespace Tallybook
             dialog = new GuiDialogTallybook(capi, config, svc, questHistory, questWaypoints,
                                             story, siteQuests, spawnTracker,
                                             SetHudVisible, () => hud?.Refresh());
-            hud = new HudTallybook(capi, config, svc) { Sites = siteQuests };
+            hud = new HudTallybook(capi, config, svc) { Sites = siteQuests, Spawn = spawnTracker };
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
             questGlow = new QuestReadyGlow(capi, config, svc, questHistory);
             questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);

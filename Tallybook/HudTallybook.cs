@@ -208,6 +208,10 @@ namespace Tallybook
         /// Null-safe throughout: the HUD predates the tracker by a few frames at startup.</summary>
         public SiteQuests Sites;
 
+        /// <summary>Spawn tracking for the distance-to-spawn line — same late-set,
+        /// null-safe contract as Sites.</summary>
+        public SpawnTracker Spawn;
+
         public HudTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc) : base(capi)
         {
             this.config = config;
@@ -261,9 +265,11 @@ namespace Tallybook
         {
             // Unchecked pins are parked, not shopping — a list of only unchecked pins is an
             // empty list as far as the HUD is concerned. A checked site quest alone is a
-            // list: the walk is the work.
+            // list: the walk is the work. The spawn-distance line keeps the HUD up on its
+            // own — a player who asked to see the distance should see it with an empty list.
             bool shouldShow = UserVisible
-                && (svc.Store.Pins.Any(p => p.Active) || (Sites?.HudSites().Count ?? 0) > 0)
+                && (svc.Store.Pins.Any(p => p.Active) || (Sites?.HudSites().Count ?? 0) > 0
+                    || config.HudSpawnDistance)
                 && capi.World?.Player != null;
             if (!shouldShow)
             {
@@ -434,6 +440,30 @@ namespace Tallybook
 
             double[] Status(int have, int needed)
                 => have >= needed ? satisfied : have > 0 ? partial : none;
+
+            // Distance home first, above everything: it is about where you are, not what
+            // you carry. In the line itself rather than the trailing column — the number
+            // reads "1,250 blocks", which the narrow count column wraps. The warning
+            // threshold is optional; past it the line turns the colour the player picked
+            // on the Player tab.
+            if (config.HudSpawnDistance)
+            {
+                int dist = SpawnDistance();
+                if (dist >= 0)
+                {
+                    bool warn = config.HudSpawnDistanceWarn
+                        && dist > config.HudSpawnDistanceWarnBlocks;
+                    lines.Add(new HudLine
+                    {
+                        // One fixed label whichever point it measures to — "Spawn distance"
+                        // (Mark's wording); which point that is lives on the Player tab.
+                        Text = $"Spawn distance: {dist:n0} blocks",
+                        Color = warn
+                            ? TallybookConfig.ParseColor(config.HudSpawnDistanceWarnColor) ?? partial
+                            : none,
+                    });
+                }
+            }
 
             var active = svc.Store.Pins.Where(p => p.Active).ToList();
 
@@ -610,6 +640,36 @@ namespace Tallybook
         }
 
         /// <summary>
+        /// How far the player is, horizontally, from where they would respawn right now —
+        /// the temporal-gear returning point when one is set, else the world spawn.
+        /// (-1: not knowable this frame.) EXACT, not rounded: the Player tab shows the
+        /// exact figure, and two surfaces disagreeing by a few blocks reads as a bug
+        /// (Mark — 11,615 vs 11,618). The redraw throttle lives in DistanceSignature
+        /// instead, which keys on 5-block steps. Never capped: being far from home is
+        /// exactly when the number matters.
+        /// </summary>
+        int SpawnDistance()
+        {
+            var me = capi.World?.Player?.Entity?.Pos;
+            if (me == null) return -1;
+
+            double x, z;
+            if (Spawn != null && Spawn.HasTemp)
+            {
+                x = Spawn.State.TempX; z = Spawn.State.TempZ;
+            }
+            else
+            {
+                var def = capi.World?.DefaultSpawnPosition?.XYZ;
+                if (def == null) return -1;
+                x = def.X; z = def.Z;
+            }
+
+            double dx = me.X - x, dz = me.Z - z;
+            return (int)Math.Sqrt(dx * dx + dz * dz);
+        }
+
+        /// <summary>
         /// The quest distances as currently displayed. Walking changes them, and nothing else
         /// would trigger a redraw — counts have not moved — so the anchor tick watches this.
         /// Comparing the *rounded* values means a recompose happens every five metres rather
@@ -618,6 +678,13 @@ namespace Tallybook
         string DistanceSignature()
         {
             var sb = new System.Text.StringBuilder();
+            if (config.HudSpawnDistance)
+            {
+                // In 5-block steps: the displayed number is exact, but recomposing the
+                // whole HUD per step walked would be churn for a digit nobody can read
+                // at that rate. Up to ~5 blocks stale mid-stride, current at a standstill.
+                sb.Append("sp").Append(SpawnDistance() / 5).Append(',');
+            }
             foreach (var pin in svc.Store.Pins)
             {
                 if (pin.QuestGiver == null || !pin.Active) continue;
