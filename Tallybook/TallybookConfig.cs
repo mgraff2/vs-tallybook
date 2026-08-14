@@ -33,7 +33,7 @@ namespace Tallybook
         /// </summary>
         public int ConfigVersion { get; set; }
 
-        const int CurrentConfigVersion = 2;
+        const int CurrentConfigVersion = 3;
 
         /// <summary>Let a HUD line too long for its column slide left every 15 seconds to
         /// show the rest of itself, instead of ending in "…". A HUD cannot be hovered for the
@@ -57,14 +57,21 @@ namespace Tallybook
         public bool HudCycleVariants { get; set; } = true;
 
         /// <summary>Show the World tab — this world's rules (every world-config setting and
-        /// its value) and the mods it runs. Off by default (Mark): it is reference material,
-        /// not the daily loop, so it earns its header space only when asked for.</summary>
-        public bool ShowWorldTab { get; set; } = false;
+        /// its value) and the mods it runs. On by default (Mark, 0.3.14 — they shipped
+        /// opt-in as reference material, but "I don't think there are spoilers"); the
+        /// Options switch remains for anyone who wants the header space back.</summary>
+        public bool ShowWorldTab { get; set; } = true;
 
         /// <summary>Show the Player tab — spawn points (world spawn and the temporal-gear
-        /// returning point, with respawns left there), deaths, and the like. Off by default,
-        /// same reasoning as the World tab. Also gates the spawn map markers.</summary>
-        public bool ShowPlayerTab { get; set; } = false;
+        /// returning point, with respawns left there), deaths, and the like. On by default,
+        /// same history as the World tab. Also gates the spawn map markers.</summary>
+        public bool ShowPlayerTab { get; set; } = true;
+
+        /// <summary>Show the Lore tab — journal progress against everything this world's
+        /// content defines (found volumes with chapter counts, undiscovered volumes and
+        /// categories as counts only), plus the lore-book export. ON by default (Mark),
+        /// unlike the other reference tabs: lore is play, not reference.</summary>
+        public bool ShowLoreTab { get; set; } = true;
 
         /// <summary>Show a HUD line with the distance back to your current spawn — the
         /// temporal-gear returning point when one is set, else the world spawn. Lives on
@@ -192,6 +199,15 @@ namespace Tallybook
                 // before there was a visible switch for it gets it back on; the switch in the
                 // Options screen is now how you turn it off on purpose.
                 HudVisible = true;
+            }
+            if (ConfigVersion < 3)
+            {
+                // The tabs went on-by-default; a false in an older file is the old default
+                // on record, not a decision, so it comes forward. Anyone who had switched
+                // them off on purpose pays one revisit to Options — the migration cannot
+                // tell the two apart.
+                ShowWorldTab = true;
+                ShowPlayerTab = true;
             }
             ConfigVersion = CurrentConfigVersion;
 

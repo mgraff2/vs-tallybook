@@ -5,7 +5,7 @@ Pin any item, and Tallybook tells you what you still need to gather — with liv
 inventory tracking and at-a-glance status. The handbook already answers "how do I make X";
 Tallybook answers "what do I still need, and am I done?"
 
-**Version 0.3.13**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
+**Version 0.3.14**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
 and nobody else needs it installed. The design is in
 [tallybook-mod-spec.md](tallybook-mod-spec.md).
 
@@ -22,22 +22,32 @@ and nobody else needs it installed. The design is in
 2. **Manage** — press **L** (rebindable): three tabs — **Items** for what you decided to build
    or collect, **Side quests** for errands villagers gave you, and **History** for what you
    have finished — each with a **Read** button for what the villager said at the time, and a
-   **Journal** button for the lore you collected along the way. A fourth tab, **World**, can
-   be switched on in Options: a reference card of this world's rules — every world-config
-   setting the installed mods declare (world generation, survival challenges, temporal
-   stability, all of it), grouped under the create-world screen's own headings, with values
-   that differ from the game's defaults drawn in colour and each setting's description on
-   hover — plus the full list of mods this world runs, with versions, including server-side
+   **Journal** button for the lore you collected along the way. A fourth tab, **World**
+   (on by default, switchable off in Options): a reference card of this world's rules — every
+   world-config setting the installed mods declare (world generation, survival challenges,
+   temporal stability, all of it), grouped under the create-world screen's own headings, with
+   values that differ from the game's defaults drawn in colour and each setting's description
+   on hover — plus the full list of mods this world runs, with versions, including server-side
    mods your client never loads. A filter box narrows the list as you type, matching names,
    values, codes and descriptions alike. Handy on a server where you didn't write the
-   settings yourself. A fifth tab, **Player** (also switched on in Options), tracks your
+   settings yourself. A fifth tab, **Player** (also on by default), tracks your
    spawn points — the world spawn and your temporal-gear returning point, each with a Map
    button and a maintained map marker that follows the point and leaves when it is used up
    or moved — plus respawns left at the returning point, deaths in this world, lives left
    where the server grants a fixed number, character class, and temporal stability. A
    checkbox at the tab's foot puts a "Spawn distance: 1,250 blocks" line in the HUD,
    measuring to wherever you would respawn right now, with an optional warning distance
-   past which the line turns a colour you pick. The first two tabs are a table of icon,
+   past which the line turns a colour you pick. A sixth tab, **Lore** (on by default too),
+   tracks the writings you collect — books, scrolls, tapestries land in your journal, and
+   this tab counts them against everything this world's content defines: volumes discovered,
+   chapters collected, and how many volumes are still hidden (counts only — titles stay the
+   world's secret). Found volumes list two to a row with a **Read** button that opens the
+   game's journal directly on that entry, arranged side by side with the list; filter by
+   status (All / In progress / Complete), by source mod (Vanilla / each lore-adding mod), and
+   toggle story lore — writings only the story's own places hold, recognised from the world's
+   files — separately from world lore. An **Export book** button writes everything you have
+   found as a single printable HTML book, ordered like the tab, ready for a browser's
+   print-to-PDF. The first two tabs are a table of icon,
    item (indented to show the craft tree), have/need, how many you want, actions — with
    − / + steppers and direct count entry, colour-coded status, and tool checks. Unpinning is
    hold-to-confirm, never a dialog: hold the Unpin button for a second, through its countdown;
@@ -197,7 +207,7 @@ track <name>` brings back a site you dismissed.
 
 ## Install
 
-Drop `tallybook_0.3.13.zip` into
+Drop `tallybook_0.3.14.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source
@@ -384,8 +394,8 @@ is most of it. Manual pre-release checklist for what the server can't see:
     the last item and a gold shimmer must appear over them (colour correct, sitting just
     above the head on both a villager and a taller trader), and stop once the items leave
     your inventory. An NPC with two tracked requests must not glow until *both* are met.
-15. **World tab** — hidden until "Show the World tab" is switched on in Options (off by
-    default; flipping it on must add the tab on Back without reopening, flipping it off
+15. **World tab** — on by default; "Show the World tab" in Options turns it off
+    (flipping it on must add the tab on Back without reopening, flipping it off
     while *on* the tab must land you back on Items, and the choice must survive a
     restart). Once shown, the settings match what the world was created with: check a handful
     against the create-world screen (or the server's serverconfig) including one you
@@ -404,7 +414,7 @@ is most of it. Manual pre-release checklist for what the server can't see:
     match by description ("mobs" finds the grace timer), keep section headings on hits,
     clear via the × button, reset when the dialog is reopened, and say so when nothing
     matches. While typing in it, pins changing in the background must not steal the box.
-16. **Player tab** — off until "Show the Player tab" is switched on in Options. Once on:
+16. **Player tab** — on by default; "Show the Player tab" in Options turns it off. While on:
     the world spawn row's coordinates must match the coordinate HUD's numbers for that
     spot, its Map button must centre the map there, and a green "home" marker must appear
     on the map. Use a temporal gear: within a second the returning point row must appear
@@ -424,6 +434,19 @@ is most of it. Manual pre-release checklist for what the server can't see:
     current distance the line must draw in the dropdown's colour, and raising the distance
     above it must return the line to white. Typing in the blocks field must not lose
     focus or fight the cursor, and the choices must survive a relog.
+17. **Lore tab** — on by default; the intro numbers must match your journal (count an
+    entry's chapters by hand against its volume's row). Read something new: the tab must
+    update within a second — a tapestry too, which moves no inventory slot. Read on a
+    volume must open the game's journal on that exact entry, with the two windows side by
+    side, not overlapping; clicking around inside the journal must not re-centre it, and
+    closing either window must return the other to centre. The status chips, source
+    dropdown (on a world with lore-adding mods) and story/world toggles must each
+    re-count the intro line to their scope, with the source named in it; filters must
+    reset on reopen. Export book must write the HTML file, say so in chat with the path,
+    order it exactly as the tab does (Vanilla part first, then each mod), and contain
+    only found chapters — with per-volume "still undiscovered" counts and never an
+    unfound title. All of it must read identically from a second computer on the same
+    server (the journal is server-side).
 
 ## Design notes
 

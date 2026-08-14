@@ -60,6 +60,13 @@ namespace Tallybook
         /// surface redraws with the counts that now exist.</summary>
         public int Generation { get; private set; }
 
+        /// <summary>Lore categories only STORY schematics can place — the game's own
+        /// "story/" schematic-path convention (storystructures.json references every story
+        /// schematic that way), with the same exclusivity bar as site lore: a category any
+        /// ordinary ruin can also drop is world lore, not story lore. Null until the scan
+        /// lands (or if it fails) — "don't know" must not read as "not story".</summary>
+        public HashSet<string> StoryCategories { get; private set; }
+
         public bool Ready { get; private set; }
 
         /// <summary>How many schematic files the scan read — diagnostic ground truth.</summary>
@@ -81,6 +88,7 @@ namespace Tallybook
             started = false;
             Ready = false;
             exclusiveByGroup = null;
+            StoryCategories = null;
             loreDefs = new List<LoreDef>();
         }
 
@@ -123,10 +131,12 @@ namespace Tallybook
                     try
                     {
                         var result = Scan(sources, groupsCopy, randomizerCategories, knownCategories,
-                                          out int scanned, out bool fromCache);
+                                          out var storyCats, out int scanned, out bool fromCache);
                         capi.Event.EnqueueMainThreadTask(() =>
                         {
                             exclusiveByGroup = result;
+                            StoryCategories = new HashSet<string>(
+                                storyCats ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
                             SchematicsScanned = scanned;
                             FromCache = fromCache;
                             Ready = true;
@@ -267,6 +277,7 @@ namespace Tallybook
         {
             public List<string> Fingerprint = new List<string>();
             public Dictionary<string, List<string>> Groups = new Dictionary<string, List<string>>();
+            public List<string> StoryCategories = new List<string>();
             public int SchematicsScanned;
         }
 
@@ -285,17 +296,19 @@ namespace Tallybook
             Dictionary<string, List<string>> groups,
             Dictionary<string, HashSet<string>> randomizerCategories,
             HashSet<string> knownCategories,
-            out int scanned, out bool fromCache)
+            out List<string> storyCategories, out int scanned, out bool fromCache)
         {
+            storyCategories = new List<string>();
             scanned = 0;
             fromCache = false;
 
-            // Fingerprint: every source with its size and write time, plus the group keys —
-            // any mod update, addition or removal reruns the scan; nothing else does.
-            var fingerprint = sources
-                .Select(SourceStamp)
-                .Concat(groups.Keys.OrderBy(k => k, StringComparer.Ordinal))
-                .ToList();
+            // Fingerprint: a format marker (bumped when the cache payload grows a field, so
+            // an older build's cache rescans instead of answering with the field missing),
+            // then every source with its size and write time, plus the group keys — any mod
+            // update, addition or removal reruns the scan; nothing else does.
+            var fingerprint = new List<string> { "format:v2" };
+            fingerprint.AddRange(sources.Select(SourceStamp));
+            fingerprint.AddRange(groups.Keys.OrderBy(k => k, StringComparer.Ordinal));
 
             try
             {
@@ -305,6 +318,7 @@ namespace Tallybook
                     if (cached?.Groups != null && cached.Fingerprint != null
                         && cached.Fingerprint.SequenceEqual(fingerprint))
                     {
+                        storyCategories = cached.StoryCategories ?? new List<string>();
                         scanned = cached.SchematicsScanned;
                         fromCache = true;
                         return Normalise(cached.Groups);
@@ -349,6 +363,22 @@ namespace Tallybook
                 scanned += count;
             }
 
+            // Story lore: every category a "story/" schematic can place, minus any that a
+            // non-story schematic can also place — the same exclusivity reasoning as the
+            // per-site sets below, applied to the story as a whole.
+            var story = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in categoriesBySchematic)
+            {
+                if (kv.Key.StartsWith("story/", StringComparison.OrdinalIgnoreCase))
+                    story.UnionWith(kv.Value);
+            }
+            foreach (var kv in categoriesBySchematic)
+            {
+                if (!kv.Key.StartsWith("story/", StringComparison.OrdinalIgnoreCase))
+                    story.ExceptWith(kv.Value);
+            }
+            storyCategories = story.OrderBy(c => c, StringComparer.Ordinal).ToList();
+
             // Site group → its schematic keys; a category is exclusive when every schematic
             // that can place it belongs to the group.
             var result = new Dictionary<string, List<string>>();
@@ -387,6 +417,7 @@ namespace Tallybook
                 {
                     Fingerprint = fingerprint,
                     Groups = result,
+                    StoryCategories = storyCategories,
                     SchematicsScanned = scanned
                 }, Formatting.Indented));
             }

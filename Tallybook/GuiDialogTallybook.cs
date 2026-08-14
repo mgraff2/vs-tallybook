@@ -15,7 +15,7 @@ namespace Tallybook
     /// <summary>Errands from villagers are a different kind of thing from things you decided
     /// to build, so they get their own tab rather than being mixed in and distinguished only
     /// by a label.</summary>
-    enum TbTab { Items, Quests, History, World, Player }
+    enum TbTab { Items, Quests, History, World, Player, Lore }
 
     /// <summary>
     /// Text that must stay on its own row. GuiElementStaticText does not clip: a line longer
@@ -193,6 +193,9 @@ namespace Tallybook
             public string Label, Value, Hover;
             public double MapX, MapY, MapZ;
         }
+        /// <summary>Two found lore volumes side by side — the Lore tab's cells are small
+        /// enough that a full-width row wasted half the window.</summary>
+        class LoreRow : Row { public LoreBook.Volume A, B; }
 
         List<Row> allRows = new List<Row>();
 
@@ -219,13 +222,14 @@ namespace Tallybook
         readonly StoryProgress story;
         readonly SiteQuests sites;
         readonly SpawnTracker spawnTracker;
+        readonly LoreBook lore;
 
         static double DefaultHudFontSize => CairoFont.WhiteSmallText().UnscaledFontsize;
 
         public GuiDialogTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc,
                                   QuestHistory history, QuestWaypoints waypoints,
                                   StoryProgress story, SiteQuests sites, SpawnTracker spawnTracker,
-                                  Action<bool> setHudVisible, Action onHudChanged)
+                                  LoreBook lore, Action<bool> setHudVisible, Action onHudChanged)
             : base(capi)
         {
             this.onHudChanged = onHudChanged;
@@ -236,6 +240,7 @@ namespace Tallybook
             this.story = story;
             this.sites = sites;
             this.spawnTracker = spawnTracker;
+            this.lore = lore;
             this.setHudVisible = setHudVisible;
             // OnCountsChanged is the single redraw signal: every store mutation funnels
             // through TallyService.RecountAll, whose signature covers structure and numbers.
@@ -254,6 +259,9 @@ namespace Tallybook
             screen = TbScreen.List;
             worldSections = null;           // world config can change between opens
             worldFilter = "";
+            loreFilter = "all";             // a slice that quietly survived would read as missing lore
+            loreShowWorld = loreShowStory = true;
+            loreSource = null;
 
             svc.RecountAll();
             Recompose();
@@ -324,6 +332,7 @@ namespace Tallybook
             }
 
             if (tab == TbTab.Player) { BuildPlayerRows(); return; }
+            if (tab == TbTab.Lore) { BuildLoreRows(); return; }
 
             // Rewards first: a walk you can make right now beats a list of things to find.
             if (tab == TbTab.Quests && history != null)
@@ -533,6 +542,97 @@ namespace Tallybook
             }
         }
 
+        /// <summary>Lore tab model for the current recompose — built once in BuildRows,
+        /// read again by ComposeLore for the intro numbers and chips.</summary>
+        LoreBook.Model loreModel;
+
+        /// <summary>Which slice of found volumes the Lore tab shows: "all", "progress"
+        /// (started, chapters missing) or "complete". Session state, reset on open.</summary>
+        string loreFilter = "all";
+
+        /// <summary>Kind toggles: world lore (droppable anywhere) and story lore (held
+        /// only by the story's own places — scan-derived, never a name list). Both on by
+        /// default; a volume of unknown kind always shows, whatever the toggles say.</summary>
+        bool loreShowWorld = true, loreShowStory = true;
+
+        /// <summary>Source filter: null = every source, else the asset domain ("game",
+        /// "betterruins", …) whose volumes alone are shown. Session state, reset on open.</summary>
+        string loreSource;
+
+        static bool LoreComplete(LoreBook.Volume v)
+            => v.TotalChapters > 0 && v.FoundChapters >= v.TotalChapters;
+
+        List<LoreBook.Volume> LoreFiltered()
+        {
+            var found = loreModel?.Found ?? new List<LoreBook.Volume>();
+            if (loreFilter == "progress") found = found.Where(v => !LoreComplete(v)).ToList();
+            if (loreFilter == "complete") found = found.Where(LoreComplete).ToList();
+            found = found.Where(v => v.IsStory == null || (v.IsStory == true ? loreShowStory : loreShowWorld)).ToList();
+            if (loreSource != null)
+                found = found.Where(v => string.Equals(v.SourceKey, loreSource, StringComparison.OrdinalIgnoreCase)).ToList();
+            // Clustered by source — vanilla first, then mods alphabetically (Mark) — and
+            // inside a cluster the unfinished stories first, then alphabetical.
+            return found.OrderBy(LoreVanillaFirst)
+                .ThenBy(v => v.Source, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(LoreComplete)
+                .ThenBy(v => v.Title, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        static int LoreVanillaFirst(LoreBook.Volume v)
+            => string.Equals(v.SourceKey, "game", StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+
+        /// <summary>
+        /// The Lore tab's rows: found volumes two to a row (a volume cell is small — title,
+        /// count, Read — and a single column wasted half the window and ran to pages, Mark).
+        /// Found volumes show by name; everything undiscovered is counts only, in the intro.
+        /// </summary>
+        void BuildLoreRows()
+        {
+            loreModel = lore?.Snapshot();
+            if (loreModel == null || loreModel.TotalVolumes == 0)
+            {
+                string none = "This world's content defines no lore.";
+                allRows.Add(new InfoRow { Text = none, Full = none, Indent = 0 });
+                return;
+            }
+
+            if (loreModel.FoundVolumes == 0)
+            {
+                string none = "Nothing found yet — the books, scrolls and tapestries you "
+                    + "read land in your journal, and from there on this page.";
+                allRows.Add(new InfoRow { Text = none, Full = none, Indent = 0 });
+                return;
+            }
+
+            var shown = LoreFiltered();
+            if (shown.Count == 0)
+            {
+                string none = "Nothing in this view — widen the filters above.";
+                allRows.Add(new InfoRow { Text = none, Full = none, Indent = 0 });
+                return;
+            }
+
+            // With every source showing, each mod's volumes sit under their own heading;
+            // filtered to one source, the dropdown already names it and headings would
+            // just repeat one word down the page.
+            bool cluster = loreSource == null
+                && shown.Select(v => v.SourceKey).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1;
+
+            foreach (var group in shown.GroupBy(v => cluster ? v.SourceKey : "", StringComparer.OrdinalIgnoreCase))
+            {
+                var vols = group.ToList();
+                if (cluster) allRows.Add(new HeadingRow { Text = vols[0].Source });
+                for (int i = 0; i < vols.Count; i += 2)
+                {
+                    allRows.Add(new LoreRow
+                    {
+                        A = vols[i],
+                        B = i + 1 < vols.Count ? vols[i + 1] : null,
+                    });
+                }
+            }
+        }
+
         /// <summary>Matched against everything a player might remember about a setting —
         /// its label, its value, its raw code, and the description in its hover — so
         /// "monsters", "graceTimer" and "grace" all find the grace timer.</summary>
@@ -618,7 +718,8 @@ namespace Tallybook
             double used = 0, budget = Math.Max(120,
                 PageBudget - (tab == TbTab.Quests ? StoryBlockHeight()
                             : tab == TbTab.World ? WorldHeaderHeight()
-                            : tab == TbTab.Player ? SpawnHudControlsHeight : 0));
+                            : tab == TbTab.Player ? SpawnHudControlsHeight
+                            : tab == TbTab.Lore ? LoreHeaderHeight() : 0));
 
             for (int i = 0; i < rows.Count; i++)
             {
@@ -638,6 +739,7 @@ namespace Tallybook
             // wrong header.
             if (tab == TbTab.World && !config.ShowWorldTab) { tab = TbTab.Items; page = 0; }
             if (tab == TbTab.Player && !config.ShowPlayerTab) { tab = TbTab.Items; page = 0; }
+            if (tab == TbTab.Lore && !config.ShowLoreTab) { tab = TbTab.Items; page = 0; }
 
             // Whether the filter box holds the cursor is a fact about the composer being
             // thrown away — read it before it goes, so RestoreCountInputs can hand focus
@@ -715,7 +817,8 @@ namespace Tallybook
             // The handler receives the clicked tab's DataInt, not its array position
             // (decompile-verified: SetValue calls handler(tabs[i].DataInt)) — so optional
             // tabs keep stable identities here no matter which of them are showing.
-            var next = index == 4 ? TbTab.Player
+            var next = index == 5 ? TbTab.Lore
+                : index == 4 ? TbTab.Player
                 : index == 3 ? TbTab.World
                 : index == 2 ? TbTab.History
                 : index == 1 ? TbTab.Quests
@@ -766,6 +869,7 @@ namespace Tallybook
             // move: no counts, because reference tabs have no work outstanding.
             if (config.ShowWorldTab) tabs.Add(new GuiTab { DataInt = 3, Name = "World" });
             if (config.ShowPlayerTab) tabs.Add(new GuiTab { DataInt = 4, Name = "Player" });
+            if (config.ShowLoreTab) tabs.Add(new GuiTab { DataInt = 5, Name = "Lore" });
             c.AddHorizontalTabs(tabs.ToArray(), EB(0, y, DW, 26), OnTabClicked,
                 CairoFont.WhiteSmallText(),
                 CairoFont.WhiteSmallText().WithWeight(Cairo.FontWeight.Bold), "tabs");
@@ -774,6 +878,7 @@ namespace Tallybook
             if (tab == TbTab.History) { ComposeHistory(c, done, ref y); return; }
             if (tab == TbTab.World) { ComposeWorld(c, ref y); return; }
             if (tab == TbTab.Player) { ComposePlayer(c, ref y); return; }
+            if (tab == TbTab.Lore) { ComposeLore(c, ref y); return; }
 
             if (tab == TbTab.Quests) ComposeStoryBlock(c, ref y);
 
@@ -1030,6 +1135,297 @@ namespace Tallybook
         /// <summary>What ComposeSpawnHudControls will add below the rows — the pager must
         /// budget for it or the last row lands under the controls.</summary>
         double SpawnHudControlsHeight => 14 + 32 + (config.HudSpawnDistance ? 32 : 0);
+
+        /// <summary>Every volume — found or not — inside the current source and kind
+        /// filters. The intro's totals come from this, so filtering to one mod re-counts
+        /// the top line too (Mark); only the status chips slice further.</summary>
+        List<LoreBook.Volume> LoreScopeVolumes()
+        {
+            var vols = (loreModel?.Volumes ?? new List<LoreBook.Volume>())
+                .Where(v => v.IsStory == null || (v.IsStory == true ? loreShowStory : loreShowWorld));
+            if (loreSource != null)
+                vols = vols.Where(v => string.Equals(v.SourceKey, loreSource, StringComparison.OrdinalIgnoreCase));
+            return vols.ToList();
+        }
+
+        // Volumes and chapters only — an earlier draft also counted lore "kinds" (the
+        // game's internal draw pools), and it read as double-counting the volumes with
+        // extra words attached (Mark: "confusing and too verbose"). Do not bring it back.
+        string LoreIntroText()
+        {
+            if (loreModel == null) return "";
+            var scope = LoreScopeVolumes();
+            int totalVols = scope.Count;
+            int foundVols = scope.Count(v => v.FoundChapters > 0);
+            int totalCh = scope.Sum(v => v.TotalChapters);
+            int foundCh = scope.Sum(v => v.FoundChapters);
+
+            // Filtered numbers say whose they are — a total that shrank without a name
+            // on it reads as lore going missing.
+            string prefix = loreSource == null ? ""
+                : (scope.FirstOrDefault()?.Source ?? loreSource) + " — ";
+            return $"{prefix}You have discovered {foundVols} of {totalVols} volumes — "
+                + $"{foundCh} of {totalCh} chapters. "
+                + $"{totalVols - foundVols} volume(s) are still hidden in the world.";
+        }
+
+        /// <summary>What the intro and slice buttons cost the table — the pager must know
+        /// where the volume cells actually start, plus the button row at the foot.</summary>
+        double LoreHeaderHeight()
+            => TbText.Wrap(TableFont(), LoreIntroText(), DW - 16).Count * LineStep + 6 + 34 + 36;
+
+        /// <summary>
+        /// The Lore tab: intro numbers, then the found volumes sliced by state — All /
+        /// In progress / Complete — two to a row, each with a Read button that opens the
+        /// game's journal on that entry. Undiscovered lore is the counts in the intro and
+        /// nothing else.
+        /// </summary>
+        void ComposeLore(GuiComposer c, ref double y)
+        {
+            var font = TableFont();
+            var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
+
+            foreach (var line in TbText.Wrap(quiet, LoreIntroText(), DW - 16))
+            {
+                c.AddStaticText(line, quiet, EB(8, y, DW - 16, 22));
+                y += LineStep;
+            }
+            y += 6;
+
+            if (loreModel != null && loreModel.FoundVolumes > 0)
+            {
+                // Each control's counts are scoped by the OTHER filters, so every number
+                // answers "what would I see if I clicked this" — except the source
+                // dropdown, which always lists every source or a filtered-out mod could
+                // never be filtered back in.
+                var allFound = loreModel.Found;
+                var sourceScoped = loreSource == null ? allFound
+                    : allFound.Where(v => string.Equals(v.SourceKey, loreSource, StringComparison.OrdinalIgnoreCase)).ToList();
+                var kindScoped = sourceScoped
+                    .Where(v => v.IsStory == null || (v.IsStory == true ? loreShowStory : loreShowWorld)).ToList();
+
+                int inProgress = kindScoped.Count(v => !LoreComplete(v));
+                double chipY = y;   // a local copy: a ref parameter cannot enter a lambda
+                void Chip(string key, string label, int count, double x, double w)
+                {
+                    bool selected = loreFilter == key;
+                    c.AddSmallButton((selected ? "▶ " : "") + $"{label} ({count})",
+                        () => { loreFilter = key; page = 0; Recompose(); return true; },
+                        EB(x, chipY, w, 26), selected ? EnumButtonStyle.Normal : EnumButtonStyle.Small);
+                }
+                Chip("all", "All", kindScoped.Count, 8, 110);
+                Chip("progress", "In progress", inProgress, 126, 150);
+                Chip("complete", "Complete", kindScoped.Count - inProgress, 284, 150);
+
+                // Where the found lore comes from more than one mod, a dropdown narrows
+                // the tab to one source — "whatever mod" is an open set, which is what
+                // makes this a dropdown rather than a chip per mod.
+                var sources = allFound.GroupBy(v => v.SourceKey, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => (g.Key, g.First().Source, Count: g.Count()))
+                    .OrderBy(s => string.Equals(s.Key, "game", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                    .ThenBy(s => s.Source, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (sources.Count > 1)
+                {
+                    var values = new List<string> { "all" };
+                    var names = new List<string> { $"All sources ({allFound.Count})" };
+                    foreach (var s in sources)
+                    {
+                        values.Add(s.Key);
+                        names.Add($"{s.Source} ({s.Count})");
+                    }
+                    int sel = loreSource == null ? 0
+                        : Math.Max(0, values.FindIndex(v => string.Equals(v, loreSource, StringComparison.OrdinalIgnoreCase)));
+                    c.AddDropDown(values.ToArray(), names.ToArray(), sel, (code, _) =>
+                    {
+                        loreSource = code == "all" ? null : code;
+                        page = 0;
+                        Recompose();
+                    }, EB(442, chipY, 148, 26), "lore-source");
+                }
+
+                // Kind toggles, only once the scan has classified AND both kinds actually
+                // occur in the current source's found set — a lone toggle that can only
+                // empty the list is furniture. √/· and never a checkbox glyph (the fonts
+                // have no ☐/☑).
+                int storyCount = sourceScoped.Count(v => v.IsStory == true);
+                int worldCount = sourceScoped.Count(v => v.IsStory == false);
+                if (storyCount > 0 && worldCount > 0)
+                {
+                    void KindToggle(string label, int count, bool on, Action flip, double x, double w, string explain)
+                    {
+                        c.AddSmallButton($"{(on ? "√" : "·")} {label} ({count})",
+                            () => { flip(); page = 0; Recompose(); return true; },
+                            EB(x, chipY, w, 26), EnumButtonStyle.Small);
+                        c.AddHoverText(explain, TableFont(), 340, EB(x, chipY, w, 26));
+                    }
+                    KindToggle("World lore", worldCount, loreShowWorld,
+                        () => loreShowWorld = !loreShowWorld, DW - 336, 160,
+                        "Writings the wider world can drop — ruins, vessels, dungeons.");
+                    KindToggle("Story lore", storyCount, loreShowStory,
+                        () => loreShowStory = !loreShowStory, DW - 168, 160,
+                        "Writings held only by the story's own places — recognised from "
+                        + "the world's files, not a hand-kept list.");
+                }
+            }
+            y += 34;
+
+            foreach (var row in VisibleRows())
+            {
+                ComposeRow(c, row, ref y);
+            }
+
+            y += 8;
+            if (MaxPage > 0)
+            {
+                c.AddSmallButton("< Prev", () => { if (page > 0) { page--; Recompose(); } return true; },
+                    EB(DW / 2 - 130, y, 78, 28), EnumButtonStyle.Small);
+                c.AddStaticText($"Page {page + 1}/{MaxPage + 1}", font, EB(DW / 2 - 44, y + 5, 90, 24));
+                c.AddSmallButton("Next >", () => { if (page < MaxPage) { page++; Recompose(); } return true; },
+                    EB(DW / 2 + 52, y, 78, 28), EnumButtonStyle.Small);
+            }
+
+            c.AddSmallButton("Open journal",
+                () => { if (lore?.OpenJournal() == true) journalSideBySide = true; return true; },
+                EB(8, y, 120, 28));
+            c.AddHoverText("The game's own journal — everything here is read from it.",
+                font, 340, EB(8, y, 120, 28));
+
+            c.AddSmallButton("Export book", () => { ExportLoreBook(); return true; },
+                EB(136, y, 120, 28));
+            c.AddHoverText("Writes everything you have found as a single printable HTML "
+                + "book — open it in a browser and print to PDF from there. Only found "
+                + "chapters go in.", font, 340, EB(136, y, 120, 28));
+
+            c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+        }
+
+        // ---- side-by-side with the journal ----------------------------------------------
+
+        /// <summary>While true, this window and the game's journal are held side by side
+        /// instead of stacked in the screen centre — both are centre-aligned dialogs, so
+        /// Read would otherwise open the journal exactly on top of the list it came from.
+        /// Set by the Read / Open journal buttons, dropped (and both windows re-centred)
+        /// when either closes. Re-applied every frame because BOTH dialogs rebuild their
+        /// bounds on every recompose — a one-shot nudge lasts exactly until the journal's
+        /// next internal redraw snapped it back to centre.</summary>
+        bool journalSideBySide;
+
+        public override void OnFinalizeFrame(float dt)
+        {
+            base.OnFinalizeFrame(dt);
+            if (!journalSideBySide) return;
+
+            var journal = lore?.JournalDialog();
+            if (journal == null || !journal.IsOpened() || !IsOpened())
+            {
+                EndSideBySide();
+                return;
+            }
+
+            try
+            {
+                double scale = RuntimeEnv.GUIScale;
+                double screenW = capi.Render.FrameWidth / scale;
+                var mine = SingleComposer?.Bounds;
+                if (mine == null) return;
+                double myW = mine.OuterWidth / scale;
+
+                double jW = 0;
+                foreach (var composer in journal.Composers.Values)
+                {
+                    var b = composer?.Bounds;
+                    if (b != null) jW = Math.Max(jW, b.OuterWidth / scale);
+                }
+                if (jW <= 0 || myW <= 0) return;
+
+                // Both windows centred as one block; on a screen too narrow for that, this
+                // window keeps the left edge and the journal takes what remains at the right.
+                const double gap = 10;
+                double left = Math.Max(4, (screenW - (myW + gap + jW)) / 2);
+                ApplyDialogOffset(mine, left - (screenW - myW) / 2);
+
+                double jLeft = Math.Min(left + myW + gap, Math.Max(0, screenW - jW - 4));
+                double jOffset = jLeft - (screenW - jW) / 2;
+                foreach (var composer in journal.Composers.Values)
+                {
+                    if (composer?.Bounds != null) ApplyDialogOffset(composer.Bounds, jOffset);
+                }
+            }
+            catch { journalSideBySide = false; }   // cosmetics never get to throw per frame
+        }
+
+        void EndSideBySide()
+        {
+            journalSideBySide = false;
+            try
+            {
+                if (SingleComposer?.Bounds != null) ApplyDialogOffset(SingleComposer.Bounds, 0);
+                var journal = lore?.JournalDialog();
+                if (journal != null)
+                {
+                    foreach (var composer in journal.Composers.Values)
+                    {
+                        if (composer?.Bounds != null) ApplyDialogOffset(composer.Bounds, 0);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        static void ApplyDialogOffset(ElementBounds bounds, double offsetX)
+        {
+            if (Math.Abs(bounds.fixedOffsetX - offsetX) < 0.5) return;
+            bounds.WithFixedAlignmentOffset(offsetX, bounds.fixedOffsetY);
+            bounds.CalcWorldBounds();
+        }
+
+        public override void OnGuiClosed()
+        {
+            base.OnGuiClosed();
+            if (journalSideBySide) EndSideBySide();
+        }
+
+        /// <summary>One volume in the two-a-row grid: title (hover gives the full text when
+        /// trimmed), chapter count in the status colour, and Read — the journal opened
+        /// straight on this entry.</summary>
+        void ComposeLoreCell(GuiComposer c, LoreBook.Volume vol, double x, double y)
+        {
+            if (vol == null) return;
+            var font = TableFont();
+            double cellW = DW / 2 - 24;
+            const double readW = 58, countW = 86;
+            double titleW = cellW - countW - readW - 16;
+
+            FittedText(c, vol.Title, font, EB(x, y + 4, titleW, 24), titleW);
+
+            var countFont = font.Clone().WithColor(StatusColor(vol.FoundChapters, vol.TotalChapters));
+            string count = LoreComplete(vol)
+                ? $"√ {vol.FoundChapters}/{vol.TotalChapters}"
+                : $"{vol.FoundChapters}/{vol.TotalChapters}";
+            c.AddStaticText(count, countFont, EB(x + titleW + 8, y + 4, countW, 24));
+
+            c.AddSmallButton("Read",
+                () => { if (lore?.OpenJournal(vol.Code) == true) journalSideBySide = true; return true; },
+                EB(x + cellW - readW, y, readW, 26), EnumButtonStyle.Small);
+        }
+
+        /// <summary>Write the book and say where it landed — in chat, so the path survives
+        /// closing the window and can be copied. A failure says so rather than half-acting.</summary>
+        void ExportLoreBook()
+        {
+            if (lore == null) return;
+            string path = lore.ExportBook(out int volumes, out int chapters);
+            if (path == null)
+            {
+                capi.ShowChatMessage("[tallybook] Nothing to export yet — no lore found, "
+                    + "or the file could not be written (see client log).");
+                return;
+            }
+            capi.ShowChatMessage($"[tallybook] Lore book written — {volumes} volume(s), "
+                + $"{chapters} chapter(s): {path} — open it in a browser and print to PDF "
+                + "from there.");
+        }
 
         string WorldIntroText()
         {
@@ -1575,6 +1971,12 @@ namespace Tallybook
                     }
                     break;
                 }
+                case LoreRow lr:
+                {
+                    ComposeLoreCell(c, lr.A, 8, y);
+                    ComposeLoreCell(c, lr.B, DW / 2 + 8, y);
+                    break;
+                }
                 case InfoRow ir:
                 {
                     // Read as the transcript it is — the same shape the History page uses:
@@ -1657,6 +2059,9 @@ namespace Tallybook
 
             var playerTab = SingleComposer.GetSwitch("opt-playertab");
             if (playerTab != null) playerTab.On = config.ShowPlayerTab;
+
+            var loreTab = SingleComposer.GetSwitch("opt-loretab");
+            if (loreTab != null) loreTab.On = config.ShowLoreTab;
         }
 
         bool restoringInputs;
@@ -1675,6 +2080,7 @@ namespace Tallybook
                 // position is computed from which optional tabs are actually composed.
                 int active = tab switch
                 {
+                    TbTab.Lore => 3 + (config.ShowWorldTab ? 1 : 0) + (config.ShowPlayerTab ? 1 : 0),
                     TbTab.Player => 3 + (config.ShowWorldTab ? 1 : 0),
                     TbTab.World => 3,
                     TbTab.History => 2,
@@ -2885,6 +3291,14 @@ namespace Tallybook
                 + "in colour — plus every mod the server runs, with versions. Handy on a "
                 + "server whose settings you didn't write yourself.",
                 v => config.ShowWorldTab = v);
+
+            Option("opt-loretab", config.ShowLoreTab,
+                "Show the Lore tab",
+                "Your journal against everything this world's content hides: found volumes "
+                + "with chapter counts, how many volumes and categories are still out there "
+                + "(counts only — titles stay secret until found), and an Export button that "
+                + "writes your found lore as a printable book.",
+                v => config.ShowLoreTab = v);
 
             Option("opt-playertab", config.ShowPlayerTab,
                 "Show the Player tab",

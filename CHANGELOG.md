@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.14 — 2026-08-14
+
+- New: **Lore tab** (on by default; Options can hide it) — your journal against everything
+  this world's content defines. The books, scrolls and tapestries you read land in the
+  game's journal; this tab counts them: volumes discovered, chapters collected, volumes
+  still hidden (counts only — unfound titles stay the world's secret). Everything is read
+  from the server-synced journal and the world's own lore files, so progress is identical
+  on every computer you play from and modded lore counts with zero compat work.
+- Found volumes list two to a row, clustered by source — Vanilla first, then each
+  lore-adding mod — with unfinished volumes ahead of complete ones. Slice the view by
+  status (All / In progress / Complete), by source mod (a dropdown, one entry per mod
+  with counts), or toggle **story lore** — writings only the story's own places can hold,
+  recognised from the world's worldgen files rather than any hand-kept list — separately
+  from world lore. The intro numbers re-count to whatever scope you pick, named so a
+  smaller total never reads as lore going missing.
+- Every found volume has a **Read** button that opens the game's own journal directly on
+  that entry — with the two windows arranged side by side instead of stacked, for as long
+  as both are open. An **Open journal** button sits next to **Export book**.
+- **Export book** writes everything you have found as one printable HTML file (path told
+  in chat): cover page, contents, one section per volume in exactly the tab's order, with
+  per-volume "chapters still undiscovered" counts. Open it in a browser and print to PDF.
+- The World and Player tabs are now **on by default** (the Options switches remain). A
+  config that recorded the old off-default is brought forward once; a deliberate off needs
+  one revisit to Options.
+
 ## 0.3.13 — 2026-08-13
 
 - New: **spawn distance in the HUD** (checkbox on the Player tab). A "Spawn distance:

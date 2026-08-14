@@ -31,6 +31,7 @@ namespace Tallybook
         QuestWatcher questWatcher;
         QuestWaypoints questWaypoints;
         SpawnTracker spawnTracker;
+        LoreBook loreBook;
         QuestHistory questHistory;
         StoryProgress story;
         SiteQuests siteQuests;
@@ -381,6 +382,12 @@ namespace Tallybook
                     // Same reason: a story step completing raises no event. A handful of
                     // variable reads when nothing moved.
                     story?.Poll();
+
+                    // A lore discovery lands in the journal by packet, not by any event we
+                    // can hear — and reading a tapestry moves no inventory slot, so without
+                    // this poll the Lore tab would not learn of it until something else
+                    // happened by.
+                    if (loreBook?.Poll() == true) svc.RecountAll();
                 }
                 catch (Exception e)
                 {
@@ -397,6 +404,7 @@ namespace Tallybook
             story = new StoryProgress(capi, svc, quests, questWaypoints);
             siteQuests = new SiteQuests(capi, svc, questWaypoints);
             spawnTracker = new SpawnTracker(capi, config, svc.Store, questWaypoints);
+            loreBook = new LoreBook(capi) { Scan = siteQuests.Scan };
             // The story block redraws with the same surfaces as every count, so its state
             // rides the shared change signature — and so does the set of quests awaiting a
             // reward, or the "collect your reward" row could never appear or clear. Site
@@ -405,9 +413,10 @@ namespace Tallybook
             svc.ExtraSignature = () => story.UiSignature() + "|rw:"
                 + string.Join(",", questHistory.AwaitingRewards().Select(a => a.Chain))
                 + "|sq:" + siteQuests.Signature()
-                + "|sp:" + spawnTracker.Signature();
+                + "|sp:" + spawnTracker.Signature()
+                + "|lb:" + loreBook.Signature();
             dialog = new GuiDialogTallybook(capi, config, svc, questHistory, questWaypoints,
-                                            story, siteQuests, spawnTracker,
+                                            story, siteQuests, spawnTracker, loreBook,
                                             SetHudVisible, () => hud?.Refresh());
             hud = new HudTallybook(capi, config, svc) { Sites = siteQuests, Spawn = spawnTracker };
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
@@ -528,6 +537,7 @@ namespace Tallybook
             quests.InvalidateCatalogue();     // asset sets differ between servers
             story.InvalidateWorld();          // and story content with them
             siteQuests.InvalidateWorld();     // locator items and lore likewise
+            loreBook.InvalidateWorld();       // lore defs are per-world assets too
             SubscribeToCarriedInventories();
             svc.Store.Load(svc.Resolve);
             BackfillQuestText();
