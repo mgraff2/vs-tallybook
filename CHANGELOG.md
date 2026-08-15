@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.15 — 2026-08-15
+
+- New: **Explore tab** (on by default) — save the spot you are standing on with a name and
+  a one-line "what it is", or `.tallybook spot <name>` from chat. Each place gets an
+  orange star map marker, a live distance, a Map button, and the Side-quests checkbox
+  contract: checked places ride the HUD ("Old copper mine — mine, half dug (1,240m)"),
+  unchecked are parked. Longer notes live behind the same +/− fold an errand's
+  conversation uses: one free-text field where "- " lines draw as bullets and "[ ]" lines
+  as checkboxes you tick off with a click straight from the list. An Edit window changes
+  the name, the what-is-it and the notes (with Bullet/Checkbox toolbar buttons); renaming
+  moves the map marker. Remove is the same hold-through-the-countdown as Unpin. An
+  optional hotkey (unbound by default, Settings → Controls) opens straight to the tab.
+- New: **construction sites become plannable** — the vanilla sailboat, Shipwright's
+  Drakkar and the rest. A construction is stage data on its entity (the game's own
+  convention, which mods copy), so Tallybook derives the FULL bill of materials with no
+  per-mod code. Pin the roller item and press **Construct**: the build joins the list as
+  its own pin — rollers, planks, beams, rope, stage by stage totals — with the starter
+  item as an expandable first row, so the roller craft and the boat materials count at
+  the same time. Holding rollers never marks the boat built. A site takes ONE wood
+  throughout, and the list says so: unbound rows read "(one wood)" and count ONE wood —
+  chosen jointly, whichever single wood carries the whole build furthest, so oak boards
+  and birch beams never both read as progress. Pinning an oak boat's own page commits
+  the build to oak ("Oak board", counting oak only), and a wood selector on the build
+  row commits or releases the choice any time.
+- **Side quests: sorting and hand-arranging now cover every row.** Errands and
+  map-artifact site quests are one ordered list on the tab and the HUD alike — the Sort
+  dropdown (Custom / distance / progress / item / giver) reorders all of it, and under
+  Custom every row has ^ / v buttons; the arrangement is saved per world. (Previously
+  sites always sat first and only errand pins moved, which read as sorting doing
+  nothing.)
+- **HUD rows link to the handbook**: hold Alt to free the cursor and click any item row —
+  errands, goals, materials, tools — to open the same handbook page the dialog's
+  Handbook button opens.
+- **History is organized by game year**: still-going first, then Year N (newest first,
+  newest hand-ins on top), with quests finished before Tallybook was watching collapsed
+  at the bottom. Year folds are remembered per world.
+- **World tab is an accordion**: it opens on "Changed on this server" — the tab's real
+  question — with every category folded to a counted heading ("+ World generation (14,
+  3 changed)"); opening one section closes the rest, and the filter still surfaces
+  matches inside folded sections.
+- Tab order is now Items, Side quests, Explore, Player, World, Lore, History.
+
 ## 0.3.14 — 2026-08-14
 
 - New: **Lore tab** (on by default; Options can hide it) — your journal against everything

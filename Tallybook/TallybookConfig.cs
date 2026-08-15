@@ -73,6 +73,17 @@ namespace Tallybook
         /// unlike the other reference tabs: lore is play, not reference.</summary>
         public bool ShowLoreTab { get; set; } = true;
 
+        /// <summary>Show the Explore tab — places the player saved to revisit, with notes
+        /// and map markers. On by default: like Lore, it is play, not reference.</summary>
+        public bool ShowExploreTab { get; set; } = true;
+
+        /// <summary>Map marker for saved places. A star, distinct from the quest x and the
+        /// spawn home: these are the player's own discoveries. Same contract as the other
+        /// marker settings — settings rather than constants because the icon set lives in
+        /// the client; a rejected icon is reported in chat and fixable here.</summary>
+        public string PlaceWaypointIcon { get; set; } = "star1";
+        public string PlaceWaypointColor { get; set; } = "#E8A33C";
+
         /// <summary>Show a HUD line with the distance back to your current spawn — the
         /// temporal-gear returning point when one is set, else the world spawn. Lives on
         /// the Player tab rather than Options, next to the spawn rows it echoes.</summary>
@@ -180,6 +191,11 @@ namespace Tallybook
             if (ParseColor(SpawnWaypointColor) == null) SpawnWaypointColor = "#66cc66";
             SpawnWaypointIcon = SpawnWaypointIcon.Trim().Replace(" ", "");
             SpawnWaypointColor = SpawnWaypointColor.Trim().Replace(" ", "");
+
+            if (string.IsNullOrWhiteSpace(PlaceWaypointIcon)) PlaceWaypointIcon = "star1";
+            if (ParseColor(PlaceWaypointColor) == null) PlaceWaypointColor = "#E8A33C";
+            PlaceWaypointIcon = PlaceWaypointIcon.Trim().Replace(" ", "");
+            PlaceWaypointColor = PlaceWaypointColor.Trim().Replace(" ", "");
 
             // Carry an untouched old default forward rather than leaving existing players on
             // a colour that was changed precisely because it read badly.

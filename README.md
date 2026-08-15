@@ -5,7 +5,7 @@ Pin any item, and Tallybook tells you what you still need to gather — with liv
 inventory tracking and at-a-glance status. The handbook already answers "how do I make X";
 Tallybook answers "what do I still need, and am I done?"
 
-**Version 0.3.14**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
+**Version 0.3.15**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
 and nobody else needs it installed. The design is in
 [tallybook-mod-spec.md](tallybook-mod-spec.md).
 
@@ -22,7 +22,7 @@ and nobody else needs it installed. The design is in
 2. **Manage** — press **L** (rebindable): three tabs — **Items** for what you decided to build
    or collect, **Side quests** for errands villagers gave you, and **History** for what you
    have finished — each with a **Read** button for what the villager said at the time, and a
-   **Journal** button for the lore you collected along the way. A fourth tab, **World**
+   **Journal** button for the lore you collected along the way. A **World** tab
    (on by default, switchable off in Options): a reference card of this world's rules — every
    world-config setting the installed mods declare (world generation, survival challenges,
    temporal stability, all of it), grouped under the create-world screen's own headings, with
@@ -30,14 +30,22 @@ and nobody else needs it installed. The design is in
    on hover — plus the full list of mods this world runs, with versions, including server-side
    mods your client never loads. A filter box narrows the list as you type, matching names,
    values, codes and descriptions alike. Handy on a server where you didn't write the
-   settings yourself. A fifth tab, **Player** (also on by default), tracks your
+   settings yourself. A **Player** tab (also on by default) tracks your
    spawn points — the world spawn and your temporal-gear returning point, each with a Map
    button and a maintained map marker that follows the point and leaves when it is used up
    or moved — plus respawns left at the returning point, deaths in this world, lives left
    where the server grants a fixed number, character class, and temporal stability. A
    checkbox at the tab's foot puts a "Spawn distance: 1,250 blocks" line in the HUD,
    measuring to wherever you would respawn right now, with an optional warning distance
-   past which the line turns a colour you pick. A sixth tab, **Lore** (on by default too),
+   past which the line turns a colour you pick. An **Explore** tab (on by default) is a
+   place journal: save the spot you are standing on — a mine, a ruin, a cave — with a name
+   and a one-line "what it is" (`.tallybook spot <name>` does it from chat). Each place
+   gets an orange star map marker, a live distance, a Map button, and the side-quest
+   checkbox contract: checked places show on the HUD with the distance back; unchecked are
+   parked. Longer notes sit behind a +/− fold — one free-text field where "- " lines draw
+   as bullets and "[ ]" lines as clickable checkboxes — with an Edit window for the name,
+   description and notes. Removing a place is the same hold-to-confirm as unpinning, and
+   an optional hotkey (unbound by default) opens straight to the tab. A **Lore** tab (on by default too),
    tracks the writings you collect — books, scrolls, tapestries land in your journal, and
    this tab counts them against everything this world's content defines: volumes discovered,
    chapters collected, and how many volumes are still hidden (counts only — titles stay the
@@ -205,9 +213,23 @@ never what comes next.
 them hide provable writings, and where each tracked site quest stands; `.tallybook sites
 track <name>` brings back a site you dismissed.
 
+`.tallybook spot <name>` saves where you are standing as an Explore-tab place — the same
+act as the tab's "Save this spot" button, without opening the window.
+
+`.tallybook screenshots` photographs every Tallybook surface — the HUD and each tab — into
+stable, feature-named PNGs in `ModData/tallybook/screenshots/`, for refreshing the mod page.
+Each shot is cropped to the Tallybook window rather than the whole screen, held inside
+ModDB's 1920×1080 ceiling, with the HUD shot always exactly 480×320. It only
+navigates: nothing is pinned, unpinned or expanded, so the shots are of your real world. It
+counts down a few seconds first, so move the mouse away and let the chat fade. Optional
+arguments: `wait <seconds>` for a longer pre-roll, `pad <px>` for the margin around the
+window, `full` for whole-screen shots, `noflip` if the images come out upside down, and
+`stage final` if they come back blank (the run detects that and says so). What each shot is
+for and how to stage it is in [docs/moddb-screenshots.md](docs/moddb-screenshots.md).
+
 ## Install
 
-Drop `tallybook_0.3.14.zip` into
+Drop `tallybook_0.3.15.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source
@@ -447,6 +469,20 @@ is most of it. Manual pre-release checklist for what the server can't see:
     only found chapters — with per-volume "still undiscovered" counts and never an
     unfound title. All of it must read identically from a second computer on the same
     server (the journal is server-side).
+18. **Explore tab** — save a spot: the row must appear checked with a star marker on the
+    map, distance live, and a HUD line "Name — what it is (Nm)". Notes: the +/− fold only
+    appears once notes exist; "[ ]" lines must tick/untick with one click and survive a
+    relog; the Edit window must change name (marker follows), description and notes, and
+    Cancel must change nothing. Remove must demand the same hold-countdown as Unpin.
+    Unchecking must park the row (dimmed, off the HUD) without losing anything.
+19. **Side-quest ordering** — with a mix of errands AND map-site quests: every sort mode
+    must reorder the whole list identically on the tab and the HUD, and under Custom every
+    row (sites included) must move with ^ / v, the arrangement surviving a relog.
+20. **Construction (needs vanilla rollers or a Shipwright roller)** — pin the roller:
+    Expand must show only its own recipe; Construct must add a separate "… construction"
+    pin whose tree lists the starter (expandable to its recipe) plus every stage total.
+    Carrying the starter must NOT mark the construction pin complete or shrink its
+    demands; both pins must coexist and count independently.
 
 ## Design notes
 

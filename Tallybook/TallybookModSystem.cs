@@ -32,6 +32,7 @@ namespace Tallybook
         QuestWaypoints questWaypoints;
         SpawnTracker spawnTracker;
         LoreBook loreBook;
+        ExplorePlaces explorePlaces;
         QuestHistory questHistory;
         StoryProgress story;
         SiteQuests siteQuests;
@@ -80,6 +81,11 @@ namespace Tallybook
             capi.Input.SetHotKeyHandler("tallybook", OnDialogHotkey);
             capi.Input.RegisterHotKey("tallybookhud", "Tallybook HUD toggle", GlKeys.K, HotkeyType.GUIOrOtherControls);
             capi.Input.SetHotKeyHandler("tallybookhud", OnHudHotkey);
+            // Unbound by default (Mark): straight to the Explore tab for players who save
+            // places often. GlKeys.Unknown registers the hotkey with no key attached —
+            // it appears in Settings → Controls waiting to be given one.
+            capi.Input.RegisterHotKey("tallybookexplore", "Tallybook Explore tab", GlKeys.Unknown, HotkeyType.GUIOrOtherControls);
+            capi.Input.SetHotKeyHandler("tallybookexplore", OnExploreHotkey);
 
             // Discoverability fallback; the dialog is the product. Client command, so ".tallybook".
             api.ChatCommands.Create("tallybook")
@@ -306,6 +312,35 @@ namespace Tallybook
                         foreach (var line in siteQuests.Report()) capi.ShowChatMessage("  " + line);
                         return TextCommandResult.Success("");
                     })
+                .EndSubCommand()
+                .BeginSubCommand("spot")
+                    .WithDescription("Save where you are standing as a place to revisit (Explore tab): .tallybook spot <name>")
+                    .WithExamples(".tallybook spot Old copper mine")
+                    .WithArgs(api.ChatCommands.Parsers.OptionalAll("name"))
+                    .HandleWith(args =>
+                    {
+                        EnsureGui();
+                        if (explorePlaces == null) return TextCommandResult.Error("Tallybook is not ready yet.");
+                        var place = explorePlaces.SaveHere((args[0] as string)?.Trim(), null);
+                        if (place == null) return TextCommandResult.Error(
+                            "Give the place a name: .tallybook spot <name>");
+                        svc.RecountAll();
+                        return TextCommandResult.Success(
+                            $"Saved \"{place.Name}\" here — it is on the Explore tab (L), with a map marker. "
+                            + "Notes and the HUD switch live on its row.");
+                    })
+                .EndSubCommand()
+                .BeginSubCommand("screenshots")
+                    .WithDescription("Photograph every Tallybook window into stable feature-named files, for the mod page. Args: 'full' for whole-screen shots, 'pad <px>' for the margin around the window, 'wait <seconds>' for the pre-roll, 'stage done|final' if shots come back blank, 'noflip' if upside down")
+                    .WithExamples(".tallybook screenshots", ".tallybook screenshots wait 10",
+                                  ".tallybook screenshots pad 24", ".tallybook screenshots full",
+                                  ".tallybook screenshots stage final")
+                    .WithArgs(api.ChatCommands.Parsers.OptionalAll("options"))
+                    .HandleWith(args =>
+                    {
+                        EnsureGui();
+                        return RunShowcase((args[0] as string) ?? "");
+                    })
                 .EndSubCommand();
 
             api.Event.PlayerJoin += OnPlayerJoin;
@@ -379,6 +414,14 @@ namespace Tallybook
                     // where the arithmetic runs and the markers follow the transitions.
                     if (spawnTracker?.Update() == true) svc.RecountAll();
 
+                    // Saved-place markers: the removal retry queue, and the master waypoint
+                    // option's transitions. Gated on Ready like everything else outward.
+                    if (questWaypoints?.Ready == true && explorePlaces?.Tick() == true)
+                    {
+                        svc.Store.Save();
+                        svc.RecountAll();
+                    }
+
                     // Same reason: a story step completing raises no event. A handful of
                     // variable reads when nothing moved.
                     story?.Poll();
@@ -405,6 +448,7 @@ namespace Tallybook
             siteQuests = new SiteQuests(capi, svc, questWaypoints);
             spawnTracker = new SpawnTracker(capi, config, svc.Store, questWaypoints);
             loreBook = new LoreBook(capi) { Scan = siteQuests.Scan };
+            explorePlaces = new ExplorePlaces(capi, config, svc.Store, questWaypoints);
             // The story block redraws with the same surfaces as every count, so its state
             // rides the shared change signature — and so does the set of quests awaiting a
             // reward, or the "collect your reward" row could never appear or clear. Site
@@ -414,11 +458,15 @@ namespace Tallybook
                 + string.Join(",", questHistory.AwaitingRewards().Select(a => a.Chain))
                 + "|sq:" + siteQuests.Signature()
                 + "|sp:" + spawnTracker.Signature()
-                + "|lb:" + loreBook.Signature();
+                + "|lb:" + loreBook.Signature()
+                + "|xp:" + explorePlaces.Signature();
             dialog = new GuiDialogTallybook(capi, config, svc, questHistory, questWaypoints,
-                                            story, siteQuests, spawnTracker, loreBook,
+                                            story, siteQuests, spawnTracker, loreBook, explorePlaces,
                                             SetHudVisible, () => hud?.Refresh());
             hud = new HudTallybook(capi, config, svc) { Sites = siteQuests, Spawn = spawnTracker };
+            // Alt frees the cursor, and then a HUD row that names an item opens its
+            // handbook page — the dialog's own flow, borrowed, so the two cannot diverge.
+            hud.OpenHandbook = (stack, name) => dialog.OpenHandbookForStack(stack, name);
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
             questGlow = new QuestReadyGlow(capi, config, svc, questHistory);
             questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);
@@ -443,6 +491,140 @@ namespace Tallybook
             if (dialog.IsOpened()) dialog.TryClose();
             else dialog.TryOpen();
             return true;
+        }
+
+        bool OnExploreHotkey(KeyCombination comb)
+        {
+            if (capi.World?.Player == null) return false;
+            EnsureGui();
+            if (!dialog.ShowcaseView("explore"))
+            {
+                // Tab switched off: land on the list rather than swallowing the press.
+                dialog.TryOpen();
+                capi.ShowChatMessage("[tallybook] The Explore tab is switched off in Options.");
+            }
+            return true;
+        }
+
+        ShowcaseShots showcase;
+
+        /// <summary>
+        /// The showcase run: one screenshot per surface, into stable numbered files.
+        /// The shot list IS the mod page's screenshot set, in gallery order —
+        /// docs/moddb-screenshots.md says what each is for and how to stage it, and the two
+        /// must be kept in step: adding a shot here without a manifest entry leaves a file
+        /// nobody knows the purpose of, and inserting one renumbers both together.
+        /// Every setup is navigation only (see GuiDialogTallybook.ShowcaseView) — the one
+        /// shot that depends on world state (the glow) waits for that state to be true
+        /// rather than arranging it.
+        /// </summary>
+        TextCommandResult RunShowcase(string options)
+        {
+            if (dialog == null || hud == null) return TextCommandResult.Error("Tallybook is not ready yet.");
+            showcase ??= new ShowcaseShots(capi);
+            if (showcase.Running) return TextCommandResult.Error("A showcase run is already going.");
+
+            int preRollMs = 6000;
+            bool flip = true, crop = true;
+            int pad = 10;
+            var stage = EnumRenderStage.Done;
+
+            var tokens = (options ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string t = tokens[i].ToLowerInvariant();
+                if (t == "noflip") flip = false;
+                else if (t == "full") crop = false;
+                else if (t == "stage" && i + 1 < tokens.Length)
+                {
+                    stage = tokens[++i].ToLowerInvariant() == "final"
+                        ? EnumRenderStage.AfterFinalComposition : EnumRenderStage.Done;
+                }
+                else if (t == "pad" && i + 1 < tokens.Length
+                         && int.TryParse(tokens[++i], NumberStyles.Integer, CultureInfo.InvariantCulture, out int px))
+                {
+                    pad = Math.Clamp(px, 0, 400);
+                }
+                else if (t == "wait" && i + 1 < tokens.Length
+                         && double.TryParse(tokens[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double secs))
+                {
+                    preRollMs = (int)Math.Clamp(secs * 1000, 200, 60000);
+                }
+            }
+
+            // Names are NUMBERED BY GALLERY ORDER (Mark), because that is the order they
+            // are uploaded in and the mod page shows them in — a name that sorts wrong
+            // makes the upload a manual sort every time.
+            ShowcaseShots.Shot View(string name, string view, string what)
+                => new ShowcaseShots.Shot
+                {
+                    Name = name,
+                    What = what,
+                    Setup = () => dialog.ShowcaseView(view),
+                    Window = () => dialog.ShowcaseBounds(),
+                    SkipHint = "that tab is switched off in Options.",
+                };
+
+            // The HUD, twice: the first image is also the mod page's thumbnail, so it does
+            // double duty as cover and as the gallery's opening shot. Two captures rather
+            // than one file copied — a moment apart, so the icon cycling and any animation
+            // differ slightly, which is what makes the pair look deliberate.
+            ShowcaseShots.Shot Hud(string name) => new ShowcaseShots.Shot
+            {
+                Name = name,
+                What = "the corner HUD over the world",
+                Setup = () => { dialog.TryClose(); return hud.IsOpened(); },
+                Window = () => hud.ShowcaseBounds(),
+                // Fixed frame (Mark): the HUD's height follows how many rows the list has
+                // that day, so cropping tight would give the mod page a differently shaped
+                // picture every release. A constant window with game showing around it
+                // stays comparable.
+                TargetW = 480, TargetH = 320,
+                SkipHint = "the HUD is not showing — check a pin or two first.",
+            };
+
+            var shots = new List<ShowcaseShots.Shot>
+            {
+                Hud("01-hud"),
+                Hud("02-hud"),
+                View("03-options", "options", "the settings screen"),
+                View("04-items", "items", "the shopping list"),
+                View("05-side-quests", "quests", "errands, sites and the story block"),
+                View("06-explore", "explore", "saved places with notes and distances"),
+                View("07-player", "player", "spawn points and your numbers"),
+                View("08-world", "world", "this world's rules and mods"),
+                View("09-lore", "lore", "lore volumes, filters and Read buttons"),
+                View("10-history", "history", "finished quests by year, with transcripts"),
+
+                // The one shot of the world rather than a window, and the one that cannot be
+                // staged from here: an NPC only shimmers when a tracked errand is actually
+                // ready. So it photographs that when it is true and says why when it is not —
+                // the walker will not manufacture a quest state to get a prettier picture.
+                new ShowcaseShots.Shot
+                {
+                    Name = "11-quest-glow",
+                    What = "a villager shimmering with an errand ready to hand in",
+                    FullScreen = true,
+                    Setup = () =>
+                    {
+                        dialog.TryClose();
+                        return (questGlow?.GlowingNow().Count ?? 0) > 0;
+                    },
+                    SkipHint = "no villager is glowing nearby — stand in sight of one whose "
+                        + "errand you can complete (or who owes you a reward) and run it again.",
+                },
+            };
+
+            string error = showcase.Start(shots, preRollMs, flip, stage, pad, crop);
+            if (error != null) return TextCommandResult.Error(error);
+
+            return TextCommandResult.Success(
+                $"Taking {shots.Count} screenshot(s) into {ShowcaseShots.Folder} — starting in "
+                + $"{preRollMs / 1000.0:0.#}s, cropped to "
+                + (crop ? $"the Tallybook window (+{pad}px)" : "the full screen")
+                + $", none bigger than {ShowcaseShots.MaxW}x{ShowcaseShots.MaxH}. Move the "
+                + "mouse off the window and let the chat fade; a tab switched off in Options "
+                + "is skipped. Do not touch the keyboard until it reports back.");
         }
 
         /// <summary>One place that turns the HUD on or off, so the hotkey and the Options
@@ -984,6 +1166,9 @@ namespace Tallybook
             }
             HandbookPin.Remove();
             if (capi != null) OnLeaveWorld();
+            // A run interrupted by a shutdown must still take its renderer back out.
+            showcase?.Dispose();
+            showcase = null;
             dialog?.Dispose();
             dialog = null;
             hud?.Dispose();

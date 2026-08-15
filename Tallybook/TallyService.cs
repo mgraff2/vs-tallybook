@@ -69,6 +69,15 @@ namespace Tallybook
             // the only thing that knows which variant this pin means.
             pin.SelfNode = new TallyNode { Req = Probe.RequirementForStack(pin.Stack) };
 
+            // A construction pin's goal is the BUILT structure, which no inventory can hold —
+            // its Have must stay 0 rather than count carried starter items (holding five
+            // rollers is not having a boat). The starter is a requirement row inside the
+            // tree instead, where carrying it counts toward the build honestly.
+            if (pin.BuildSite && pin.SelfNode.Req != null)
+            {
+                pin.SelfNode.Req.SelfPageCode = "~construction|" + pin.SelfNode.Req.SelfPageCode;
+            }
+
             // An errand is a fetch: go get eight iron ingots and hand them over. Showing how
             // to *craft* the item turns that into something else entirely — for iron ingots
             // the only grid recipe is "chisel an iron anvil back into ingots", which reads
@@ -92,6 +101,13 @@ namespace Tallybook
 
             pin.Groups = Probe.FindGroupsFor(pin.Stack);
 
+            // The build's committed material rides the pin (persisted); the group is
+            // rebuilt every resolve and must learn it again before its rows are built.
+            foreach (var g in pin.Groups)
+            {
+                if (g.Construction != null) g.BuildMaterial = pin.BuildMaterial;
+            }
+
             // Groups are still resolved so the row can offer to break it down; it just is not
             // broken down until asked.
             if (pin.GatherOnly)
@@ -100,10 +116,17 @@ namespace Tallybook
                 return true;
             }
 
-            var chosen = pin.Groups.FirstOrDefault(g => g.Signature == pin.RecipeSignature)
-                         ?? PreferredGroup(pin.Key, pin.Groups)
-                         ?? pin.Groups.FirstOrDefault();
+            // Restore only among the groups this pin may legitimately hold (see
+            // ExpandableGroups): a saved signature from a build that let constructions
+            // onto item pins must not resurrect that state — the item pin falls back to
+            // its own recipe, the build pin to its construction (found by Mark: the
+            // roller pin stopped unfolding to firewood and rope).
+            var restorable = ExpandableGroups(pin);
+            var chosen = restorable.FirstOrDefault(g => g.Signature == pin.RecipeSignature)
+                         ?? PreferredGroup(pin.Key, restorable)
+                         ?? restorable.FirstOrDefault();
             SetGroup(pin, chosen, rememberPref: false);
+            if (chosen == null) pin.GatherOnly = true;   // nothing to unfold: honest fold, not an empty tree
 
             TallyTree.RestoreExpansions(pin.RootNodes, pin.Expansions,
                 FindExpansionChoices, BuildRows, BuildTools);
@@ -145,18 +168,25 @@ namespace Tallybook
         /// wanting to see it is a fair assumption. Anything arriving another way is a thing
         /// to go and get until the player says otherwise.
         /// </summary>
+        /// <summary>The recipe choices this pin's own Expand may land on: construction
+        /// groups belong to build pins ONLY — unfolding a build on the item's own pin is
+        /// the trap where carrying the starter zeroes the whole build's demands.</summary>
+        static List<RecipeVariantGroup> ExpandableGroups(Pin pin)
+            => pin.Groups.Where(g => (g.Construction != null) == pin.BuildSite).ToList();
+
         public void ToggleGatherOnly(Pin pin)
         {
-            if (pin.Groups.Count == 0) return;
+            var groups = ExpandableGroups(pin);
+            if (groups.Count == 0) return;
 
             pin.Expansions = new List<SavedExpansion>();
             pin.GatherOnly = !pin.GatherOnly;
             if (pin.GatherOnly) SetGroup(pin, null, rememberPref: false);
             else
             {
-                var chosen = pin.Groups.FirstOrDefault(g => g.Signature == pin.RecipeSignature)
-                             ?? PreferredGroup(pin.Key, pin.Groups)
-                             ?? pin.Groups[0];
+                var chosen = groups.FirstOrDefault(g => g.Signature == pin.RecipeSignature)
+                             ?? PreferredGroup(pin.Key, groups)
+                             ?? groups[0];
                 SetGroup(pin, chosen, rememberPref: false);
             }
             Store.Changed();
@@ -187,9 +217,10 @@ namespace Tallybook
         /// old tree described a different recipe's ingredients.</summary>
         public void CyclePinRecipe(Pin pin)
         {
-            if (pin.Groups.Count < 2 || pin.GatherOnly) return;
-            int idx = pin.Groups.IndexOf(pin.Group);
-            var next = pin.Groups[(idx + 1) % pin.Groups.Count];
+            var groups = ExpandableGroups(pin);
+            if (groups.Count < 2 || pin.GatherOnly) return;
+            int idx = groups.IndexOf(pin.Group);
+            var next = groups[(idx + 1) % groups.Count];
             pin.Expansions = new List<SavedExpansion>();
             SetGroup(pin, next, rememberPref: true);
             Store.Changed();

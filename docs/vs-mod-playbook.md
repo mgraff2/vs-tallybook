@@ -347,3 +347,42 @@ action and needs different rules from an internal computation.
 
 Keep the CHANGELOG in the user's vocabulary, not the code's — if the game calls the item a
 "blueprint" and the code calls it a "schematic", the changelog says blueprint.
+
+### Screenshots: automate the tour, or they go stale
+
+Refreshing mod-page screenshots is the release chore that never gets done, and stale shots
+misrepresent the mod more than missing ones do. A command that walks your own surfaces and
+writes one **stable, feature-named** PNG per shot turns it into one command in a real world;
+stable names are what make replacing them on the mod page mechanical, and let you diff the
+folder against the last upload. Pair it with a manifest listing each shot, how to stage it,
+and which version last invalidated it — knowing *which* shots are now lies is the expensive
+part, not taking eight pictures.
+
+Four things that cost a round each:
+
+- **`capi.Render.GrabScreenshot(w, h, scale, flip, alpha)` + `BitmapRef.Save(path)` is the
+  whole capture** (public API). Call it from a renderer registered at `EnumRenderStage.Done`.
+- **Never write to `GamePaths.Screenshots`.** It resolves to the user's Pictures folder,
+  which on Windows is routinely redirected into OneDrive — mod working files then land in
+  someone's personal cloud. Use `GamePaths.DataPath/ModData/<modid>/…`.
+- **Crop to the window, not the screen** — the window is the subject.
+  `GuiDialog.SingleComposer.Bounds` gives `absX/absY/OuterWidth/OuterHeight` in real pixels;
+  scale that rect by the captured image's width ÷ `Render.FrameWidth` or SSAA shifts the
+  crop. Crop by re-reading the PNG the game's own writer produced (SkiaSharp
+  `Decode`/`ExtractSubset`/`Encode`, and it ships with the game) rather than slicing
+  `BitmapRef.Pixels` — that keeps you out of guessing the buffer's channel order, whose
+  failure mode is red and blue swapped in every shot.
+- **Enforce the mod DB's size ceiling in code** (1920×1080 for VS): a 4K screen or a
+  supersampled framebuffer sails past it, and the upload is where you find out. Cap every
+  shot, cropped or not. For a surface whose height depends on content — a HUD with a row per
+  item — give that shot a **fixed frame** (a region of exactly the output size centred on the
+  window) instead of a tight crop, or the mod page gets a differently shaped picture every
+  release; centring a fixed region also avoids resampling entirely in the normal case.
+- **Which framebuffer is bound at a given stage is not knowable from the public API** (the
+  game binds one explicitly using platform internals). So check each grab for being a single
+  flat colour and report a blank run with a retry-at-the-other-stage hint, instead of writing
+  a folder of black PNGs that read as a rendering bug.
+
+And the discipline that makes the shots trustworthy: the walker **navigates, never edits** —
+it opens screens and selects tabs, and touches no user data. The screenshots are then of a
+real world, and a showcase run can never damage what it is photographing.

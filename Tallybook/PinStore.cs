@@ -6,6 +6,7 @@ using Newtonsoft.Json;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
+using Vintagestory.API.MathTools;
 
 namespace Tallybook
 {
@@ -115,8 +116,35 @@ namespace Tallybook
         /// what is already in the bag.</summary>
         [JsonIgnore] public bool Complete => Have >= CountInItems;
 
+        /// <summary>This pin is a CONSTRUCTION goal — the boat the rollers start, not the
+        /// rollers themselves. It gets its own Key (so it coexists with a plain pin of the
+        /// same item), and its Have never counts the carried starter item: holding rollers
+        /// is not having a boat (Mark — the two must be trackable at the same time).</summary>
+        public bool BuildSite;
+
+        /// <summary>The material this build is committed to ("oak"), or null for "any one
+        /// material". Bound rows name and count that material only — an oak boat wants oak
+        /// (Mark). Set automatically when the pinned page already names the material (an
+        /// oak sailboat's own page), or by the selector on the build row.</summary>
+        public string BuildMaterial;
+
         [JsonIgnore] public bool HasRecipe => Group != null;
-        [JsonIgnore] public string DisplayName => Stack?.GetName() ?? Code;
+
+        /// <summary>Build pins say "Drakkar build", not "Drakkar Construction construction"
+        /// (Mark) — a starter item already NAMED "… Construction" (Shipwright's kits all
+        /// are) loses that word before the suffix goes on.</summary>
+        [JsonIgnore]
+        public string DisplayName
+        {
+            get
+            {
+                string name = Stack?.GetName() ?? Code;
+                if (!BuildSite) return name;
+                if (name.EndsWith(" construction", StringComparison.OrdinalIgnoreCase))
+                    name = name.Substring(0, name.Length - " construction".Length);
+                return name + " build";
+            }
+        }
 
         /// <summary>Identity at handbook-page granularity — the dedup/removal/preference key.
         /// Code alone is not enough once attribute-distinct variants can be pinned. Cached
@@ -127,8 +155,9 @@ namespace Tallybook
         /// them would let her request quietly rewrite your own goal's count.</summary>
         [JsonIgnore]
         public string Key => Stack == null
-            ? MakeKey(Code, QuestGiver)
-            : key ??= MakeKey(RecipeProbe.PageCode(Stack) ?? Code, QuestGiver);
+            ? MakeKey(Code, QuestGiver) + (BuildSite ? "|build" : "")
+            : key ??= MakeKey(RecipeProbe.PageCode(Stack) ?? Code, QuestGiver)
+                      + (BuildSite ? "|build" : "");
         string key;
 
         public static string MakeKey(string pageCode, string questGiver)
@@ -214,6 +243,68 @@ namespace Tallybook
         /// <summary>The player's spawn tracking (Player tab): returning point, its use
         /// budget, marker flags.</summary>
         public SpawnState Spawn = new SpawnState();
+
+        /// <summary>History-tab group folds the player changed from the defaults
+        /// (key "year:2" / "earlier" → expanded). Only deviations are stored, so a new
+        /// default reaches everyone who never touched that group.</summary>
+        public Dictionary<string, bool> HistoryGroups = new Dictionary<string, bool>();
+
+        /// <summary>How the Side quests tab (and the HUD's side-quest section) is ordered:
+        /// "custom" (the hand-arranged list order), "distance", "progress", "name",
+        /// "giver". Per world, because the arrangement it preserves is per world.</summary>
+        public string QuestSort = "custom";
+
+        /// <summary>The hand-arranged Side-quests order, as row keys — errand pins by
+        /// Pin.Key, map-site quests as "site:&lt;key&gt;" — one list because the tab is one
+        /// list: rearranging must cover every row, not just the pin rows (Mark).</summary>
+        public List<string> QuestOrder = new List<string>();
+
+        /// <summary>Locations the player saved to revisit (the Explore tab).</summary>
+        public List<SavedPlace> Places = new List<SavedPlace>();
+
+        /// <summary>Place markers owed a removal ("title|x|y|z") — same retry contract as
+        /// SpawnState.PendingRemovals: the waypoint list reads back empty at random, and a
+        /// removal attempted against a failed read removes nothing.</summary>
+        public List<string> PlaceRemovals = new List<string>();
+    }
+
+    /// <summary>
+    /// A location the player saved to revisit — a mine half-dug, a ruin to come back to, a
+    /// cave mouth worth remembering. Entirely player-authored: the name, the one-line "what
+    /// it is", and any longer notes are theirs, and nothing here is derived from the world.
+    /// Coordinates are absolute, like every stored position; display converts.
+    /// </summary>
+    public class SavedPlace
+    {
+        public string Name;
+        /// <summary>One line: what this place is. Shows on the tab and (with the name) on
+        /// the HUD when the place is put there.</summary>
+        public string Note;
+        /// <summary>Longer notes: one free-text field (Mark), newline-separated. Lines
+        /// starting "- " or "* " draw as bullets; "[ ]" / "[x]" as checkboxes, toggleable
+        /// from the reading view. Dialog-only, never on the HUD.</summary>
+        public string NotesText;
+
+        /// <summary>Pre-0.3.15 shape (a list of note lines), read once and folded into
+        /// NotesText at load — never written again. Deleting the field instead would make
+        /// Json.NET throw on any save written during the iteration that used it.</summary>
+        public List<string> Notes;
+
+        /// <summary>Are the notes open for reading? Closed to begin with — a place is one
+        /// line until you ask for the story — and remembered either way, same contract as
+        /// an errand's conversation (Pin.QuestTextExpanded).</summary>
+        public bool NotesExpanded;
+
+        [JsonIgnore]
+        public bool HasNotes => !string.IsNullOrWhiteSpace(NotesText);
+        public double X, Y, Z;
+        public bool ShowOnHud;
+        public bool WaypointPlaced;
+        /// <summary>In-game day it was saved, for "saved day 47" on the row.</summary>
+        public double? Day;
+
+        [JsonIgnore]
+        public string Key => $"{Name}@{(int)X},{(int)Z}";
     }
 
     public class PinStore
@@ -231,11 +322,111 @@ namespace Tallybook
         public List<SiteQuest> SiteQuests { get; private set; } = new List<SiteQuest>();
         public HashSet<string> OfferedSites { get; private set; } = new HashSet<string>();
         public SpawnState Spawn { get; private set; } = new SpawnState();
+        public Dictionary<string, bool> HistoryGroups { get; private set; } = new Dictionary<string, bool>();
+        public string QuestSort { get; set; } = "custom";
+        public List<string> QuestOrder { get; private set; } = new List<string>();
+        public List<SavedPlace> Places { get; private set; } = new List<SavedPlace>();
+        public List<string> PlaceRemovals { get; private set; } = new List<string>();
         public event Action OnChanged;
 
         public PinStore(ICoreClientAPI capi)
         {
             this.capi = capi;
+        }
+
+        /// <summary>One Side-quests row, whichever kind it is — an errand pin or a
+        /// map-site quest. The tab and the HUD are one list of these, so ordering and
+        /// rearranging cover every row, not just the pins (Mark: "I should be able to
+        /// rearrange all 5, not just the 2 bottom ones").</summary>
+        public class QuestEntry
+        {
+            public Pin Pin;
+            public SiteQuest Site;
+            public string Key => Pin != null ? Pin.Key : "site:" + Site.Key;
+            public string Name => Pin != null ? Pin.DisplayName : Site.Title;
+        }
+
+        /// <summary>
+        /// One ordering rule for everywhere side quests are listed — the tab and the HUD
+        /// must agree or "rearrange the list" would rearrange only half of it. "custom"
+        /// (or anything unrecognised) follows the hand-arranged QuestOrder key list, rows
+        /// it has never seen appended in their natural order; distance puts placeless
+        /// errands last rather than pretending they stand at 0,0.
+        /// </summary>
+        public List<QuestEntry> OrderQuestEntries(List<QuestEntry> entries, Vec3d me)
+        {
+            switch (QuestSort)
+            {
+                case "distance":
+                    if (me == null) return entries;
+                    return entries.OrderBy(e =>
+                    {
+                        double x, z;
+                        if (e.Pin != null)
+                        {
+                            if (e.Pin.QuestX == 0 && e.Pin.QuestY == 0 && e.Pin.QuestZ == 0)
+                                return double.MaxValue;
+                            x = e.Pin.QuestX; z = e.Pin.QuestZ;
+                        }
+                        else { x = e.Site.X; z = e.Site.Z; }
+                        double dx = me.X - x, dz = me.Z - z;
+                        return dx * dx + dz * dz;
+                    }).ToList();
+                case "progress":
+                    // Nearest to done first — the walkable hand-ins float to the top. A
+                    // site's honest fraction needs the lore scan; reached-or-not is the
+                    // part the store can know.
+                    return entries.OrderByDescending(e => e.Pin != null
+                        ? (e.Pin.Count > 0 ? (double)e.Pin.Have / e.Pin.Count : 0)
+                        : (e.Site.Visited ? 1.0 : 0.0)).ToList();
+                case "name":
+                    return entries.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                case "giver":
+                    // Sites have no giver; they gather after the errands rather than
+                    // scattering between them.
+                    return entries.OrderBy(e => e.Pin?.QuestGiver ?? "￿", StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                default:
+                    return CustomOrder(entries);
+            }
+        }
+
+        List<QuestEntry> CustomOrder(List<QuestEntry> entries)
+            => entries.OrderBy(e =>
+            {
+                int i = QuestOrder.IndexOf(e.Key);
+                return i < 0 ? int.MaxValue : i;    // stable: unknowns keep natural order, at the end
+            }).ToList();
+
+        /// <summary>
+        /// Move one Side-quests row a step within the hand-arranged order — offered only
+        /// under the custom sort, where the arrangement is what displays. The whole
+        /// current arrangement is written back as keys, so rows the order list had never
+        /// seen become part of it the first time anything moves.
+        /// </summary>
+        public bool MoveQuestEntry(string key, int delta)
+        {
+            var entries = new List<QuestEntry>();
+            foreach (var s in SiteQuests)
+            {
+                if (!s.Dismissed) entries.Add(new QuestEntry { Site = s });
+            }
+            foreach (var p in pins)
+            {
+                if (p.QuestGiver != null) entries.Add(new QuestEntry { Pin = p });
+            }
+
+            var keys = CustomOrder(entries).Select(e => e.Key).ToList();
+            int pos = keys.IndexOf(key);
+            if (pos < 0) return false;
+            int newPos = Math.Clamp(pos + delta, 0, keys.Count - 1);
+            if (newPos == pos) return false;
+
+            (keys[pos], keys[newPos]) = (keys[newPos], keys[pos]);
+            QuestOrder = keys;
+            Save();
+            Changed();
+            return true;
         }
 
         /// <summary>Pinning an already-pinned item increments it — never a duplicate row
@@ -253,12 +444,13 @@ namespace Tallybook
         /// time they talk to that villager would override them.
         /// </param>
         public Pin Add(ItemStack stack, int amount = 1, bool setCount = false, bool activate = true,
-                       string questGiver = null)
+                       string questGiver = null, bool buildSite = false)
         {
             var code = stack?.Collectible?.Code?.ToShortString();
             if (code == null) return null;
 
-            string key = Pin.MakeKey(RecipeProbe.PageCode(stack) ?? code, questGiver);
+            string key = Pin.MakeKey(RecipeProbe.PageCode(stack) ?? code, questGiver)
+                         + (buildSite ? "|build" : "");
             var pin = pins.FirstOrDefault(p => p.Key == key);
             if (pin == null)
             {
@@ -268,6 +460,7 @@ namespace Tallybook
                     IsBlock = stack.Class == EnumItemClass.Block,
                     Attributes = RecipeProbe.AttributesJson(stack),
                     QuestGiver = questGiver,
+                    BuildSite = buildSite,
                     Count = Math.Max(1, amount),
                     Stack = stack.Clone()
                 };
@@ -409,7 +602,12 @@ namespace Tallybook
                     StoryStates = StoryStates,
                     SiteQuests = SiteQuests,
                     OfferedSites = OfferedSites.ToList(),
-                    Spawn = Spawn
+                    Spawn = Spawn,
+                    HistoryGroups = HistoryGroups,
+                    QuestSort = QuestSort,
+                    QuestOrder = QuestOrder,
+                    Places = Places,
+                    PlaceRemovals = PlaceRemovals
                 };
                 File.WriteAllText(path, JsonConvert.SerializeObject(file, Formatting.Indented));
             }
@@ -455,6 +653,11 @@ namespace Tallybook
             SiteQuests = new List<SiteQuest>();
             OfferedSites = new HashSet<string>();
             Spawn = new SpawnState();
+            HistoryGroups = new Dictionary<string, bool>();
+            QuestSort = "custom";
+            QuestOrder = new List<string>();
+            Places = new List<SavedPlace>();
+            PlaceRemovals = new List<string>();
             try
             {
                 string path = SavePath;
@@ -481,6 +684,21 @@ namespace Tallybook
                     if (loaded?.SiteQuests != null) SiteQuests = loaded.SiteQuests.Where(s => s?.Key != null).ToList();
                     if (loaded?.OfferedSites != null) OfferedSites = new HashSet<string>(loaded.OfferedSites);
                     if (loaded?.Spawn != null) Spawn = loaded.Spawn;
+                    if (loaded?.HistoryGroups != null) HistoryGroups = loaded.HistoryGroups;
+                    if (!string.IsNullOrEmpty(loaded?.QuestSort)) QuestSort = loaded.QuestSort;
+                    if (loaded?.QuestOrder != null) QuestOrder = loaded.QuestOrder;
+                    if (loaded?.Places != null)
+                    {
+                        Places = loaded.Places.Where(p => !string.IsNullOrEmpty(p?.Name)).ToList();
+                        foreach (var p in Places)
+                        {
+                            // Legacy list-notes fold into the text field once.
+                            if (string.IsNullOrEmpty(p.NotesText) && p.Notes?.Count > 0)
+                                p.NotesText = string.Join("\n", p.Notes);
+                            p.Notes = null;
+                        }
+                    }
+                    if (loaded?.PlaceRemovals != null) PlaceRemovals = loaded.PlaceRemovals;
                 }
             }
             catch (Exception e)

@@ -42,6 +42,12 @@
       <HintPath>$(VintageStoryPath)\Lib\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- Ships with the game (BitmapRef is built on it). Used only by the screenshot
+         walker, to crop a grab down to the window it is photographing. -->
+    <Reference Include="SkiaSharp">
+      <HintPath>$(VintageStoryPath)\Lib\SkiaSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

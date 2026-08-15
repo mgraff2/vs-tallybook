@@ -828,6 +828,40 @@ collect with the 17-writings count on the row. Everything is derived, nothing mo
   matched against the *client's* Lang here — a locale mismatch between them means no
   adoption. Accepted; the alternative was matching against every language file.
 
+## Construction sites (`RecipeProbe` "construct:" groups) — stage data on entities
+
+Built for Mark's Shipwright/sailboat ask (0.3.15). A construction site is an ENTITY whose
+type attributes carry `stages[].requireStacks` of the game's own `ConstructionIngredient`
+(: CraftingRecipeIngredient, plus `StoreWildCard`) — the mechanism `EntityBoatConstruction`
+reads (`properties.Attributes["stages"].AsArray<ConstructionStage>`), decompile-verified
+1.22.6, and the convention Shipwright's `EntityShipwrightConstruction` copies verbatim.
+Entity types sync to clients with attributes, so the FULL bill of materials is derivable
+from `capi.World.EntityTypes` with no mod named.
+
+- **Linking item→build is the data's statement, never a name guess**: a collectible and a
+  construction declaring the same `boattype` attribute value are one build (Shipwright's
+  rollers); vanilla's roller pairs with class `EntityBoatConstruction` because `ItemRoller`
+  spawns exactly that (decompiled — and its five-rollers-per-site is the same source).
+  `{wood}` placeholders become wildcards named by the placeholder variable — the site binds
+  one wood at first delivery, exactly a named wildcard's semantics. `name:` fields on
+  requireStacks are lang keys ("shipbuilding-ingredient-logs") — resolve for display.
+- **A construction is its own pin (`Pin.BuildSite`, key suffix "|build"), never a recipe
+  choice on the starter's pin (found by Mark: "I can only track one or the other").** Two
+  reasons: the roller pin and the build must track simultaneously, and — the deeper one —
+  a build pin's Have must NEVER count the carried starter (holding five rollers is not
+  having a boat; the self page code gets a "~construction|" sentinel). The starter is the
+  tree's first requirement row instead, expandable to its own recipe, which is what lets
+  one pin carry rollers → firewood+rope → stage materials all at once.
+
+## Side quests are ONE ordered list (`PinStore.QuestEntry`) — errands and sites together
+
+Sorting and hand-arranging must cover every row of the Side quests tab (found by Mark:
+sites always drew first, so the sort dropdown "did nothing" and the map quests would not
+move). `QuestEntry` wraps pin-or-site; `OrderQuestEntries` is the one ordering rule for the
+tab AND the HUD (they must agree or rearranging moves half the list); `QuestOrder` persists
+the custom arrangement as keys ("site:" prefix for sites), rewritten wholesale on every
+move so unseen rows join it. Rewards stay above the list — they are transient.
+
 ## The World tab (`WorldRules`) — world config read where the game writes it
 
 One dialog tab, all derived, nothing mod-named (0.3.12, Mark's "so people know all the
@@ -1244,3 +1278,31 @@ CHANGELOG entry, README version refs, commit, tag `vX.Y.Z`, push,
 `gh release create vX.Y.Z dist\tallybook_X.Y.Z.zip --title "Tallybook X.Y.Z"`. ModDB upload
 is manual. **Run `.\tools\compat-test.ps1` and `.\tools\version-sweep.ps1` before every
 release.**
+
+**Screenshots are part of the release, not an afterthought** (Mark: refreshing them is the
+job he never does). `.tallybook screenshots` walks every surface and writes one stable
+feature-named PNG per shot to `ModData/tallybook/screenshots/` — navigation only, so it
+photographs the player's real world and can never alter the list it is shooting. Two things
+found on the first real run (Mark): **never write to `GamePaths.Screenshots`** — it resolves
+to the user's Pictures folder, which on Windows is commonly redirected into OneDrive, so
+mod working files land in someone's personal cloud; and shots are **cropped to the window**
+(`GuiDialog.SingleComposer.Bounds`, scaled by the decoded image's size ÷ FrameWidth so SSAA
+does not shift the crop), because ModDB dislikes full-screen images. Two size rules, both
+Mark's and both enforced in `ShowcaseShots.ProcessInPlace`: **nothing leaves bigger than
+1920x1080** (the mod DB ceiling — applies to full-screen shots too, so the processing step
+runs on every shot, not only cropped ones), and **`hud.png` is a fixed 480x320 frame** —
+the HUD's height tracks the row count, so a tight crop would reshape the mod page's picture
+every release; a fixed region centred on it is comparable release to release and needs no
+resampling in the normal case. The crop re-reads the
+PNG the game's own writer produced rather than slicing `BitmapRef.Pixels` — that keeps this
+code out of guessing the buffer's channel order, which would silently swap red and blue. The shot list in
+`TallybookModSystem.RunShowcase` and the table in `docs/moddb-screenshots.md` are two halves
+of one thing: a release that changes what a surface looks like bumps that shot's "last
+invalidated" version, and that column is what says which uploads are now lies. A new shot
+needs a manifest row in the same commit.
+
+Note the one thing not verifiable from the API surface: which framebuffer is bound at a
+given render stage (the game binds one explicitly before its own capture, via platform
+internals a mod cannot reach). So the walker checks each grab for being a single flat colour
+and reports a blank run with the retry command (`stage final`) rather than writing a folder
+of black PNGs — if this ever regresses on a game update, that message is the symptom.

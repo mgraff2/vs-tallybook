@@ -10,12 +10,12 @@ using Vintagestory.GameContent;
 
 namespace Tallybook
 {
-    enum TbScreen { List, ConfirmClear, Options, ChooseRecipe, LiquidCalc }
+    enum TbScreen { List, ConfirmClear, Options, ChooseRecipe, LiquidCalc, EditPlace }
 
     /// <summary>Errands from villagers are a different kind of thing from things you decided
     /// to build, so they get their own tab rather than being mixed in and distinguished only
     /// by a label.</summary>
-    enum TbTab { Items, Quests, History, World, Player, Lore }
+    enum TbTab { Items, Quests, History, World, Player, Lore, Explore }
 
     /// <summary>
     /// Text that must stay on its own row. GuiElementStaticText does not clip: a line longer
@@ -156,12 +156,17 @@ namespace Tallybook
         long lastCountTypingMs;
         bool recomposeQueued;
 
-        // Hold-to-unpin state (no confirm dialog — hold the button through the countdown).
-        Pin holdPin;
+        // Hold-to-remove state (no confirm dialog — hold the button through the countdown).
+        // Generalised beyond pins: any destructive row button (Unpin, a saved place's
+        // Remove) joins by registering its target, bounds and completion at compose time —
+        // one workflow for every "this loses something" button (Mark: consistency).
+        object holdTarget;
+        Action holdComplete;
         long holdStartMs;
         long holdTickId;
         int holdShownSecond;
-        readonly List<(Pin Pin, ElementBounds Bounds)> unpinButtonBounds = new List<(Pin, ElementBounds)>();
+        readonly List<(object Target, ElementBounds Bounds, Action Complete)> holdButtons
+            = new List<(object, ElementBounds, Action)>();
 
         // Flattened render rows for the current page
         abstract class Row { public double Indent; }
@@ -184,6 +189,14 @@ namespace Tallybook
         /// <summary>A section title on the World tab — one of the create-world screen's
         /// category headings.</summary>
         class HeadingRow : Row { public string Text; }
+        /// <summary>A collapsible World-tab section heading: the fold control, with counts
+        /// so a folded section still says what it is hiding.</summary>
+        class WorldHeadRow : Row
+        {
+            public string Title, Key;
+            public bool DefaultExpanded;
+            public int Count, Changed;
+        }
         /// <summary>One world rule: setting name and the value this world runs with.</summary>
         class SettingRow : Row { public WorldSetting Setting; }
         /// <summary>A Player-tab row: label, value, and optionally a place a Map button can
@@ -196,6 +209,12 @@ namespace Tallybook
         /// <summary>Two found lore volumes side by side — the Lore tab's cells are small
         /// enough that a full-width row wasted half the window.</summary>
         class LoreRow : Row { public LoreBook.Volume A, B; }
+        /// <summary>A saved place on the Explore tab.</summary>
+        class PlaceRow : Row { public SavedPlace Place; }
+        /// <summary>One line of a place's notes, shown while the place is unfolded —
+        /// bullets and checkboxes render as marks, checkbox lines toggle with a click.
+        /// Editing happens in the Edit window, never inline.</summary>
+        class PlaceNoteRow : Row { public SavedPlace Place; public int Index; }
 
         List<Row> allRows = new List<Row>();
 
@@ -205,6 +224,14 @@ namespace Tallybook
         /// <summary>World tab filter text. Session state, reset on open — a filter that
         /// quietly survived into the next look would read as missing settings.</summary>
         string worldFilter = "";
+
+        /// <summary>The one World-tab section currently open — an accordion, not
+        /// independent folds (Mark): opening a section closes whatever was open,
+        /// including the changed-settings lead. Null is everything folded. Session
+        /// state like the filter: the tab opens on the changed section every time.</summary>
+        string worldOpenSection = "~changed";
+
+        bool WorldSectionExpanded(string key) => worldOpenSection == key;
 
         /// <summary>Whether the recompose about to happen must hand focus back to the
         /// filter box: recomposing steals focus, and a filter that drops its cursor after
@@ -223,13 +250,21 @@ namespace Tallybook
         readonly SiteQuests sites;
         readonly SpawnTracker spawnTracker;
         readonly LoreBook lore;
+        readonly ExplorePlaces explore;
+
+        /// <summary>Explore-tab session state: the save-a-spot inputs and the place
+        /// editor's target and drafts.</summary>
+        string exploreName = "", exploreNote = "";
+        SavedPlace editingPlace;
+        string editingNameDraft, editingNoteDraft, editingNotesDraft;
 
         static double DefaultHudFontSize => CairoFont.WhiteSmallText().UnscaledFontsize;
 
         public GuiDialogTallybook(ICoreClientAPI capi, TallybookConfig config, TallyService svc,
                                   QuestHistory history, QuestWaypoints waypoints,
                                   StoryProgress story, SiteQuests sites, SpawnTracker spawnTracker,
-                                  LoreBook lore, Action<bool> setHudVisible, Action onHudChanged)
+                                  LoreBook lore, ExplorePlaces explore,
+                                  Action<bool> setHudVisible, Action onHudChanged)
             : base(capi)
         {
             this.onHudChanged = onHudChanged;
@@ -241,6 +276,7 @@ namespace Tallybook
             this.sites = sites;
             this.spawnTracker = spawnTracker;
             this.lore = lore;
+            this.explore = explore;
             this.setHudVisible = setHudVisible;
             // OnCountsChanged is the single redraw signal: every store mutation funnels
             // through TallyService.RecountAll, whose signature covers structure and numbers.
@@ -259,6 +295,7 @@ namespace Tallybook
             screen = TbScreen.List;
             worldSections = null;           // world config can change between opens
             worldFilter = "";
+            worldOpenSection = "~changed";  // the tab opens concise every time
             loreFilter = "all";             // a slice that quietly survived would read as missing lore
             loreShowWorld = loreShowStory = true;
             loreSource = null;
@@ -309,66 +346,95 @@ namespace Tallybook
                 string f = worldFilter?.Trim();
                 bool filtering = !string.IsNullOrEmpty(f);
 
-                foreach (var section in worldSections)
+                if (filtering)
                 {
-                    // A matching category title keeps its whole section ("temporal" should
-                    // give all of temporal stability); otherwise rows match individually,
-                    // under their heading so a hit still says where it lives.
-                    var shown = !filtering || section.Title.Contains(f, StringComparison.OrdinalIgnoreCase)
-                        ? section.Settings
-                        : section.Settings.Where(s => MatchesWorldFilter(s, f)).ToList();
-                    if (shown.Count == 0) continue;
+                    // The filter overrides every fold: a match inside a folded section MUST
+                    // surface (Mark) — a search that respected the folds would look like the
+                    // setting does not exist. A matching category title keeps its whole
+                    // section ("temporal" should give all of temporal stability); otherwise
+                    // rows match individually, under their heading so a hit still says
+                    // where it lives.
+                    foreach (var section in worldSections)
+                    {
+                        var shown = section.Title.Contains(f, StringComparison.OrdinalIgnoreCase)
+                            ? section.Settings
+                            : section.Settings.Where(s => MatchesWorldFilter(s, f)).ToList();
+                        if (shown.Count == 0) continue;
 
-                    allRows.Add(new HeadingRow { Text = section.Title });
-                    foreach (var s in shown) allRows.Add(new SettingRow { Setting = s });
+                        allRows.Add(new HeadingRow { Text = section.Title });
+                        foreach (var s in shown) allRows.Add(new SettingRow { Setting = s });
+                    }
+
+                    if (allRows.Count == 0)
+                    {
+                        string none = $"Nothing matches \"{f}\".";
+                        allRows.Add(new InfoRow { Text = none, Full = none, Indent = 0 });
+                    }
+                    return;
                 }
 
-                if (filtering && allRows.Count == 0)
+                // Unfiltered, the tab leads with its actual point — what this server
+                // changed — and folds every category to a counted heading (Mark: concise).
+                var changed = worldSections.SelectMany(sec => sec.Settings)
+                    .Where(s => !s.IsDefault).ToList();
+                if (changed.Count > 0)
                 {
-                    string none = $"Nothing matches \"{f}\".";
-                    allRows.Add(new InfoRow { Text = none, Full = none, Indent = 0 });
+                    allRows.Add(new WorldHeadRow
+                    {
+                        Title = "Changed on this server", Key = "~changed",
+                        DefaultExpanded = true, Count = changed.Count,
+                    });
+                    if (WorldSectionExpanded("~changed"))
+                        foreach (var s in changed) allRows.Add(new SettingRow { Setting = s });
+                }
+
+                foreach (var section in worldSections)
+                {
+                    int changedIn = section.Settings.Count(s => !s.IsDefault);
+                    allRows.Add(new WorldHeadRow
+                    {
+                        Title = section.Title, Key = section.Title,
+                        DefaultExpanded = false,
+                        Count = section.Settings.Count, Changed = changedIn,
+                    });
+                    if (WorldSectionExpanded(section.Title))
+                        foreach (var s in section.Settings) allRows.Add(new SettingRow { Setting = s });
                 }
                 return;
             }
 
             if (tab == TbTab.Player) { BuildPlayerRows(); return; }
             if (tab == TbTab.Lore) { BuildLoreRows(); return; }
+            if (tab == TbTab.Explore) { BuildExploreRows(); return; }
 
-            // Rewards first: a walk you can make right now beats a list of things to find.
-            if (tab == TbTab.Quests && history != null)
+            if (tab == TbTab.Quests)
             {
-                foreach (var waiting in history.AwaitingRewards())
+                // Rewards first: a walk you can make right now beats a list of things to
+                // find. They are transient (paid out, they vanish), so they sit above the
+                // orderable list rather than in it.
+                foreach (var waiting in history?.AwaitingRewards()
+                         ?? new List<(string, string, string)>())
                 {
-                    allRows.Add(new RewardRow { Name = waiting.Name, Giver = waiting.Giver, Indent = 0 });
+                    allRows.Add(new RewardRow { Name = waiting.Item2, Giver = waiting.Item3, Indent = 0 });
                 }
-            }
 
-            // Then the places: map-artifact destinations adopted as side quests.
-            if (tab == TbTab.Quests && sites != null)
-            {
+                // Errands and site quests as ONE ordered list — the sort dropdown and the
+                // ^ / v arranging cover every row, whichever kind it is (Mark: the map
+                // quests would not rearrange, and sorting "did nothing" because it only
+                // touched the pin rows below the sites).
+                var entries = new List<PinStore.QuestEntry>();
                 foreach (var sq in svc.Store.SiteQuests.Where(s => !s.Dismissed))
-                {
-                    allRows.Add(new SiteRow { Site = sq, Indent = 0 });
-                    // Parked site quests keep their header row and nothing else — the same
-                    // contract as an unchecked pin.
-                    if (!sq.Active || !sq.TextExpanded) continue;
+                    entries.Add(new PinStore.QuestEntry { Site = sq });
+                foreach (var pin in PinsForTab(TbTab.Quests))
+                    entries.Add(new PinStore.QuestEntry { Pin = pin });
+                entries = svc.Store.OrderQuestEntries(entries, capi.World?.Player?.Entity?.Pos?.XYZ);
 
-                    // Only what has been found. The unfound writings' titles stay the
-                    // site's secret — the count above is the progress, the names are the
-                    // content it has not given up yet.
-                    foreach (var title in sites.FoundLoreTitles(sq))
-                    {
-                        string line = $"√ {title}";
-                        allRows.Add(new InfoRow { Text = line, Full = line, Indent = 1 });
-                    }
-                    var count = sites.LoreCount(sq);
-                    if (count.HasValue && count.Value.Total > count.Value.Found)
-                    {
-                        int left = count.Value.Total - count.Value.Found;
-                        string line = $"{left} writing(s) still hidden there.";
-                        allRows.Add(new InfoRow { Text = line, Full = line, Indent = 1 });
-                    }
+                foreach (var entry in entries)
+                {
+                    if (entry.Site != null) AddSiteQuestRows(entry.Site);
+                    else AddQuestPinRows(entry.Pin);
                 }
+                return;
             }
 
             foreach (var pin in PinsForTab(tab))
@@ -406,6 +472,68 @@ namespace Tallybook
                 }
                 foreach (var node in pin.RootNodes) AddNodeRows(pin, node, 1);
                 foreach (var tool in pin.Tools) allRows.Add(new ToolRow { Tool = tool, Indent = 1 });
+            }
+        }
+
+        /// <summary>The ^ / v hand-arranging pair, identical on errand and site rows —
+        /// only under the custom sort, where a move would not be undone by the very next
+        /// redraw. ^ / v, not ▲ / ▼: the game's fonts carry no triangle-down.</summary>
+        void QuestMoveButtons(GuiComposer c, string key, double y, CairoFont font)
+        {
+            if (!string.IsNullOrEmpty(svc.Store.QuestSort) && svc.Store.QuestSort != "custom") return;
+
+            c.AddSmallButton("^",
+                () => { svc.Store.MoveQuestEntry(key, -1); Recompose(); onHudChanged?.Invoke(); return true; },
+                EB(ColCalc + 2, y, 26, 26), EnumButtonStyle.Small);
+            c.AddSmallButton("v",
+                () => { svc.Store.MoveQuestEntry(key, +1); Recompose(); onHudChanged?.Invoke(); return true; },
+                EB(ColCalc + 32, y, 26, 26), EnumButtonStyle.Small);
+            c.AddHoverText("Move this row up or down — the HUD follows this order.",
+                font, 240, EB(ColCalc + 2, y, 56, 26));
+        }
+
+        /// <summary>A map-artifact site quest's rows: the header, and — checked and
+        /// unfolded — what has been found there. The unfound writings' titles stay the
+        /// site's secret; the count is the progress, the names are content the site has
+        /// not given up yet.</summary>
+        void AddSiteQuestRows(SiteQuest sq)
+        {
+            allRows.Add(new SiteRow { Site = sq, Indent = 0 });
+            // Parked site quests keep their header row and nothing else — the same
+            // contract as an unchecked pin.
+            if (!sq.Active || !sq.TextExpanded) return;
+
+            foreach (var title in sites.FoundLoreTitles(sq))
+            {
+                string line = $"√ {title}";
+                allRows.Add(new InfoRow { Text = line, Full = line, Indent = 1 });
+            }
+            var count = sites.LoreCount(sq);
+            if (count.HasValue && count.Value.Total > count.Value.Found)
+            {
+                int left = count.Value.Total - count.Value.Found;
+                string line = $"{left} writing(s) still hidden there.";
+                allRows.Add(new InfoRow { Text = line, Full = line, Indent = 1 });
+            }
+        }
+
+        /// <summary>An errand pin's rows: the header, and — checked and unfolded — the
+        /// conversation and the maps that came with it. Errands are counted, never
+        /// decomposed, so there is no tree here by design.</summary>
+        void AddQuestPinRows(Pin pin)
+        {
+            allRows.Add(new PinRow { Pin = pin, Indent = 0 });
+            if (!pin.Active || !pin.QuestTextExpanded) return;
+
+            foreach (var said in pin.QuestText ?? new List<string>())
+            {
+                string line = QuestScanner.Attributed(said, pin.QuestGiver);
+                allRows.Add(new InfoRow { Text = line, Full = line, Indent = 1 });
+            }
+            if (pin.QuestMaps?.Count > 0)
+            {
+                string maps = "came with " + string.Join(", ", pin.QuestMaps);
+                allRows.Add(new InfoRow { Text = maps, Full = maps, Indent = 1 });
             }
         }
 
@@ -667,6 +795,17 @@ namespace Tallybook
         double RowHeight(Row row)
         {
             if (row is HeadingRow) return RowH + 8;
+            if (row is WorldHeadRow) return RowH + 8;
+            if (row is PlaceNoteRow pnr)
+            {
+                var lines = NotesLines(pnr.Place);
+                if (pnr.Index >= lines.Length) return 0;
+                var (kind, text) = ParseNoteLine(lines[pnr.Index]);
+                if (string.IsNullOrWhiteSpace(text)) return LineStep;
+
+                double tx = ColName + pnr.Indent * IndentW + (kind == 1 ? 22 : kind >= 2 ? 32 : 0);
+                return TbText.Wrap(TableFont(), text, DW - tx - 24).Count * LineStep + 2;
+            }
             if (!(row is InfoRow ir)) return RowH;
 
             double w = DW - (ColName + row.Indent * IndentW) - 16;
@@ -719,7 +858,8 @@ namespace Tallybook
                 PageBudget - (tab == TbTab.Quests ? StoryBlockHeight()
                             : tab == TbTab.World ? WorldHeaderHeight()
                             : tab == TbTab.Player ? SpawnHudControlsHeight
-                            : tab == TbTab.Lore ? LoreHeaderHeight() : 0));
+                            : tab == TbTab.Lore ? LoreHeaderHeight()
+                            : tab == TbTab.Explore ? 40 : 0));
 
             for (int i = 0; i < rows.Count; i++)
             {
@@ -740,6 +880,7 @@ namespace Tallybook
             if (tab == TbTab.World && !config.ShowWorldTab) { tab = TbTab.Items; page = 0; }
             if (tab == TbTab.Player && !config.ShowPlayerTab) { tab = TbTab.Items; page = 0; }
             if (tab == TbTab.Lore && !config.ShowLoreTab) { tab = TbTab.Items; page = 0; }
+            if (tab == TbTab.Explore && !config.ShowExploreTab) { tab = TbTab.Items; page = 0; }
 
             // Whether the filter box holds the cursor is a fact about the composer being
             // thrown away — read it before it goes, so RestoreCountInputs can hand focus
@@ -772,6 +913,7 @@ namespace Tallybook
                 case TbScreen.Options: ComposeOptions(composer); break;
                 case TbScreen.ChooseRecipe: ComposeChooseRecipe(composer); break;
                 case TbScreen.LiquidCalc: ComposeLiquidCalc(composer); break;
+                case TbScreen.EditPlace: ComposeEditPlace(composer); break;
             }
 
             var replaced = SingleComposer;
@@ -788,6 +930,7 @@ namespace Tallybook
             if (screen == TbScreen.List) RestoreCountInputs();
             else if (screen == TbScreen.Options) RestoreOptionSwitches();
             else if (screen == TbScreen.LiquidCalc) RestoreCalcInput();
+            else if (screen == TbScreen.EditPlace) RestoreEditPlace();
         }
 
         string TitleFor() => screen switch
@@ -812,12 +955,68 @@ namespace Tallybook
             Recompose();
         }
 
+        /// <summary>This window's on-screen rectangle in real pixels, for cropping a
+        /// showcase shot down to it. Null when there is nothing composed to measure.</summary>
+        public ShowcaseShots.Rect ShowcaseBounds()
+        {
+            var b = SingleComposer?.Bounds;
+            if (b == null || !IsOpened() || b.OuterWidth < 1 || b.OuterHeight < 1) return null;
+            return new ShowcaseShots.Rect
+            {
+                X = (int)b.absX,
+                Y = (int)b.absY,
+                W = (int)b.OuterWidth,
+                H = (int)b.OuterHeight,
+            };
+        }
+
+        /// <summary>
+        /// Open the dialog on a named view, for the screenshot walker. NAVIGATION ONLY —
+        /// it opens and selects, and touches no pin, count, expansion or preference, so a
+        /// showcase run cannot alter the list it is photographing. Returns false when the
+        /// view does not exist right now (an optional tab switched off), so the caller can
+        /// skip that shot rather than photograph the wrong screen under its name.
+        /// </summary>
+        public bool ShowcaseView(string view)
+        {
+            if (!IsOpened()) TryOpen();
+            if (!IsOpened()) return false;
+
+            // TryOpen runs OnGuiOpened, which resets to the list screen and clears filters —
+            // so the selection has to happen after it, not before.
+            switch ((view ?? "").ToLowerInvariant())
+            {
+                case "items": screen = TbScreen.List; tab = TbTab.Items; break;
+                case "quests": screen = TbScreen.List; tab = TbTab.Quests; break;
+                case "history": screen = TbScreen.List; tab = TbTab.History; break;
+                case "world":
+                    if (!config.ShowWorldTab) return false;
+                    screen = TbScreen.List; tab = TbTab.World; break;
+                case "player":
+                    if (!config.ShowPlayerTab) return false;
+                    screen = TbScreen.List; tab = TbTab.Player; break;
+                case "lore":
+                    if (!config.ShowLoreTab) return false;
+                    screen = TbScreen.List; tab = TbTab.Lore; break;
+                case "explore":
+                    if (!config.ShowExploreTab) return false;
+                    screen = TbScreen.List; tab = TbTab.Explore; break;
+                case "options": screen = TbScreen.Options; break;
+                default: return false;
+            }
+
+            page = 0;
+            Recompose();
+            return true;
+        }
+
         void OnTabClicked(int index)
         {
             // The handler receives the clicked tab's DataInt, not its array position
             // (decompile-verified: SetValue calls handler(tabs[i].DataInt)) — so optional
             // tabs keep stable identities here no matter which of them are showing.
-            var next = index == 5 ? TbTab.Lore
+            var next = index == 6 ? TbTab.Explore
+                : index == 5 ? TbTab.Lore
                 : index == 4 ? TbTab.Player
                 : index == 3 ? TbTab.World
                 : index == 2 ? TbTab.History
@@ -840,7 +1039,7 @@ namespace Tallybook
 
         void ComposeList(GuiComposer c)
         {
-            unpinButtonBounds.Clear();
+            holdButtons.Clear();
             var font = TableFont();
             double y = 34;
 
@@ -859,17 +1058,25 @@ namespace Tallybook
                 done.AddRange(history.InProgress());
                 done.AddRange(history.Records());
             }
+            // Mark's order: the play tabs first, the reference tabs after, the archive
+            // last. DataInts are stable IDENTITIES (the click handler receives them), so
+            // reordering the array moves nothing else — but the restore path computes
+            // array POSITIONS from which optional tabs are shown, and must match this
+            // order exactly.
             var tabs = new List<GuiTab>
             {
                 new GuiTab { DataInt = 0, Name = $"Items ({itemCount})" },
                 new GuiTab { DataInt = 1, Name = $"Side quests ({questCount})" },
-                new GuiTab { DataInt = 2, Name = $"History ({done.Count})" },
             };
-            // Opt-in (Options screen), and appended last so the fixed tabs' positions never
-            // move: no counts, because reference tabs have no work outstanding.
-            if (config.ShowWorldTab) tabs.Add(new GuiTab { DataInt = 3, Name = "World" });
+            if (config.ShowExploreTab)
+            {
+                int placeCount = svc.Store.Places.Count;
+                tabs.Add(new GuiTab { DataInt = 6, Name = placeCount > 0 ? $"Explore ({placeCount})" : "Explore" });
+            }
             if (config.ShowPlayerTab) tabs.Add(new GuiTab { DataInt = 4, Name = "Player" });
+            if (config.ShowWorldTab) tabs.Add(new GuiTab { DataInt = 3, Name = "World" });
             if (config.ShowLoreTab) tabs.Add(new GuiTab { DataInt = 5, Name = "Lore" });
+            tabs.Add(new GuiTab { DataInt = 2, Name = $"History ({done.Count})" });
             c.AddHorizontalTabs(tabs.ToArray(), EB(0, y, DW, 26), OnTabClicked,
                 CairoFont.WhiteSmallText(),
                 CairoFont.WhiteSmallText().WithWeight(Cairo.FontWeight.Bold), "tabs");
@@ -879,6 +1086,7 @@ namespace Tallybook
             if (tab == TbTab.World) { ComposeWorld(c, ref y); return; }
             if (tab == TbTab.Player) { ComposePlayer(c, ref y); return; }
             if (tab == TbTab.Lore) { ComposeLore(c, ref y); return; }
+            if (tab == TbTab.Explore) { ComposeExplore(c, ref y); return; }
 
             if (tab == TbTab.Quests) ComposeStoryBlock(c, ref y);
 
@@ -900,6 +1108,26 @@ namespace Tallybook
 
             c.AddSmallButton("Options", () => { screen = TbScreen.Options; Recompose(); return true; },
                 EB(8, y - 2, 92, 26), EnumButtonStyle.Small);
+
+            if (tab == TbTab.Quests)
+            {
+                // One ordering for the tab AND the HUD — sorting here rearranges both.
+                // "Custom" is the hand-arranged order; the ^ / v buttons on the rows only
+                // appear in that mode, because moving a row under an active sort would be
+                // undone by the very next redraw.
+                var sortValues = new[] { "custom", "distance", "progress", "name", "giver" };
+                var sortNames = new[] { "Custom order", "By distance", "By progress", "By item", "By giver" };
+                int sel = Math.Max(0, Array.IndexOf(sortValues, svc.Store.QuestSort ?? "custom"));
+                c.AddStaticText("Sort", font, EB(110, y + 2, 40, 24));
+                c.AddDropDown(sortValues, sortNames, sel, (code, _) =>
+                {
+                    svc.Store.QuestSort = code;
+                    svc.Store.Save();
+                    page = 0;
+                    Recompose();
+                    onHudChanged?.Invoke();
+                }, EB(152, y - 2, 150, 26), "quest-sort");
+            }
 
             // One bulk toggle instead of a confirm dialog per item: unchecking loses nothing,
             // so it needs no confirmation — that is the whole point of parking over unpinning.
@@ -1386,6 +1614,296 @@ namespace Tallybook
             if (journalSideBySide) EndSideBySide();
         }
 
+        // ---- Explore tab ----------------------------------------------------------------
+
+        void BuildExploreRows()
+        {
+            // The Side quests tab's contract, verbatim (Mark: "should look a lot more like
+            // the side quests tab"): checked rides the HUD, unchecked is parked — one
+            // dimmed header row, kept and saved. The notes additionally sit behind the
+            // same leading +/− an errand's conversation uses (Mark: without the fold,
+            // "the window will get huge") — opened state remembered per place.
+            foreach (var place in svc.Store.Places)
+            {
+                allRows.Add(new PlaceRow { Place = place });
+                if (!place.ShowOnHud || !place.NotesExpanded) continue;
+
+                var lines = NotesLines(place);
+                for (int i = 0; i < lines.Length; i++)
+                    allRows.Add(new PlaceNoteRow { Place = place, Index = i, Indent = 1 });
+            }
+        }
+
+        /// <summary>
+        /// The Explore tab: save the spot you are standing on with a name and a one-line
+        /// "what it is", then a table of your saved places — distance back, a HUD switch, a
+        /// Map button, longer notes behind a fold, and a two-click Remove (a place's notes
+        /// go with it, so it asks twice — but never a dialog).
+        /// </summary>
+        void ComposeExplore(GuiComposer c, ref double y)
+        {
+            var font = TableFont();
+            var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
+
+            c.AddStaticText("Name", font, EB(8, y + 4, 48, 24));
+            c.AddTextInput(EB(58, y, 210, 26), OnExploreNameTyped, font, "explore-name");
+            c.AddStaticText("What is it?", font, EB(280, y + 4, 86, 24));
+            c.AddTextInput(EB(368, y, 240, 26), OnExploreNoteTyped, font, "explore-note");
+            c.AddSmallButton("Save this spot", () => SaveSpotClicked(), EB(618, y, 130, 26));
+            c.AddHoverText("Saves where you are standing right now — with a map marker, and "
+                + "a switch to keep the distance back on the HUD. Longer notes can be added "
+                + "on the row afterwards.", font, 300, EB(618, y, 130, 26));
+            y += 36;
+
+            if (svc.Store.Places.Count == 0)
+            {
+                c.AddStaticText("No places saved yet.", font, EB(8, y + 8, DW, 26));
+                c.AddStaticText("Standing somewhere worth coming back to — a mine, a ruin, a "
+                    + "cave mouth — name it above and save it. '.tallybook spot <name>' does "
+                    + "the same without opening this window.",
+                    quiet, EB(8, y + 38, DW, 46));
+                y += 96;
+                c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+                return;
+            }
+
+            foreach (var row in VisibleRows())
+            {
+                ComposeRow(c, row, ref y);
+            }
+
+            y += 8;
+            if (MaxPage > 0)
+            {
+                c.AddSmallButton("< Prev", () => { if (page > 0) { page--; Recompose(); } return true; },
+                    EB(DW / 2 - 130, y, 78, 28), EnumButtonStyle.Small);
+                c.AddStaticText($"Page {page + 1}/{MaxPage + 1}", font, EB(DW / 2 - 44, y + 5, 90, 24));
+                c.AddSmallButton("Next >", () => { if (page < MaxPage) { page++; Recompose(); } return true; },
+                    EB(DW / 2 + 52, y, 78, 28), EnumButtonStyle.Small);
+            }
+            c.AddSmallButton("Close", () => { TryClose(); return true; }, EB(DW - 90, y, 90, 28));
+        }
+
+        void OnExploreNameTyped(string val)
+        {
+            if (restoringInputs) return;
+            lastCountTypingMs = capi.World.ElapsedMilliseconds;
+            exploreName = val;
+        }
+
+        void OnExploreNoteTyped(string val)
+        {
+            if (restoringInputs) return;
+            lastCountTypingMs = capi.World.ElapsedMilliseconds;
+            exploreNote = val;
+        }
+
+        /// <summary>The notes as display lines. Empty notes are a single empty array —
+        /// no rows — and blank lines inside real notes stay, as paragraph spacing.</summary>
+        static string[] NotesLines(SavedPlace place)
+            => place.HasNotes
+                ? place.NotesText.Replace("\r\n", "\n").Split('\n')
+                : Array.Empty<string>();
+
+        /// <summary>What a note line means: 0 plain, 1 bullet ("- " / "* "),
+        /// 2 unchecked checkbox ("[ ]"), 3 checked ("[x]") — bullets may carry the
+        /// checkbox too ("- [ ] fetch props").</summary>
+        static (int Kind, string Text) ParseNoteLine(string line)
+        {
+            string t = (line ?? "").TrimStart();
+            bool bullet = t.StartsWith("- ") || t.StartsWith("* ");
+            if (bullet) t = t.Substring(2).TrimStart();
+
+            if (t.StartsWith("[x]", StringComparison.OrdinalIgnoreCase))
+                return (3, t.Substring(3).TrimStart());
+            if (t.StartsWith("[]") || t.StartsWith("[ ]"))
+                return (2, t.Substring(t.StartsWith("[]") ? 2 : 3).TrimStart());
+            return (bullet ? 1 : 0, bullet ? t : line);
+        }
+
+        /// <summary>Tick or untick a checkbox line from the reading view — the one edit
+        /// that does not need the editor window, because it IS the point of a checkbox.</summary>
+        void ToggleNoteCheckbox(SavedPlace place, int index)
+        {
+            var lines = NotesLines(place);
+            if (index >= lines.Length) return;
+            string line = lines[index];
+
+            int at = line.IndexOf("[x]", StringComparison.OrdinalIgnoreCase);
+            if (at >= 0) line = line.Substring(0, at) + "[ ]" + line.Substring(at + 3);
+            else if ((at = line.IndexOf("[ ]")) >= 0) line = line.Substring(0, at) + "[x]" + line.Substring(at + 3);
+            else if ((at = line.IndexOf("[]")) >= 0) line = line.Substring(0, at) + "[x]" + line.Substring(at + 2);
+            else return;
+
+            lines[index] = line;
+            place.NotesText = string.Join("\n", lines);
+            svc.Store.Save();
+            svc.RecountAll();
+            Recompose();
+        }
+
+        bool OnRemovePlaceClicked(SavedPlace place)
+        {
+            if (!config.ConfirmOnUnpin)
+            {
+                RemovePlaceNow(place);
+                return true;
+            }
+            // Click fires on mouse-up. If the hold ran to completion the place is already
+            // gone; a tap that never finished the countdown lands here.
+            if (svc.Store.Places.Contains(place))
+            {
+                notice = "Hold Remove for a second to let a place go — its notes go with it.";
+                Recompose();
+            }
+            return true;
+        }
+
+        void RemovePlaceNow(SavedPlace place)
+        {
+            explore?.Remove(place);
+            svc.RecountAll();
+            Recompose();
+            onHudChanged?.Invoke();
+        }
+
+        bool OpenPlaceEditor(SavedPlace place)
+        {
+            editingPlace = place;
+            editingNameDraft = place.Name ?? "";
+            editingNoteDraft = place.Note ?? "";
+            editingNotesDraft = place.NotesText ?? "";
+            screen = TbScreen.EditPlace;
+            Recompose();
+            return true;
+        }
+
+        void OnEditNameTyped(string val)
+        {
+            if (restoringInputs) return;
+            lastCountTypingMs = capi.World.ElapsedMilliseconds;
+            editingNameDraft = val;
+        }
+
+        void OnEditWhatTyped(string val)
+        {
+            if (restoringInputs) return;
+            lastCountTypingMs = capi.World.ElapsedMilliseconds;
+            editingNoteDraft = val;
+        }
+
+        void OnEditNotesTyped(string val)
+        {
+            if (restoringInputs) return;
+            lastCountTypingMs = capi.World.ElapsedMilliseconds;
+            editingNotesDraft = val;
+        }
+
+        /// <summary>The toolbar's insert: a fresh line carrying the marker, appended at the
+        /// end of the draft — cursor-position insertion needs caret internals the text area
+        /// does not expose, and the end is where a new entry goes anyway.</summary>
+        bool AppendNoteMarker(string marker)
+        {
+            string d = editingNotesDraft ?? "";
+            if (d.Length > 0 && !d.EndsWith("\n")) d += "\n";
+            editingNotesDraft = d + marker;
+            RestoreEditPlace();
+            return true;
+        }
+
+        bool SavePlaceEditor()
+        {
+            if (editingPlace != null)
+            {
+                explore?.Apply(editingPlace, editingNameDraft, editingNoteDraft, editingNotesDraft);
+                editingPlace.NotesExpanded = editingPlace.HasNotes;   // show what was just written
+                svc.RecountAll();
+                onHudChanged?.Invoke();
+            }
+            editingPlace = null;
+            BackToList();
+            return true;
+        }
+
+        /// <summary>
+        /// The place editor, in its own window (Mark) — name and "what is it" up top, then
+        /// the notes with a small formatting toolbar: Bullet and Checkbox put their marker
+        /// on a fresh line, ready to type after. Save writes everything; Cancel walks away
+        /// untouched.
+        /// </summary>
+        void ComposeEditPlace(GuiComposer c)
+        {
+            var font = TableFont();
+            var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
+            double y = 40;
+
+            c.AddStaticText($"Edit — {editingPlace?.Name}",
+                CairoFont.WhiteSmallishText().WithFontSize((float)(TablePx + 2)),
+                EB(8, y, DW - 16, 26));
+            y += 34;
+
+            c.AddStaticText("Name", font, EB(8, y + 4, 48, 24));
+            c.AddTextInput(EB(58, y, 240, 26), OnEditNameTyped, font, "edit-name");
+            c.AddStaticText("What is it?", font, EB(312, y + 4, 86, 24));
+            c.AddTextInput(EB(400, y, 240, 26), OnEditWhatTyped, font, "edit-what");
+            y += 36;
+
+            c.AddStaticText("Notes", font, EB(8, y + 4, 60, 24));
+            c.AddSmallButton("• Bullet", () => AppendNoteMarker("- "),
+                EB(70, y, 84, 26), EnumButtonStyle.Small);
+            c.AddSmallButton("√ Checkbox", () => AppendNoteMarker("[ ] "),
+                EB(160, y, 110, 26), EnumButtonStyle.Small);
+            c.AddHoverText("A checkbox line can be ticked off later with a click, straight "
+                + "from the list.", font, 260, EB(160, y, 110, 26));
+            y += 32;
+
+            c.AddTextArea(EB(8, y, DW - 16, 300), OnEditNotesTyped, font, "place-notes");
+            y += 312;
+
+            c.AddSmallButton("Save", () => SavePlaceEditor(), EB(8, y, 90, 30));
+            c.AddSmallButton("Cancel", () => { editingPlace = null; BackToList(); return true; },
+                EB(106, y, 90, 30));
+        }
+
+        /// <summary>Inputs compose empty; hand them the drafts and the notes the cursor.</summary>
+        void RestoreEditPlace()
+        {
+            restoringInputs = true;
+            try
+            {
+                SingleComposer.GetTextInput("edit-name")?.SetValue(editingNameDraft ?? "");
+                var what = SingleComposer.GetTextInput("edit-what");
+                if (what != null)
+                {
+                    what.SetPlaceHolderText("mine, ruin, cave…");
+                    what.SetValue(editingNoteDraft ?? "");
+                }
+                var area = SingleComposer.GetTextArea("place-notes");
+                if (area != null)
+                {
+                    area.SetValue(editingNotesDraft ?? "");
+                    SingleComposer.FocusElement(area.TabIndex);
+                }
+            }
+            finally { restoringInputs = false; }
+        }
+
+        bool SaveSpotClicked()
+        {
+            var place = explore?.SaveHere(exploreName, exploreNote);
+            if (place == null)
+            {
+                capi.ShowChatMessage("[tallybook] Give the place a name first.");
+                return true;
+            }
+            exploreName = "";
+            exploreNote = "";
+            svc.RecountAll();
+            Recompose();
+            onHudChanged?.Invoke();
+            return true;
+        }
+
         /// <summary>One volume in the two-a-row grid: title (hover gives the full text when
         /// trimmed), chapter count in the status colour, and Read — the journal opened
         /// straight on this entry.</summary>
@@ -1690,6 +2208,8 @@ namespace Tallybook
                     c.AddHoverText($"Open the map centred on {sq.Title}.",
                         font, 240, EB(ColAct2, y, 40, 26));
 
+                    QuestMoveButtons(c, "site:" + sq.Key, y, font);
+
                     // One click, no hold: dismissing loses nothing — the quest is kept and
                     // '.tallybook sites track <name>' brings it back.
                     c.AddSmallButton("Dismiss", () =>
@@ -1800,32 +2320,101 @@ namespace Tallybook
                                       + $" Once you have the goods, this points back to {pin.QuestGiver}."
                                     : $"Open the map centred on {pin.QuestGiver}.",
                             font, 260, EB(ColAct2, y, 40, 26));
+
+                        // Hand-arranging, only under the custom sort — under an active sort
+                        // a move would be undone by the next redraw. ^ / v, not ▲ / ▼: the
+                        // game's fonts carry no triangle-down (verified glyph set).
+                        QuestMoveButtons(c, pin.Key, y, font);
                     }
                     else if (pin.Groups.Count > 0)
                     {
-                        // Same word as on an ingredient row, for the same act: unfold this
-                        // item's recipe beneath it. Collapsing returns the pin to plain
-                        // counting, which is where anything not pinned from the handbook
-                        // starts (Mark) — a recipe existing is not a reason to assume the
-                        // player intends to craft rather than gather.
-                        c.AddSmallButton(pin.GatherOnly ? "Expand" : "Collapse",
-                            () => pin.GatherOnly
-                                ? ExpandOrChoose(pin, null, pin.Groups)
-                                : Collapse(pin),
-                            EB(ColAct1, y, 80, 26), EnumButtonStyle.Small);
+                        // A construction group never answers an ITEM pin's Expand — that
+                        // is the one-or-the-other trap (Mark), and worse, a build unfolded
+                        // on the item's own pin zeroes out the moment the starter is
+                        // carried. Build pins invert the filter: their Expand IS the build.
+                        var expandChoices = pin.Groups
+                            .Where(g => (g.Construction != null) == pin.BuildSite).ToList();
 
-                        c.AddHoverText(pin.GatherOnly
-                                ? "Counting this item only. Expand to show its recipe and plan the craft."
-                                : "Showing this item's recipe. Collapse to go back to just counting it.",
-                            font, 260, EB(ColAct1, y, 80, 26));
-
-                        if (!pin.GatherOnly && pin.Groups.Count > 1)
+                        if (expandChoices.Count > 0)
                         {
-                            c.AddSmallButton($"{pin.Groups.IndexOf(pin.Group) + 1}/{pin.Groups.Count}",
-                                () => ExpandOrChoose(pin, null, pin.Groups),
+                            // Same word as on an ingredient row, for the same act: unfold
+                            // this item's recipe beneath it. Collapsing returns the pin to
+                            // plain counting, which is where anything not pinned from the
+                            // handbook starts (Mark) — a recipe existing is not a reason to
+                            // assume the player intends to craft rather than gather.
+                            c.AddSmallButton(pin.GatherOnly ? "Expand" : "Collapse",
+                                () => pin.GatherOnly
+                                    ? ExpandOrChoose(pin, null, expandChoices)
+                                    : Collapse(pin),
+                                EB(ColAct1, y, 80, 26), EnumButtonStyle.Small);
+
+                            c.AddHoverText(pin.GatherOnly
+                                    ? "Counting this item only. Expand to show its recipe and plan the craft."
+                                    : "Showing this item's recipe. Collapse to go back to just counting it.",
+                                font, 260, EB(ColAct1, y, 80, 26));
+                        }
+
+                        // A construction-site item (Shipwright's kits, the vanilla rollers,
+                        // the sailboat's own page) gets a Build materials button that adds
+                        // the BUILD as its own separate pin — this row keeps tracking the
+                        // item and its recipe untouched, so the roller craft and the boat
+                        // materials count at the same time (Mark).
+                        var constructGroup = pin.Groups.FirstOrDefault(g => g.Construction != null);
+
+                        // A build pin with a material variable gets the wood selector: an
+                        // oak boat wants oak, and committing here makes every bound row
+                        // name and count exactly that (Mark). "Any" returns to the honest
+                        // best-single-material counting.
+                        if (pin.BuildSite && constructGroup?.BuildMaterialChoices?.Count > 1)
+                        {
+                            var mats = constructGroup.BuildMaterialChoices;
+                            var values = new List<string> { "~any" };
+                            var names = new List<string> { $"Any {constructGroup.BuildMaterialName ?? "material"}" };
+                            foreach (var m in mats)
+                            {
+                                values.Add(m);
+                                names.Add(Lang.GetIfExists("material-" + m)
+                                    ?? char.ToUpperInvariant(m[0]) + m.Substring(1));
+                            }
+                            int sel = pin.BuildMaterial == null ? 0
+                                : Math.Max(0, values.FindIndex(v =>
+                                    string.Equals(v, pin.BuildMaterial, StringComparison.OrdinalIgnoreCase)));
+                            c.AddDropDown(values.ToArray(), names.ToArray(), sel, (code, _) =>
+                            {
+                                pin.BuildMaterial = code == "~any" ? null : code;
+                                foreach (var g in pin.Groups)
+                                {
+                                    if (g.Construction == null) continue;
+                                    g.BuildMaterial = pin.BuildMaterial;
+                                    g.Materials = null;
+                                    g.MaterialsBrief = null;
+                                }
+                                svc.Store.Save();
+                                if (pin.Group?.Construction != null) svc.ChoosePinRecipe(pin, pin.Group);
+                                else svc.RecountAll();
+                            }, EB(ColCalc + 2, y, 112, 26), "buildmat-" + pin.Key);
+                        }
+
+                        if (constructGroup != null && !pin.BuildSite)
+                        {
+                            c.AddSmallButton("Build materials",
+                                () => StartConstruction(pin, constructGroup),
+                                EB(ColCalc + 2, y, 112, 26), EnumButtonStyle.Small);
+                            c.AddHoverText("Add the whole build as its own row: everything "
+                                + "the construction site will ask for across its stages — "
+                                + "rollers, planks, beams, rope and the rest — counted like "
+                                + "any other ingredients. This row stays as it is, so the "
+                                + "item and the build track side by side.",
+                                font, 300, EB(ColCalc + 2, y, 112, 26));
+                        }
+
+                        if (!pin.GatherOnly && expandChoices.Count > 1)
+                        {
+                            c.AddSmallButton($"{expandChoices.IndexOf(pin.Group) + 1}/{expandChoices.Count}",
+                                () => ExpandOrChoose(pin, null, expandChoices),
                                 EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
 
-                            c.AddHoverText(RecipeChoiceHelp(pin.Groups, pin.Group),
+                            c.AddHoverText(RecipeChoiceHelp(expandChoices, pin.Group),
                                 font, 320, EB(ColAct2, y, 40, 26));
                         }
                     }
@@ -1851,9 +2440,9 @@ namespace Tallybook
                         EB(ColBook, y, 84, 26), EnumButtonStyle.Small);
 
                     var ub = EB(ColUnpin, y, 74, 26);
-                    string unpinLabel = holdPin == pin ? $"Hold {holdShownSecond}…" : "Unpin";
+                    string unpinLabel = ReferenceEquals(holdTarget, pin) ? $"Hold {holdShownSecond}…" : "Unpin";
                     c.AddSmallButton(unpinLabel, () => OnUnpinClicked(pin), ub, EnumButtonStyle.Small);
-                    unpinButtonBounds.Add((pin, ub));
+                    holdButtons.Add((pin, ub, () => svc.Store.Remove(pin)));
                     break;
                 }
 
@@ -1923,6 +2512,27 @@ namespace Tallybook
                     y += RowH + 8;
                     return;
                 }
+                case WorldHeadRow whr:
+                {
+                    // The heading is the fold control, accordion-style: opening one closes
+                    // the rest. Folded, it counts what it hides — and says how many of
+                    // those differ from the game's defaults, so "which section did the
+                    // server touch" survives the folding.
+                    bool expanded = WorldSectionExpanded(whr.Key);
+                    string extra = whr.Changed > 0 ? $", {whr.Changed} changed" : "";
+                    string label = expanded
+                        ? $"- {whr.Title}"
+                        : $"+ {whr.Title} ({whr.Count}{extra})";
+                    c.AddSmallButton(label, () =>
+                    {
+                        worldOpenSection = expanded ? null : whr.Key;
+                        page = 0;   // the section that opened may live on another page
+                        Recompose();
+                        return true;
+                    }, EB(8, y + 4, 430, 26), EnumButtonStyle.Small);
+                    y += RowH + 8;
+                    return;
+                }
                 case SettingRow str:
                 {
                     var s = str.Setting;
@@ -1976,6 +2586,128 @@ namespace Tallybook
                     ComposeLoreCell(c, lr.A, 8, y);
                     ComposeLoreCell(c, lr.B, DW / 2 + 8, y);
                     break;
+                }
+                case PlaceRow plr:
+                {
+                    var place = plr.Place;
+                    bool tracked = place.ShowOnHud;
+
+                    // The Side quests tab's own checkbox, doing that tab's own job: checked
+                    // is tracked — notes below, distance on the HUD; unchecked is parked.
+                    c.AddSwitch(on =>
+                    {
+                        place.ShowOnHud = on;
+                        svc.Store.Save();
+                        svc.RecountAll();
+                        Recompose();
+                        onHudChanged?.Invoke();
+                    }, EB(ColCheck, y + 1, 25, 25), "plact-" + place.Key, 25);
+                    c.AddHoverText("Checked: notes shown here, distance shown on the HUD. "
+                        + "Unchecked parks it — kept and saved, off the HUD.",
+                        font, 260, EB(ColCheck, y + 1, 25, 25));
+
+                    // The notes open under the row via the same leading toggle an errand's
+                    // conversation uses; the column is reserved either way so the name
+                    // column stays a column. Offered only when there ARE notes — writing
+                    // the first one is Edit's job.
+                    double placeNameX = ColName + 28;
+                    if (tracked && place.HasNotes)
+                    {
+                        c.AddSmallButton(place.NotesExpanded ? "−" : "+", () =>
+                        {
+                            place.NotesExpanded = !place.NotesExpanded;
+                            svc.Store.Save();
+                            Recompose();
+                            return true;
+                        }, EB(ColName, y, 24, 26), EnumButtonStyle.Small);
+                        c.AddHoverText(place.NotesExpanded
+                                ? "Fold the notes away."
+                                : "Read this place's notes.",
+                            font, 220, EB(ColName, y, 24, 26));
+                    }
+
+                    var titleFont = CairoFont.WhiteSmallishText().WithFontSize((float)(TablePx + 2));
+                    if (!tracked) titleFont = titleFont.Clone().WithColor(GuiStyle.ColorParchment);
+                    double titleW = ColProg - placeNameX - 10;
+                    FittedText(c, place.Name, titleFont, EB(placeNameX, ry + 3, titleW, 26), titleW);
+
+                    if (place.Note != null)
+                    {
+                        var quietNote = font.Clone().WithColor(GuiStyle.ColorParchment);
+                        FittedText(c, place.Note, quietNote, EB(ColProg, y + 4, 130, 24), 130);
+                    }
+
+                    // Distance computed at compose time and kept OUT of the change
+                    // signature — walking must not redraw the dialog every step (the
+                    // Player tab's rule). Its own column, clear of the note's (the two
+                    // overlapped in the first build — Mark).
+                    var me = capi.World?.Player?.Entity?.Pos;
+                    if (me != null)
+                    {
+                        double dx = me.X - place.X, dz = me.Z - place.Z;
+                        int m = (int)Math.Sqrt(dx * dx + dz * dz);
+                        c.AddStaticText(m < 10 ? "here" : $"{m:n0} blocks", font,
+                            EB(470, y + 4, 130, 24));
+                    }
+
+                    c.AddSmallButton("Map", () => ShowOnMapAt(
+                            new BlockPos((int)place.X, (int)place.Y, (int)place.Z, 0), place.Name),
+                        EB(ColAct2, y, 40, 26), EnumButtonStyle.Small);
+                    c.AddHoverText($"Open the map centred on {place.Name}.",
+                        font, 240, EB(ColAct2, y, 40, 26));
+
+                    c.AddSmallButton("Edit", () => OpenPlaceEditor(place),
+                        EB(ColCalc + 2, y, 60, 26), EnumButtonStyle.Small);
+                    c.AddHoverText("Edit this place — name, what it is, and the notes — in "
+                        + "its own window.", font, 240, EB(ColCalc + 2, y, 60, 26));
+
+                    // The same hold-through-the-countdown as Unpin — one workflow for
+                    // every button that loses something (Mark: consistency).
+                    var rb = EB(ColUnpin, y, 74, 26);
+                    string removeLabel = ReferenceEquals(holdTarget, place)
+                        ? $"Hold {holdShownSecond}…" : "Remove";
+                    c.AddSmallButton(removeLabel, () => OnRemovePlaceClicked(place), rb, EnumButtonStyle.Small);
+                    holdButtons.Add((place, rb, () => RemovePlaceNow(place)));
+                    break;
+                }
+                case PlaceNoteRow pnr:
+                {
+                    var lines = NotesLines(pnr.Place);
+                    if (pnr.Index >= lines.Length) return;
+                    var (kind, text) = ParseNoteLine(lines[pnr.Index]);
+
+                    // A blank line inside the notes is paragraph spacing, kept as such.
+                    if (string.IsNullOrWhiteSpace(text)) { y += LineStep; return; }
+
+                    var noteFont = font.Clone().WithColor(kind == 3
+                        ? TallybookConfig.ParseColor(config.ColorSatisfied)
+                        : GuiStyle.ColorParchment);
+
+                    double tx = nx;
+                    if (kind == 1)
+                    {
+                        c.AddStaticText("•", noteFont, EB(nx, y, 18, LineStep));
+                        tx = nx + 22;
+                    }
+                    else if (kind == 2 || kind == 3)
+                    {
+                        // √/· and never ☐/☑ — the fonts carry no checkbox glyphs.
+                        c.AddSmallButton(kind == 3 ? "√" : "·",
+                            () => { ToggleNoteCheckbox(pnr.Place, pnr.Index); return true; },
+                            EB(nx, y, 24, 24), EnumButtonStyle.Small);
+                        c.AddHoverText(kind == 3 ? "Done — click to untick." : "Click to tick off.",
+                            font, 200, EB(nx, y, 24, 24));
+                        tx = nx + 32;
+                    }
+
+                    double noteW = DW - tx - 24;
+                    foreach (var wrapped in TbText.Wrap(noteFont, text, noteW))
+                    {
+                        c.AddStaticText(wrapped, noteFont, EB(tx, y, noteW, LineStep));
+                        y += LineStep;
+                    }
+                    y += 2;
+                    return;
                 }
                 case InfoRow ir:
                 {
@@ -2062,6 +2794,9 @@ namespace Tallybook
 
             var loreTab = SingleComposer.GetSwitch("opt-loretab");
             if (loreTab != null) loreTab.On = config.ShowLoreTab;
+
+            var exploreTab = SingleComposer.GetSwitch("opt-exploretab");
+            if (exploreTab != null) exploreTab.On = config.ShowExploreTab;
         }
 
         bool restoringInputs;
@@ -2078,12 +2813,19 @@ namespace Tallybook
                 // SetValue takes the ARRAY POSITION, unlike the click handler's DataInt
                 // (decompile-verified) — with optional tabs the two disagree, so the
                 // position is computed from which optional tabs are actually composed.
+                // Array positions under the Items, Side quests, [Explore], [Player],
+                // [World], [Lore], History order — must mirror the tabs list exactly.
+                int e = config.ShowExploreTab ? 1 : 0;
+                int p = config.ShowPlayerTab ? 1 : 0;
+                int w = config.ShowWorldTab ? 1 : 0;
+                int l = config.ShowLoreTab ? 1 : 0;
                 int active = tab switch
                 {
-                    TbTab.Lore => 3 + (config.ShowWorldTab ? 1 : 0) + (config.ShowPlayerTab ? 1 : 0),
-                    TbTab.Player => 3 + (config.ShowWorldTab ? 1 : 0),
-                    TbTab.World => 3,
-                    TbTab.History => 2,
+                    TbTab.Explore => 2,
+                    TbTab.Player => 2 + e,
+                    TbTab.World => 2 + e + p,
+                    TbTab.Lore => 2 + e + p + w,
+                    TbTab.History => 2 + e + p + w + l,
                     TbTab.Quests => 1,
                     _ => 0,
                 };
@@ -2108,6 +2850,27 @@ namespace Tallybook
                     if (sw != null) sw.On = config.HudSpawnDistanceWarn;
                     SingleComposer.GetTextInput("spawnwarn-blocks")?.SetValue(
                         config.HudSpawnDistanceWarnBlocks.ToString(CultureInfo.InvariantCulture));
+                }
+
+                if (tab == TbTab.Explore)
+                {
+                    var nameInput = SingleComposer.GetTextInput("explore-name");
+                    if (nameInput != null)
+                    {
+                        nameInput.SetPlaceHolderText("e.g. Old copper mine");
+                        nameInput.SetValue(exploreName);
+                    }
+                    var noteInput = SingleComposer.GetTextInput("explore-note");
+                    if (noteInput != null)
+                    {
+                        noteInput.SetPlaceHolderText("mine, ruin, cave…");
+                        noteInput.SetValue(exploreNote);
+                    }
+                    foreach (var row in VisibleRows().OfType<PlaceRow>())
+                    {
+                        var actSw = SingleComposer.GetSwitch("plact-" + row.Place.Key);
+                        if (actSw != null) actSw.On = row.Place.ShowOnHud;
+                    }
                 }
 
                 // Visible pins only: inputs exist just for the composed page, and asking the
@@ -2231,9 +2994,9 @@ namespace Tallybook
             base.OnMouseDown(args);
             if (screen != TbScreen.List || !config.ConfirmOnUnpin || !IsOpened()) return;
 
-            foreach (var (pin, bounds) in unpinButtonBounds)
+            foreach (var (target, bounds, complete) in holdButtons)
             {
-                if (bounds.PointInside(args.X, args.Y)) { StartHold(pin); return; }
+                if (bounds.PointInside(args.X, args.Y)) { StartHold(target, complete); return; }
             }
         }
 
@@ -2243,10 +3006,11 @@ namespace Tallybook
             CancelHold();
         }
 
-        void StartHold(Pin pin)
+        void StartHold(object target, Action complete)
         {
             CancelHold();
-            holdPin = pin;
+            holdTarget = target;
+            holdComplete = complete;
             holdStartMs = capi.World.ElapsedMilliseconds;
             holdShownSecond = (int)(HoldMs / 1000);
             holdTickId = capi.Event.RegisterGameTickListener(OnHoldTick, 50);
@@ -2255,11 +3019,11 @@ namespace Tallybook
 
         void OnHoldTick(float dt)
         {
-            if (holdPin == null) { StopHoldTimer(); return; }
+            if (holdTarget == null) { StopHoldTimer(); return; }
 
             // The mouse-up override is the normal cancel path; this also catches the pointer
             // drifting off the button and the dialog closing mid-hold.
-            var entry = unpinButtonBounds.FirstOrDefault(e => e.Pin == holdPin);
+            var entry = holdButtons.FirstOrDefault(e => ReferenceEquals(e.Target, holdTarget));
             bool stillValid = IsOpened()
                 && capi.Input.MouseButton.Left
                 && entry.Bounds != null
@@ -2269,10 +3033,11 @@ namespace Tallybook
             long held = capi.World.ElapsedMilliseconds - holdStartMs;
             if (held >= HoldMs)
             {
-                var pin = holdPin;
-                holdPin = null;
+                var complete = holdComplete;
+                holdTarget = null;
+                holdComplete = null;
                 StopHoldTimer();
-                svc.Store.Remove(pin);      // Changed → recount → recompose
+                complete?.Invoke();
                 return;
             }
 
@@ -2287,8 +3052,9 @@ namespace Tallybook
         void CancelHold()
         {
             StopHoldTimer();
-            if (holdPin == null) return;
-            holdPin = null;
+            if (holdTarget == null) return;
+            holdTarget = null;
+            holdComplete = null;
             Recompose();    // restore the button label
         }
 
@@ -2310,6 +3076,38 @@ namespace Tallybook
         /// normal case, and jumping away after each one would mean navigating back before
         /// the next (Mark). The notice line is the confirmation instead.
         /// </summary>
+        /// <summary>
+        /// Add the build a construction item starts as its own pin — keyed apart from the
+        /// plain item pin, so both live on the list at once — and unfold it with the
+        /// construction group. Its Have never counts the carried starter (see Resolve);
+        /// the starter is the tree's first row instead, expandable to its own recipe.
+        /// </summary>
+        bool StartConstruction(Pin source, RecipeVariantGroup group)
+        {
+            var build = svc.Store.Add(source.Stack, 1, setCount: true, activate: true,
+                buildSite: true);
+            if (build == null) return true;
+
+            // A page that already names the material commits the build to it: pinning the
+            // OAK sailboat means an oak boat, and the rows should say and count oak
+            // (Mark). Only a value the build actually offers counts as a commitment.
+            if (build.BuildMaterial == null && group.BuildMaterialChoices != null)
+            {
+                string material = source.Stack?.Collectible?.Code?.Path?.Split('-').LastOrDefault();
+                if (material != null && group.BuildMaterialChoices
+                        .Contains(material, StringComparer.OrdinalIgnoreCase))
+                {
+                    build.BuildMaterial = material;
+                }
+            }
+
+            svc.Resolve(build);
+            var chosen = build.Groups.FirstOrDefault(g => g.Construction != null && g.Pattern == group.Pattern)
+                         ?? build.Groups.FirstOrDefault(g => g.Construction != null);
+            if (chosen != null) svc.ChoosePinRecipe(build, chosen);
+            return true;
+        }
+
         bool SendToItems(Pin quest)
         {
             if (quest.Stack == null) return true;
@@ -2494,8 +3292,10 @@ namespace Tallybook
 
         /// <summary>Every row is somebody's item — ingredient and tool rows share the pin
         /// rows' whole handbook flow (first-open dance, page-build wait, fallbacks), keyed
-        /// on the row's sample stack.</summary>
-        bool OpenHandbookForStack(ItemStack stack, string displayName)
+        /// on the row's sample stack. Public because the HUD's rows link here too: one
+        /// handbook-opening path, or the HUD's links would rot separately from the
+        /// dialog's buttons.</summary>
+        public bool OpenHandbookForStack(ItemStack stack, string displayName)
         {
             // Derive the page from the stack, NOT from pin.Key: a key carries the quest giver
             // ("…|for:Agnieszka") so an errand and your own goal can be separate rows, and the
@@ -2633,24 +3433,92 @@ namespace Tallybook
 
         // ------------------------------------------------------------------ confirm screens
 
-        /// <summary>
-        /// Quests you have finished. Dated ones first, oldest at the top; then everything
-        /// that was already done the first time Tallybook looked, which cannot be dated and
-        /// is ordered by how deep into the story it sits instead.
-        /// </summary>
         static string SectionOf(QuestRecord r)
             => r.Stage == "open" || r.Stage == "awaiting" ? "open"
                : r.Day.HasValue ? "dated"
                : "undated";
 
-        /// <summary>How tall this record draws, heading included when it opens a section.</summary>
-        double HistoryRecordHeight(QuestRecord r, CairoFont quiet, ref string section)
+        /// <summary>One line of the History tab: a group heading (Rec null) or a record.
+        /// Collapsible headings carry the persistence key and their default state.</summary>
+        class HistEntry
         {
-            double h = 0;
-            string wants = SectionOf(r);
-            if (wants != section) { section = wants; h += 24; }
-            h += RowH;
+            public string Heading;
+            public string GroupKey;
+            public bool DefaultExpanded;
+            public int Count;
+            public QuestRecord Rec;
+        }
 
+        bool HistoryGroupExpanded(string key, bool def)
+            => svc.Store.HistoryGroups.TryGetValue(key, out bool v) ? v : def;
+
+        /// <summary>Only deviations from the default are stored, so a group toggled back to
+        /// its default drops out of the save rather than pinning today's default forever.</summary>
+        void ToggleHistoryGroup(string key, bool def)
+        {
+            bool now = !HistoryGroupExpanded(key, def);
+            if (now == def) svc.Store.HistoryGroups.Remove(key);
+            else svc.Store.HistoryGroups[key] = now;
+            svc.Store.Save();
+            Recompose();
+        }
+
+        /// <summary>
+        /// The archive as a story so far (Mark's ordering): what is still going, then the
+        /// pre-install finishes ("earlier", collapsed by default — they cannot be dated and
+        /// there can be a lot of them), then the dated finishes under one heading per
+        /// in-game year, each expanded by default and collapsible, the fold remembered per
+        /// world. A collapsed group contributes its heading and nothing else.
+        /// </summary>
+        List<HistEntry> BuildHistoryEntries(List<QuestRecord> done)
+        {
+            var entries = new List<HistEntry>();
+
+            void Group(string heading, string key, bool defExpanded, List<QuestRecord> recs)
+            {
+                if (recs.Count == 0) return;
+                if (key == null)
+                {
+                    entries.Add(new HistEntry { Heading = heading });
+                    entries.AddRange(recs.Select(r => new HistEntry { Rec = r }));
+                    return;
+                }
+                entries.Add(new HistEntry
+                {
+                    Heading = heading, GroupKey = key,
+                    DefaultExpanded = defExpanded, Count = recs.Count,
+                });
+                if (HistoryGroupExpanded(key, defExpanded))
+                    entries.AddRange(recs.Select(r => new HistEntry { Rec = r }));
+            }
+
+            Group("— still going —", null, true,
+                done.Where(r => SectionOf(r) == "open").ToList());
+
+            // Newest first, years and records alike (Mark): the tab opens on what you
+            // finished most recently, and the deeper past reads further down.
+            double daysPerYear = Math.Max(1, capi.World?.Calendar?.DaysPerYear ?? 1);
+            foreach (var year in done.Where(r => SectionOf(r) == "dated")
+                .GroupBy(r => (int)(r.Day.Value / daysPerYear) + 1)
+                .OrderByDescending(g => g.Key))
+            {
+                Group($"Year {year.Key}", "year:" + year.Key, true,
+                    year.OrderByDescending(r => r.Day.Value).ToList());
+            }
+
+            // Last, not first-chronologically (Mark): the undated pile is background, and
+            // the tab's job is the story you actually played.
+            Group("Finished before Tallybook was watching", "earlier", false,
+                done.Where(r => SectionOf(r) == "undated").ToList());
+            return entries;
+        }
+
+        double HistoryEntryHeight(HistEntry e, CairoFont quiet)
+        {
+            if (e.Rec == null) return e.GroupKey == null ? 24 : 34;
+
+            double h = RowH;
+            var r = e.Rec;
             if (r.Text != null && expandedRecords.Contains(r.Chain + "|" + r.Stage))
             {
                 foreach (var said in r.Text) h += TbText.Wrap(quiet, said, DW - 48).Count * LineStep + 6;
@@ -2660,11 +3528,11 @@ namespace Tallybook
         }
 
         /// <summary>
-        /// The index each page starts at, for the current expansion state. Recomputed per
-        /// compose because opening one record re-flows every page after it — which is exactly
-        /// why a fixed records-per-page could not work here.
+        /// The index each page starts at, for the current fold and expansion state.
+        /// Recomputed per compose because opening one record — or one year — re-flows every
+        /// page after it, which is exactly why a fixed records-per-page could not work here.
         /// </summary>
-        List<int> HistoryPageStarts(List<QuestRecord> done, CairoFont quiet)
+        List<int> HistoryPageStarts(List<HistEntry> entries, CairoFont quiet)
         {
             // What is left for rows after the window's own furniture: title, tabs, column
             // heads above; pager, Journal and Close below; dialog padding around all of it.
@@ -2672,24 +3540,14 @@ namespace Tallybook
 
             var starts = new List<int> { 0 };
             double used = 0;
-            string section = null;
 
-            for (int i = 0; i < done.Count; i++)
+            for (int i = 0; i < entries.Count; i++)
             {
-                string sectionIfKept = section;
-                double h = HistoryRecordHeight(done[i], quiet, ref sectionIfKept);
+                double h = HistoryEntryHeight(entries[i], quiet);
 
-                // Never break before the first record of a page: one record taller than the
+                // Never break before the first entry of a page: one record taller than the
                 // whole budget would otherwise start an empty page and loop forever.
-                if (used > 0 && used + h > budget)
-                {
-                    starts.Add(i);
-                    used = 0;
-                    section = null;
-                    h = HistoryRecordHeight(done[i], quiet, ref section);   // its heading returns
-                }
-                else section = sectionIfKept;
-
+                if (used > 0 && used + h > budget) { starts.Add(i); used = 0; }
                 used += h;
             }
             return starts;
@@ -2716,31 +3574,40 @@ namespace Tallybook
             // bottom of the screen with no way to reach them (found by Mark). Walking the
             // list against a height budget is the only honest page boundary when rows are not
             // a fixed size.
-            var starts = HistoryPageStarts(done, quiet);
+            var entries = BuildHistoryEntries(done);
+            var starts = HistoryPageStarts(entries, quiet);
             this.page = Math.Min(Math.Max(this.page, 0), starts.Count - 1);
 
             int from = starts[this.page];
-            int upto = this.page + 1 < starts.Count ? starts[this.page + 1] : done.Count;
+            int upto = this.page + 1 < starts.Count ? starts[this.page + 1] : entries.Count;
 
-            string section = null;
-            var page = done.GetRange(from, upto - from);
-
-            foreach (var record in page)
+            foreach (var entry in entries.GetRange(from, upto - from))
             {
-                bool openQuest = record.Stage == "open" || record.Stage == "awaiting";
-                string wants = SectionOf(record);
-
-                if (wants != section)
+                if (entry.Rec == null)
                 {
-                    section = wants;
-                    string heading =
-                        wants == "open" ? "— still going —"
-                        : wants == "dated" ? "— finished —"
-                        : "— finished before Tallybook was watching —";
-
-                    c.AddStaticText(heading, quiet, EB(8, y + 4, DW, 22));
-                    y += 24;
+                    if (entry.GroupKey == null)
+                    {
+                        c.AddStaticText(entry.Heading, quiet, EB(8, y + 4, DW, 22));
+                        y += 24;
+                    }
+                    else
+                    {
+                        // The heading is the fold control: click anywhere on it. +/− over a
+                        // caret pair because the fonts carry no ▼ (verified glyph set).
+                        bool expanded = HistoryGroupExpanded(entry.GroupKey, entry.DefaultExpanded);
+                        string label = expanded
+                            ? $"- {entry.Heading}"
+                            : $"+ {entry.Heading} ({entry.Count})";
+                        c.AddSmallButton(label,
+                            () => { ToggleHistoryGroup(entry.GroupKey, entry.DefaultExpanded); return true; },
+                            EB(8, y + 2, 430, 26), EnumButtonStyle.Small);
+                        y += 34;
+                    }
+                    continue;
                 }
+
+                var record = entry.Rec;
+                bool openQuest = record.Stage == "open" || record.Stage == "awaiting";
 
                 // Same title face as the pin rows on the other tabs (base size + 2): a record
                 // here IS that quest's row, and drawing it a step smaller made the whole tab
@@ -2870,7 +3737,11 @@ namespace Tallybook
             var quiet = font.Clone().WithColor(GuiStyle.ColorParchment);
             double y = 40;
 
-            var choices = choosingNode?.Choices ?? choosingFor?.Groups ?? new List<RecipeVariantGroup>();
+            // Pin-level choices keep the construction/craft split (see ExpandableGroups):
+            // a build belongs to a build pin, never to the item's own Expand chooser.
+            var choices = choosingNode?.Choices
+                ?? choosingFor?.Groups.Where(g => (g.Construction != null) == choosingFor.BuildSite).ToList()
+                ?? new List<RecipeVariantGroup>();
             var current = choosingNode != null ? choosingNode.Choice : choosingFor?.Group;
 
             // A group only learns what it is made of when its requirements are built, and the
@@ -3291,6 +4162,13 @@ namespace Tallybook
                 + "in colour — plus every mod the server runs, with versions. Handy on a "
                 + "server whose settings you didn't write yourself.",
                 v => config.ShowWorldTab = v);
+
+            Option("opt-exploretab", config.ShowExploreTab,
+                "Show the Explore tab",
+                "Places you save to revisit — a mine, a ruin, a cave — each with a note "
+                + "about what it is, longer notes if you want them, a map marker, and an "
+                + "optional line on the HUD with the distance back.",
+                v => config.ShowExploreTab = v);
 
             Option("opt-loretab", config.ShowLoreTab,
                 "Show the Lore tab",

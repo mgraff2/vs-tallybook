@@ -22,7 +22,29 @@ namespace Tallybook
     /// </summary>
     public class Requirement
     {
-        public string DisplayName;
+        /// <summary>What the row is called. A uniform-material row answers with the wood
+        /// the count actually settled on — "Board (Oak)" beats "Board (one wood, 14
+        /// variants)" the moment the build knows its wood (Mark). The stored name stays
+        /// the honest fallback while nothing is carried and no wood is chosen yet.</summary>
+        public string DisplayName
+        {
+            get
+            {
+                if (!UniformVariants || CountedMaterial == null || displayName == null)
+                    return displayName;
+                int cut = displayName.IndexOf(" (one ", StringComparison.Ordinal);
+                string baseName = cut < 0 ? displayName : displayName.Substring(0, cut);
+                string wood = Lang.GetIfExists("material-" + CountedMaterial)
+                    ?? char.ToUpperInvariant(CountedMaterial[0]) + CountedMaterial.Substring(1);
+                return $"{baseName} ({wood})";
+            }
+            set => displayName = value;
+        }
+        string displayName;
+
+        /// <summary>The material the last count settled on for this uniform row ("oak"),
+        /// written by the counting pass — null until something is carried.</summary>
+        public string CountedMaterial;
         public int Quantity;
         public bool IsTool;
 
@@ -53,6 +75,23 @@ namespace Tallybook
         /// reports the 8-plank one as had.
         /// </summary>
         public string SelfPageCode;
+
+        /// <summary>The variants this row accepts must all be ONE material (a construction
+        /// site binds its wood at the first delivery): the count is the best single
+        /// material carried, never a mixed sum — twelve oak and twelve birch planks are
+        /// twelve toward the boat, not twenty-four.</summary>
+        public bool UniformVariants;
+
+        /// <summary>Where the material sits in this row's code ("plank-" + wood, or
+        /// "debarkedlog-" + wood + "-ud") — what lets counts group by WOOD rather than by
+        /// full code, and lets sibling rows agree on the same wood.</summary>
+        public string UniformPrefix, UniformSuffix;
+
+        /// <summary>Every wood-bound row of the same build, this one included. The build
+        /// is ONE wood throughout, so the counted wood is chosen JOINTLY — the single
+        /// wood that carries the whole build furthest — never per row (Mark: oak boards
+        /// and birch beams must not both read as progress).</summary>
+        public List<Requirement> UniformSet;
 
         // ---- liquid requirements (recipes whose ingredient is really "a container OF X") --
 
@@ -195,7 +234,10 @@ namespace Tallybook
                 var others = string.Join(",", OtherMatchers
                     .Select(m => $"{m.Type}:{m.MatchingType}:{m.Code}")
                     .OrderBy(s => s, StringComparer.Ordinal));
-                key = $"{(IsTool ? "T" : "I")}|{codes}|{others}";
+                // Uniform rows must never pool with ordinary ones: a build's "Board (one
+                // wood)" and a bookshelf's "Board (any wood)" match the same items but
+                // count them by different rules.
+                key = $"{(IsTool ? "T" : "I")}{(UniformVariants ? "U" : "")}|{codes}|{others}";
                 // "Bucket of water" and "empty bucket" share container matchers but are
                 // different demands — they must never merge into one HUD row.
                 if (IsLiquid)
@@ -337,6 +379,8 @@ namespace Tallybook
                 return held;
             }
 
+            if (req.UniformVariants) return CountUniform(req);
+
             int total = 0;
             foreach (var entry in byPage)
             {
@@ -361,6 +405,100 @@ namespace Tallybook
                 }
             }
             return total;
+        }
+
+        // ---- uniform-material counting (construction builds) --------------------------
+
+        /// <summary>One choice per build per snapshot: the counted wood is decided once
+        /// for the whole sibling set and cached, so every row of the build answers with
+        /// the same wood inside one recount.</summary>
+        readonly Dictionary<object, string> jointMaterial = new Dictionary<object, string>();
+
+        /// <summary>
+        /// The site takes ONE material throughout, so a mixed pile must not read as
+        /// progress it cannot be. With siblings, the material is chosen JOINTLY — the
+        /// single wood covering most of the whole build (each row's contribution capped
+        /// at what it needs) — so oak boards and birch beams never both count (Mark);
+        /// alone, the row's own best material stands.
+        /// </summary>
+        int CountUniform(Requirement req)
+        {
+            var mine = PerMaterialCounts(req);
+
+            string material;
+            if (req.UniformSet != null && req.UniformSet.Count > 1)
+            {
+                if (!jointMaterial.TryGetValue(req.UniformSet, out material))
+                {
+                    var progress = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var sibling in req.UniformSet)
+                    {
+                        foreach (var kv in PerMaterialCounts(sibling))
+                        {
+                            progress.TryGetValue(kv.Key, out int cur);
+                            progress[kv.Key] = cur + Math.Min(kv.Value, Math.Max(1, sibling.Quantity));
+                        }
+                    }
+                    material = progress.Count == 0 ? null
+                        : progress.OrderByDescending(kv => kv.Value)
+                            .ThenBy(kv => kv.Key, StringComparer.Ordinal).First().Key;
+                    jointMaterial[req.UniformSet] = material;
+                }
+            }
+            else
+            {
+                material = mine.Count == 0 ? null
+                    : mine.OrderByDescending(kv => kv.Value)
+                        .ThenBy(kv => kv.Key, StringComparer.Ordinal).First().Key;
+            }
+
+            // The display follows the decision: the row names the wood it is counting.
+            req.CountedMaterial = material;
+            return material != null && mine.TryGetValue(material, out int n) ? n : 0;
+        }
+
+        Dictionary<string, int> PerMaterialCounts(Requirement req)
+        {
+            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in byPage)
+            {
+                bool matched = req.ExactCodes.Contains(entry.Value.Code);
+                if (!matched)
+                {
+                    foreach (var m in req.OtherMatchers)
+                    {
+                        if (m.SatisfiesAsIngredient(entry.Value.Sample, false)) { matched = true; break; }
+                    }
+                }
+                if (!matched) continue;
+
+                string material = MaterialOf(req, entry.Value.Code);
+                if (material == null) continue;
+                counts.TryGetValue(material, out int cur);
+                counts[material] = cur + entry.Value.Total;
+            }
+            return counts;
+        }
+
+        /// <summary>The material token inside a matched code, by the row's own pattern:
+        /// "debarkedlog-" + X + "-ud" against debarkedlog-aged-ud gives "aged"; a capture
+        /// spanning further segments keeps its first ("oak-ud" → "oak" — orientations of
+        /// one wood are still one wood). No pattern: the whole code is its own bucket.</summary>
+        static string MaterialOf(Requirement req, string shortCode)
+        {
+            string path = shortCode;
+            int colon = path.IndexOf(':');
+            if (colon >= 0) path = path.Substring(colon + 1);
+
+            if (req.UniformPrefix == null) return path;
+            if (!path.StartsWith(req.UniformPrefix) || !path.EndsWith(req.UniformSuffix ?? "")
+                || path.Length <= req.UniformPrefix.Length + (req.UniformSuffix?.Length ?? 0))
+                return null;
+
+            string captured = path.Substring(req.UniformPrefix.Length,
+                path.Length - req.UniformPrefix.Length - (req.UniformSuffix?.Length ?? 0));
+            int dash = captured.IndexOf('-');
+            return dash < 0 ? captured : captured.Substring(0, dash);
         }
 
         static bool ContainerMatches(Requirement req, ItemStack containerStack)
@@ -476,10 +614,28 @@ namespace Tallybook
         /// plate). Input count comes from the recipe's voxels, by the game's own math.</summary>
         public SmithingRecipe Smithing;
 
+        /// <summary>Non-null for a construction-site build (vanilla sailboat, Shipwright's
+        /// boats): everything the site's stages will ask for, summed across stages. Each
+        /// entry keeps the game's own ConstructionIngredient (a CraftingRecipeIngredient)
+        /// plus the raw authored code — the raw form is what lets a chosen material be
+        /// substituted back in ("plank-{wood}" → "plank-oak").</summary>
+        public List<ConstructionMat> Construction;
+
+        /// <summary>The build's bound material ("oak"), when the player committed to one —
+        /// bound rows then name and count that material only. Null: any one material,
+        /// counted as the best single variant carried.</summary>
+        public string BuildMaterial;
+
+        /// <summary>What the material variable is called in the stage data ("wood") and
+        /// which values this world offers for it — the selector's label and entries.</summary>
+        public string BuildMaterialName;
+        public List<string> BuildMaterialChoices;
+
         /// <summary>The method family this group belongs to — the section header when a
         /// chooser mixes kinds ("Alloyed in a crucible" vs "Smelted…" vs "Crafting grid").</summary>
         public string KindLabel()
         {
+            if (Construction != null) return "Built at a construction site";
             if (Alloy != null) return "Alloyed in a crucible";
             if (Smithing != null) return "Smithed on an anvil";
             if (Cooking != null) return "Cooked in a pot";
@@ -511,6 +667,16 @@ namespace Tallybook
         /// <summary>The ingredient list alone — Materials without the method/tools tail —
         /// for compact chooser rows where the tail is shared by the whole category.</summary>
         public string MaterialsBrief;
+    }
+
+    /// <summary>One summed construction demand: the working ingredient and the code as
+    /// the stage file wrote it — "plank-{wood}" survives here so a bound material can
+    /// be substituted where the placeholder sat.</summary>
+    public class ConstructionMat
+    {
+        public ConstructionIngredient Ing;
+        public string RawPath;
+        public string RawDomain;
     }
 
     /// <summary>
@@ -556,6 +722,7 @@ namespace Tallybook
             smeltByOutput = null;
             alloyByOutput = null;
             smithByOutput = null;
+            constructions = null;
             maxCookingServings = 0;
             maxBarrelLitres = 0;
             liquidContainerOptions = null;
@@ -1458,7 +1625,313 @@ namespace Tallybook
             if (page == null) return all;
 
             var exact = all.Where(g => g.OutputPageCode == page).ToList();
-            return exact.Count > 0 ? exact : all;
+            var result = exact.Count > 0 ? exact : all;
+            // Construction builds ride along regardless of the page filter: they are keyed
+            // to the STACK (its attributes name the build), not to a recipe output page.
+            result.AddRange(ConstructionGroupsFor(stack));
+            return result;
+        }
+
+        // ---- construction sites (vanilla sailboat, Shipwright's boats) -------------------
+        //
+        // A construction is an ENTITY whose type attributes carry `stages`, each stage
+        // holding `requireStacks` of the game's own ConstructionIngredient — the mechanism
+        // EntityBoatConstruction reads (decompile-verified 1.22.6), and the convention mods
+        // like Shipwright copy verbatim, class and all. Entity types are synced to clients
+        // with their attributes, so the whole build is derivable with no mod named.
+
+        class ConstructionDef
+        {
+            public string EntityCode;
+            public string BoatType;
+            public string ClassName;
+            public List<ConstructionMat> Totals;
+        }
+
+        List<ConstructionDef> constructions;
+
+        /// <summary>The material values a placeholder row can take in this world: match the
+        /// row's wildcard form against every collectible of its type and keep the single
+        /// clean segment where the placeholder sat ("plank-{wood}" against plank-oak gives
+        /// "oak"; multi-segment captures are variant noise and are dropped).</summary>
+        List<string> MaterialChoices(ConstructionMat mat)
+        {
+            var choices = new List<string>();
+            try
+            {
+                string wildcardPath = StripPlaceholders(mat.RawPath, out _);
+                int star = wildcardPath.IndexOf('*');
+                if (star < 0) return choices;
+                string prefix = wildcardPath.Substring(0, star);
+                string suffix = wildcardPath.Substring(star + 1);
+
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var coll in mat.Ing.Type == EnumItemClass.Block
+                         ? capi.World.Blocks.Cast<CollectibleObject>()
+                         : capi.World.Items.Cast<CollectibleObject>())
+                {
+                    string p = coll?.Code?.Path;
+                    if (p == null || !p.StartsWith(prefix) || !p.EndsWith(suffix)
+                        || p.Length <= prefix.Length + suffix.Length) continue;
+                    string captured = p.Substring(prefix.Length, p.Length - prefix.Length - suffix.Length);
+                    if (captured.Length == 0 || captured.Contains('-')) continue;
+                    if (seen.Add(captured)) choices.Add(captured);
+                }
+                choices.Sort(StringComparer.OrdinalIgnoreCase);
+            }
+            catch { }
+            return choices;
+        }
+
+        /// <summary>"plank-{wood}" → "plank-*", remembering the first placeholder variable —
+        /// it is the storeWildCard binding ("build the whole boat of one wood"), and doubles
+        /// as the collapsed row's name exactly the way a named wildcard's Name does.</summary>
+        /// <summary>"plank-{wood}" with "oak" → "plank-oak".</summary>
+        static string ReplacePlaceholders(string path, string value)
+        {
+            int i;
+            while ((i = path.IndexOf('{')) >= 0)
+            {
+                int j = path.IndexOf('}', i);
+                if (j < 0) break;
+                path = path.Substring(0, i) + value + path.Substring(j + 1);
+            }
+            return path;
+        }
+
+        static string StripPlaceholders(string path, out string firstName)
+        {
+            firstName = null;
+            int i;
+            while ((i = path.IndexOf('{')) >= 0)
+            {
+                int j = path.IndexOf('}', i);
+                if (j < 0) break;
+                firstName ??= path.Substring(i + 1, j - i - 1);
+                path = path.Substring(0, i) + "*" + path.Substring(j + 1);
+            }
+            return path;
+        }
+
+        void EnsureConstructionIndex()
+        {
+            if (constructions != null) return;
+            constructions = new List<ConstructionDef>();
+            var bySig = new Dictionary<string, ConstructionDef>();
+
+            foreach (var et in capi.World?.EntityTypes ?? new List<EntityProperties>())
+            {
+                try
+                {
+                    var stagesAttr = et?.Attributes?["stages"];
+                    if (stagesAttr == null || !stagesAttr.Exists) continue;
+                    // Default domain "game", VERBATIM the game's own read
+                    // (EntityBoatConstruction.Initialize, decompiled) — using the entity's
+                    // domain instead made Shipwright's unprefixed "firewood" resolve as
+                    // shipwright:firewood, which exists nowhere: rows showed raw codes,
+                    // counted nothing and linked to no handbook page (found by Mark).
+                    // Codes that spell their domain out still keep it.
+                    var stages = stagesAttr.AsArray<ConstructionStage>(null, "game");
+                    if (stages == null || stages.Length == 0) continue;
+
+                    // Sum the stage demands per ingredient — "what does the whole build
+                    // ask for", which is the question a shopping list answers.
+                    var totals = new Dictionary<string, (ConstructionIngredient Ing, int Qty)>();
+                    foreach (var stage in stages)
+                    {
+                        foreach (var ing in stage?.RequireStacks ?? Array.Empty<ConstructionIngredient>())
+                        {
+                            if (ing?.Code == null || ing.Quantity <= 0) continue;
+                            string key = $"{ing.Type}|{ing.Code}|{ing.Name}";
+                            totals[key] = totals.TryGetValue(key, out var t)
+                                ? (t.Ing, t.Qty + ing.Quantity)
+                                : (ing, ing.Quantity);
+                        }
+                    }
+                    if (totals.Count == 0) continue;
+
+                    var list = new List<ConstructionMat>();
+                    foreach (var (ing, qty) in totals.Values)
+                    {
+                        string path = StripPlaceholders(ing.Code.Path, out string placeholder);
+                        var built = new ConstructionIngredient
+                        {
+                            Type = ing.Type,
+                            Code = new AssetLocation(ing.Code.Domain, path),
+                            Quantity = qty,
+                            // The author's label when one is written (a lang key like
+                            // "shipbuilding-ingredient-logs"), else the placeholder
+                            // variable ("wood") — what a named wildcard would carry.
+                            Name = ing.Name ?? placeholder,
+                            // Carries the uniform-material rule to the requirement builder:
+                            // a stage row that binds or consumes the bound wildcard wants
+                            // ONE material throughout, so its count is the best single
+                            // variant carried, never a mixed-wood sum (Mark).
+                            StoreWildCard = placeholder ?? ing.StoreWildCard,
+                        };
+                        if (path.Contains('*')) built.MatchingType = EnumRecipeMatchType.Wildcard;
+                        try { built.Resolve(capi.World, "tallybook construction"); } catch { }
+                        list.Add(new ConstructionMat
+                        {
+                            Ing = built,
+                            RawPath = ing.Code.Path,
+                            RawDomain = ing.Code.Domain,
+                        });
+                    }
+
+                    string boattype = et.Attributes["boattype"]?.AsString();
+                    // One def per distinct build: thirty wood variants of one construction
+                    // entity all describe the same boat. The representative is the
+                    // lexicographically FIRST code, not the first encountered — its code is
+                    // part of the group's persisted signature, so it must not depend on
+                    // registry iteration order between sessions.
+                    string sig = (et.Class ?? "") + "|" + (boattype ?? "") + "|"
+                        + string.Join(",", list.Select(x => $"{x.Ing.Code}:{x.Ing.Quantity}")
+                            .OrderBy(s => s, StringComparer.Ordinal));
+                    string entityCode = et.Code.ToShortString();
+
+                    if (bySig.TryGetValue(sig, out var existing))
+                    {
+                        if (string.CompareOrdinal(entityCode, existing.EntityCode) < 0)
+                            existing.EntityCode = entityCode;
+                        continue;
+                    }
+
+                    var def = new ConstructionDef
+                    {
+                        EntityCode = entityCode,
+                        BoatType = boattype,
+                        ClassName = et.Class,
+                        Totals = list,
+                    };
+                    bySig[sig] = def;
+                    constructions.Add(def);
+                }
+                catch { /* one malformed entity must not cost the scan */ }
+            }
+        }
+
+        /// <summary>
+        /// The construction builds this stack can start, as recipe groups. Linking is the
+        /// data's own statement, never a name guess: a collectible and a construction that
+        /// declare the same `boattype` attribute value are one build (Shipwright's rollers
+        /// do this per boat), and vanilla's roller item is paired with
+        /// EntityBoatConstruction because ItemRoller spawns exactly that class
+        /// (decompile-verified — the pairing is code, so the class IS the data). A mod
+        /// reusing either convention links with zero compat work; anything else gets no
+        /// button rather than a guessed one.
+        /// </summary>
+        public List<RecipeVariantGroup> ConstructionGroupsFor(ItemStack stack)
+        {
+            var groups = new List<RecipeVariantGroup>();
+            try
+            {
+                if (stack?.Collectible == null) return groups;
+                EnsureConstructionIndex();
+                if (constructions.Count == 0) return groups;
+
+                List<ConstructionDef> linked;
+                string boattype = stack.Collectible.Attributes?["boattype"]?.AsString();
+                if (!string.IsNullOrEmpty(boattype))
+                {
+                    linked = constructions.Where(c => c.BoatType == boattype).ToList();
+                }
+                else if (stack.Collectible is ItemRoller)
+                {
+                    linked = constructions.Where(c => c.ClassName == "EntityBoatConstruction").ToList();
+                }
+                else if (stack.Collectible is ItemBoat)
+                {
+                    // The boat's own handbook page is where a player looks first (Mark
+                    // checked "Sailboat", not "Roller"). ItemBoat and EntityBoatConstruction
+                    // are the same decompile-verified vanilla pairing as the roller; the
+                    // type variant ("sailed") must appear in the construction's code so a
+                    // raft — which is a grid recipe, not a build — links to nothing.
+                    string typeVariant = stack.Collectible.Code.Path.Split('-').Skip(1).FirstOrDefault();
+                    linked = typeVariant == null
+                        ? new List<ConstructionDef>()
+                        : constructions.Where(c => c.ClassName == "EntityBoatConstruction"
+                            && c.EntityCode.Split('-').Contains(typeVariant)).ToList();
+                }
+                else
+                {
+                    return groups;
+                }
+
+                string shortCode = stack.Collectible.Code?.ToShortString();
+
+                // The starter leads the list: the build needs its rollers as much as its
+                // planks, and as an ordinary requirement row it can be expanded to ITS
+                // recipe — so the roller craft and the site materials track together in
+                // one tree (Mark). Vanilla's five-per-site is ItemRoller's own constant
+                // ("Need 5 rolles…", and deconstructing returns GetItem("roller") ×5 —
+                // both decompiled); a boat-page pin gets those same five rollers, and an
+                // attribute-linked kit places itself, so one of itself.
+                CollectibleObject starterColl = stack.Collectible;
+                int starterQty = 1;
+                if (stack.Collectible is ItemRoller) starterQty = 5;
+                else if (stack.Collectible is ItemBoat)
+                {
+                    starterColl = capi.World.GetItem(new AssetLocation("roller"));
+                    starterQty = 5;
+                }
+
+                ConstructionMat starter = null;
+                if (starterColl?.Code != null)
+                {
+                    var starterIng = new ConstructionIngredient
+                    {
+                        Type = starterColl.ItemClass,
+                        Code = starterColl.Code.Clone(),
+                        Quantity = starterQty,
+                    };
+                    try { starterIng.Resolve(capi.World, "tallybook construction"); } catch { }
+                    starter = new ConstructionMat
+                    {
+                        Ing = starterIng,
+                        RawPath = starterColl.Code.Path,
+                        RawDomain = starterColl.Code.Domain,
+                    };
+                }
+
+                foreach (var def in linked)
+                {
+                    var totals = new List<ConstructionMat>();
+                    if (starter != null) totals.Add(starter);
+                    totals.AddRange(def.Totals);
+
+                    var group = new RecipeVariantGroup
+                    {
+                        OutputCode = shortCode,
+                        OutputPageCode = PageCode(stack) ?? shortCode,
+                        OutputName = stack.GetName(),
+                        OutputQuantity = 1,
+                        OutputStack = stack,
+                        Pattern = "construct:" + def.EntityCode,
+                        Width = 0,
+                        Height = 0,
+                        LayoutCount = 1,
+                        MethodLabel = "brought to the construction site, stage by stage",
+                        Construction = totals,
+                    };
+
+                    // The material variable and its choices, from the first placeholder
+                    // row ("plank-{wood}" → the world's woods): what the selector offers
+                    // when the player commits the build to one material.
+                    var placeholderMat = totals.FirstOrDefault(m => m.RawPath.Contains('{'));
+                    if (placeholderMat != null)
+                    {
+                        group.BuildMaterialName = placeholderMat.Ing.StoreWildCard;
+                        group.BuildMaterialChoices = MaterialChoices(placeholderMat);
+                    }
+                    groups.Add(group);
+                }
+            }
+            catch (Exception e)
+            {
+                capi.Logger.Warning("[tallybook] construction lookup failed: {0}", e.Message);
+            }
+            return groups;
         }
 
         /// <summary>
@@ -1958,6 +2431,7 @@ namespace Tallybook
         /// </summary>
         public List<Requirement> BuildRequirements(RecipeVariantGroup group, bool tools = false)
         {
+            if (group?.Construction != null) return BuildConstructionRequirements(group, tools);
             if (group?.Cooking != null) return BuildCookingRequirements(group, tools);
             if (group?.Barrel != null) return BuildBarrelRequirements(group, tools);
             if (group?.Alloy != null) return BuildAlloyRequirements(group, tools);
@@ -2066,6 +2540,107 @@ namespace Tallybook
                 if (kept.Count > 0) summary += $" — needs {string.Join(", ", kept)}";
 
                 group.Materials = summary;
+            }
+            return reqs;
+        }
+
+        /// <summary>
+        /// Requirement rows for a construction build: the summed stage demands, matched by
+        /// the game's own ingredient machinery (ConstructionIngredient IS a
+        /// CraftingRecipeIngredient). No tool rows: everything a stage takes — the
+        /// plumb-and-squares included — is in requireStacks and consumed, so it all counts
+        /// as materials. An authored label ("shipbuilding-ingredient-logs") resolves
+        /// through Lang; a placeholder-bound wildcard reads like any named wildcard
+        /// ("Board (any wood)") — one wood in play, since the site binds the first match.
+        /// </summary>
+        List<Requirement> BuildConstructionRequirements(RecipeVariantGroup group, bool tools)
+        {
+            var reqs = new List<Requirement>();
+            if (tools) return reqs;
+
+            foreach (var mat in group.Construction)
+            {
+                var ing = mat.Ing;
+                bool bound = false;
+
+                // A committed material ("oak") substitutes back into the authored code:
+                // "plank-{wood}" becomes the exact plank-oak, and the binding wildcard
+                // ("log-placed-*") narrows to log-placed-oak* — the rows then NAME and
+                // COUNT that material only, which is what picking an oak boat means
+                // (Mark). Falls back to the unbound row if the substitution resolves to
+                // nothing in this world.
+                if (group.BuildMaterial != null && ing.StoreWildCard != null)
+                {
+                    string boundPath = mat.RawPath.Contains('{')
+                        ? ReplacePlaceholders(mat.RawPath, group.BuildMaterial)
+                        : StripPlaceholders(mat.RawPath, out _)
+                            .Replace("*", group.BuildMaterial + "*");
+                    var boundIng = new ConstructionIngredient
+                    {
+                        Type = ing.Type,
+                        Code = new AssetLocation(mat.RawDomain, boundPath),
+                        Quantity = ing.Quantity,
+                        Name = ing.Name,
+                    };
+                    if (boundPath.Contains('*')) boundIng.MatchingType = EnumRecipeMatchType.Wildcard;
+                    bool resolved = false;
+                    try { resolved = boundIng.Resolve(capi.World, "tallybook construction"); } catch { }
+                    if (resolved || boundPath.Contains('*'))
+                    {
+                        ing = boundIng;
+                        bound = true;
+                    }
+                }
+
+                var req = new Requirement
+                {
+                    Quantity = ing.Quantity,
+                    CellQuantity = ing.Quantity,
+                    // Before any matcher work: the flag is part of the requirement's
+                    // pooling key, and the key caches on first read.
+                    UniformVariants = !bound && mat.Ing.StoreWildCard != null,
+                };
+                if (req.UniformVariants)
+                {
+                    // Where the wood sits in this row's codes, for material-wise counting.
+                    string wildcardPath = StripPlaceholders(mat.RawPath, out _);
+                    int star = wildcardPath.IndexOf('*');
+                    if (star >= 0)
+                    {
+                        req.UniformPrefix = wildcardPath.Substring(0, star);
+                        req.UniformSuffix = wildcardPath.Substring(star + 1);
+                    }
+                }
+                AddMatcher(req, ing);
+                ResolveVariants(req);
+                string langName = ing.Name == null ? null : Lang.GetIfExists(ing.Name);
+                // Bound rows prefer the concrete item's own name ("Oak board") over the
+                // authored group label.
+                req.DisplayName = bound
+                    ? BuildDisplayName(req)
+                    : langName ?? BuildDisplayName(req);
+                // "any wood" would be a lie on an unbound uniform row — the site takes
+                // one wood, your choice, throughout.
+                if (req.UniformVariants && req.DisplayName != null)
+                    req.DisplayName = req.DisplayName.Replace("(any ", "(one ");
+                reqs.Add(req);
+            }
+
+            // The wood-bound rows are ONE decision: they count the same wood, chosen as
+            // whichever single wood carries the whole build furthest. Wired as a shared
+            // sibling set so the counting can make that choice jointly.
+            var uniformSet = reqs.Where(r => r.UniformVariants).ToList();
+            if (uniformSet.Count > 1)
+            {
+                foreach (var r in uniformSet) r.UniformSet = uniformSet;
+            }
+
+            if (group.Materials == null)
+            {
+                group.MaterialsBrief = string.Join(", ",
+                    reqs.Select(r => $"{r.Quantity} × {StripVariants(r.DisplayName)}"));
+                group.Materials = group.MaterialsBrief
+                    + (group.MethodLabel != null ? $" — {group.MethodLabel}" : "");
             }
             return reqs;
         }

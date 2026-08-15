@@ -161,6 +161,46 @@ namespace Tallybook
             return lines;
         }
 
+        /// <summary>
+        /// Who is shimmering right now — the same ready set the tick emits over, filtered to
+        /// loaded NPCs in range. For the screenshot walker: an empty list means there is
+        /// nothing to photograph, and the shot is skipped rather than filed as a picture of
+        /// an ordinary villager. Deliberately reports only what is *already* true; nothing
+        /// here makes an NPC ready.
+        /// </summary>
+        public List<string> GlowingNow()
+        {
+            var glowing = new List<string>();
+            try
+            {
+                if (disabled || !config.QuestReadyGlow) return glowing;
+
+                var ready = new HashSet<string>(svc.ReadyQuestGivers(), StringComparer.OrdinalIgnoreCase);
+                foreach (var waiting in history?.AwaitingRewards()
+                         ?? new List<(string, string, string)>())
+                {
+                    if (waiting.Item3 != null) ready.Add(waiting.Item3);
+                }
+                if (ready.Count == 0) return glowing;
+
+                var eye = capi.World?.Player?.Entity?.Pos?.XYZ;
+                var entities = capi.World?.LoadedEntities;
+                if (eye == null || entities == null) return glowing;
+
+                foreach (var npc in entities.Values)
+                {
+                    if (npc == null || !npc.Alive) continue;
+                    var pos = npc.Pos?.XYZ;
+                    if (pos == null || pos.SquareDistanceTo(eye) > Range * Range) continue;
+                    if (!IsNamed(npc, ready)) continue;
+
+                    try { glowing.Add(npc.GetName()); } catch { }
+                }
+            }
+            catch { /* a cosmetic query never throws at its caller */ }
+            return glowing;
+        }
+
         /// <summary>A visible answer to "does the particle render at all": one burst over
         /// your own head, independent of every quest condition above.</summary>
         public void TestBurst()

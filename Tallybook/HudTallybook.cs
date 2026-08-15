@@ -55,14 +55,23 @@ namespace Tallybook
 
             try
             {
-                api.Render.RenderItemstackToGui(
-                    slot,
-                    Bounds.renderX + Bounds.InnerWidth / 2,
-                    Bounds.renderY + Bounds.InnerHeight / 2,
-                    100,
-                    (float)Bounds.InnerHeight * 0.75f,
-                    ColorUtil.WhiteArgb,
-                    true, false, false);
+                // Clipped to the cell: most items render inside it anyway, but an
+                // entity-shaped item (the vanilla sailboat is a nine-block model) ignores
+                // the size hint and painted over half the HUD (found by Mark). A cropped
+                // boat beats a boat across the numbers.
+                api.Render.PushScissor(Bounds, true);
+                try
+                {
+                    api.Render.RenderItemstackToGui(
+                        slot,
+                        Bounds.renderX + Bounds.InnerWidth / 2,
+                        Bounds.renderY + Bounds.InnerHeight / 2,
+                        100,
+                        (float)Bounds.InnerHeight * 0.75f,
+                        ColorUtil.WhiteArgb,
+                        true, false, false);
+                }
+                finally { api.Render.PopScissor(); }
             }
             catch (Exception e)
             {
@@ -72,6 +81,34 @@ namespace Tallybook
                 renderFailed = true;
                 (api as ICoreClientAPI)?.Logger.Warning(
                     "[tallybook] icon render failed, hiding it: {0}", e.Message);
+            }
+        }
+    }
+
+    /// <summary>
+    /// An invisible click target over one HUD row. The HUD is normally under a grabbed
+    /// mouse, but the game frees the cursor while Alt is held — and then a row that names
+    /// an item can act like the dialog's Handbook button. Only mouse-down is handled;
+    /// everything else falls through, so the HUD stays a non-window.
+    /// </summary>
+    class GuiElementHudClick : GuiElement
+    {
+        readonly Action onClick;
+
+        public GuiElementHudClick(ICoreClientAPI capi, ElementBounds bounds, Action onClick)
+            : base(capi, bounds)
+        {
+            this.onClick = onClick;
+        }
+
+        public override void OnMouseDownOnElement(ICoreClientAPI api, MouseEvent args)
+        {
+            base.OnMouseDownOnElement(api, args);
+            args.Handled = true;
+            try { onClick?.Invoke(); }
+            catch (Exception e)
+            {
+                (api as ICoreClientAPI)?.Logger.Warning("[tallybook] HUD link failed: {0}", e.Message);
             }
         }
     }
@@ -227,6 +264,21 @@ namespace Tallybook
         public override bool PrefersUngrabbedMouse => false;
         public override double DrawOrder => 0.05;
 
+        /// <summary>This overlay's on-screen rectangle in real pixels, for cropping a
+        /// showcase shot down to it. Null when there is nothing composed to measure.</summary>
+        public ShowcaseShots.Rect ShowcaseBounds()
+        {
+            var b = SingleComposer?.Bounds;
+            if (b == null || !IsOpened() || b.OuterWidth < 1 || b.OuterHeight < 1) return null;
+            return new ShowcaseShots.Rect
+            {
+                X = (int)b.absX,
+                Y = (int)b.absY,
+                W = (int)b.OuterWidth,
+                H = (int)b.OuterHeight,
+            };
+        }
+
         public override void Dispose()
         {
             svc.OnCountsChanged -= Refresh;
@@ -269,7 +321,8 @@ namespace Tallybook
             // own — a player who asked to see the distance should see it with an empty list.
             bool shouldShow = UserVisible
                 && (svc.Store.Pins.Any(p => p.Active) || (Sites?.HudSites().Count ?? 0) > 0
-                    || config.HudSpawnDistance)
+                    || config.HudSpawnDistance
+                    || svc.Store.Places.Any(p => p.ShowOnHud))
                 && capi.World?.Player != null;
             if (!shouldShow)
             {
@@ -357,6 +410,16 @@ namespace Tallybook
                     composer.AddStaticText(line.Trailing, font,
                         ElementBounds.Fixed(W - CountW - 4, ly, CountW, LineH));
                 }
+
+                if (line.ClickStack != null && OpenHandbook != null)
+                {
+                    var stack = line.ClickStack;
+                    string name = line.ClickName ?? line.Text;
+                    var rowBounds = ElementBounds.Fixed(0, ly, W, LineH);
+                    composer.AddInteractiveElement(new GuiElementHudClick(
+                        capi, rowBounds, () => OpenHandbook(stack, name)));
+                    composer.AddHoverText("Open in the handbook", Font(), 180, rowBounds.FlatCopy());
+                }
                 ly += LineH;
             }
 
@@ -423,7 +486,16 @@ namespace Tallybook
             public bool Bold;
             public List<ItemStack> Stacks;
             public bool CycleIcons;
+            /// <summary>When set, Alt+clicking the row opens this stack's handbook page —
+            /// the same page the dialog's Handbook button for that row opens.</summary>
+            public ItemStack ClickStack;
+            public string ClickName;
         }
+
+        /// <summary>The dialog's handbook-opening flow, lent to the HUD's rows — set by the
+        /// mod system once both surfaces exist. Null-safe: without it rows simply do not
+        /// link.</summary>
+        public System.Func<ItemStack, string, bool> OpenHandbook;
 
         List<HudLine> BuildLines()
         {
@@ -470,37 +542,70 @@ namespace Tallybook
             // Errands first: they are someone else's deadline, and they name a place to walk
             // back to, which the rest of the list never does. Site quests are places too, so
             // they live in the same section — checked ones only, the same contract as pins.
-            var quests = active.Where(p => p.QuestGiver != null).ToList();
-            var siteQuests = Sites?.HudSites() ?? new List<SiteQuest>();
-            if (quests.Count > 0 || siteQuests.Count > 0)
+            // One MERGED list, ordered exactly as the Side quests tab is — the sort mode
+            // and the hand-arranged order cover both kinds, or rearranging the tab would
+            // rearrange only half the HUD.
+            var questEntries = new List<PinStore.QuestEntry>();
+            foreach (var sq in Sites?.HudSites() ?? new List<SiteQuest>())
+                questEntries.Add(new PinStore.QuestEntry { Site = sq });
+            foreach (var pin in active.Where(p => p.QuestGiver != null))
+                questEntries.Add(new PinStore.QuestEntry { Pin = pin });
+            questEntries = svc.Store.OrderQuestEntries(questEntries, capi.World?.Player?.Entity?.Pos?.XYZ);
+
+            if (questEntries.Count > 0)
             {
                 Header("— side quests —");
-                foreach (var sq in siteQuests)
+                foreach (var entry in questEntries)
                 {
-                    var count = Sites.LoreCount(sq);
-                    int have = count.HasValue && count.Value.Total > 0
-                        ? count.Value.Found : (sq.Visited ? 1 : 0);
-                    int needed = count.HasValue && count.Value.Total > 0 ? count.Value.Total : 1;
-                    string title = sq.Visited ? $"{sq.Title} — visited" : SiteQuests.VisitPhrase(sq.Title);
-                    var mapStack = Sites.SampleStackFor(sq);
+                    if (entry.Site != null)
+                    {
+                        var sq = entry.Site;
+                        var count = Sites.LoreCount(sq);
+                        int have = count.HasValue && count.Value.Total > 0
+                            ? count.Value.Found : (sq.Visited ? 1 : 0);
+                        int needed = count.HasValue && count.Value.Total > 0 ? count.Value.Total : 1;
+                        string title = sq.Visited ? $"{sq.Title} — visited" : SiteQuests.VisitPhrase(sq.Title);
+                        var mapStack = Sites.SampleStackFor(sq);
 
-                    lines.Add(new HudLine
+                        lines.Add(new HudLine
+                        {
+                            Text = title + WhereSite(sq),
+                            // The scan not having finished is "don't know", not zero.
+                            Trailing = count == null ? "…" : $"{have}/{needed}",
+                            Color = count == null ? none : Status(have, needed),
+                            Stacks = One(mapStack)
+                        });
+                    }
+                    else
                     {
-                        Text = title + WhereSite(sq),
-                        // The scan not having finished is "don't know", not zero.
-                        Trailing = count == null ? "…" : $"{have}/{needed}",
-                        Color = count == null ? none : Status(have, needed),
-                        Stacks = One(mapStack)
-                    });
+                        var pin = entry.Pin;
+                        lines.Add(new HudLine
+                        {
+                            Text = $"{pin.DisplayName} for {pin.QuestGiver}{Where(pin)}",
+                            Trailing = $"{pin.Have}/{pin.Count}",
+                            Color = Status(pin.Have, pin.Count),
+                            Stacks = One(pin.Stack),
+                            ClickStack = pin.Stack,
+                            ClickName = pin.DisplayName,
+                        });
+                    }
                 }
-                foreach (var pin in quests)
+            }
+
+            // Places the player chose to keep in view — name, what it is, distance back.
+            // The longer notes never come here: the HUD is a glance, not a journal.
+            var hudPlaces = svc.Store.Places.Where(p => p.ShowOnHud).ToList();
+            if (hudPlaces.Count > 0)
+            {
+                Header("— places —");
+                foreach (var pl in hudPlaces)
                 {
+                    int m = DistanceToPlace(pl);
                     lines.Add(new HudLine
                     {
-                        Text = $"{pin.DisplayName} for {pin.QuestGiver}{Where(pin)}",
-                        Trailing = $"{pin.Have}/{pin.Count}",
-                        Color = Status(pin.Have, pin.Count),
-                        Stacks = One(pin.Stack)
+                        Text = (pl.Note == null ? pl.Name : $"{pl.Name} — {pl.Note}")
+                            + (m < 0 ? "" : $" ({m}m)"),
+                        Color = none,
                     });
                 }
             }
@@ -522,12 +627,17 @@ namespace Tallybook
                 if (row.Needed <= 0) return;
                 if (shown >= config.HudMaxRows) { hidden++; return; }
 
+                var samples = row.Req?.SampleStacks(capi.World);
                 lines.Add(new HudLine
                 {
                     Text = indented ? "  " + row.Name : row.Name,
                     Trailing = row.Req?.CountText(row.Have, row.Needed) ?? $"{row.Have}/{row.Needed}",
                     Color = Status(row.Have, row.Needed),
-                    Stacks = row.Req?.SampleStacks(capi.World)
+                    Stacks = samples,
+                    // Same page as the dialog row's Handbook button: keyed on the sample
+                    // stack, so the page always matches the icon.
+                    ClickStack = samples?.FirstOrDefault(),
+                    ClickName = row.Name,
                 });
                 shown++;
             }
@@ -550,7 +660,9 @@ namespace Tallybook
                         Trailing = PinCounts(pin),
                         Color = pin.Complete || pin.Craftable ? satisfied : null,
                         Bold = true,
-                        Stacks = One(pin.Stack)
+                        Stacks = One(pin.Stack),
+                        ClickStack = pin.Stack,
+                        ClickName = pin.DisplayName,
                     });
 
                     // Each build's own materials sit under it, so the list reads as a set of
@@ -586,12 +698,15 @@ namespace Tallybook
                 Header("— tools —");
                 foreach (var t in tools)
                 {
+                    var toolSamples = t.SampleStacks(capi.World);
                     lines.Add(new HudLine
                     {
                         Text = $"{(t.Present ? "√" : "•")} {t.DisplayName}",
                         Trailing = t.Present ? null : "missing",
                         Color = t.Present ? satisfied : partial,
-                        Stacks = t.SampleStacks(capi.World)
+                        Stacks = toolSamples,
+                        ClickStack = toolSamples?.FirstOrDefault(),
+                        ClickName = t.DisplayName,
                     });
                 }
             }
@@ -620,6 +735,16 @@ namespace Tallybook
             double dx = me.X - pin.QuestX, dz = me.Z - pin.QuestZ;
             int m = (int)(Math.Sqrt(dx * dx + dz * dz) / 5) * 5;
             return m > 5000 ? -1 : m;
+        }
+
+        /// <summary>Same 5-block rounding as the other HUD distances; never capped —
+        /// far away is exactly what a saved place tends to be.</summary>
+        int DistanceToPlace(SavedPlace pl)
+        {
+            var me = capi.World?.Player?.Entity?.Pos;
+            if (me == null) return -1;
+            double dx = me.X - pl.X, dz = me.Z - pl.Z;
+            return (int)(Math.Sqrt(dx * dx + dz * dz) / 5) * 5;
         }
 
         string WhereSite(SiteQuest sq)
@@ -693,6 +818,10 @@ namespace Tallybook
             foreach (var sq in Sites?.HudSites() ?? new List<SiteQuest>())
             {
                 sb.Append(DistanceToSite(sq)).Append(',');
+            }
+            foreach (var pl in svc.Store.Places)
+            {
+                if (pl.ShowOnHud) sb.Append(DistanceToPlace(pl)).Append(',');
             }
             return sb.ToString();
         }
