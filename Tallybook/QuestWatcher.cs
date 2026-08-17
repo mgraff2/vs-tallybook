@@ -119,7 +119,11 @@ namespace Tallybook
                     string reqCode = req.Stack?.Collectible?.Code?.ToShortString();
                     foreach (var pin in svc.Store.Pins)
                     {
-                        if (pin.QuestGiver == offer.NpcName && pin.Code == reqCode
+                        // Never onto another framework's errand: it writes its own text from
+                        // its own quest files, and a villager who shares a name with a quest
+                        // giver must not retell their story on it.
+                        if (pin.VsQuestId == null
+                            && pin.QuestGiver == offer.NpcName && pin.Code == reqCode
                             && !QuestScanner.IsTranscript(pin.QuestText))
                         {
                             pin.QuestText = req.Briefing.ToList();

@@ -27,6 +27,8 @@ namespace Tallybook
         TallybookConfig config;
         TallyService svc;
         QuestScanner quests;
+        VsQuests vsQuests;
+        VsQuestWatcher vsQuestWatcher;
         QuestReadyGlow questGlow;
         QuestWatcher questWatcher;
         QuestWaypoints questWaypoints;
@@ -74,6 +76,9 @@ namespace Tallybook
 
             svc = new TallyService(api, config);
             quests = new QuestScanner(api);
+            vsQuests = new VsQuests(api);
+            // Another framework's errands count by ITS rule, not ours — see VsQuests.
+            svc.QuestRequirementOverride = QuestRequirementFor;
             HandbookPin.Apply(api, OnPinRequested, OnOpenListRequested);
 
             // Defaults L and K per spec §9; both rebindable in Settings → Controls.
@@ -313,6 +318,26 @@ namespace Tallybook
                         return TextCommandResult.Success("");
                     })
                 .EndSubCommand()
+                .BeginSubCommand("vsquest")
+                    .WithDescription("VS Quest errands: what the quest files hold, what is tracked and on what evidence, what nearby givers say. 'track <quest id>' asserts a quest you took on another machine")
+                    .WithExamples(".tallybook vsquest", ".tallybook vsquest track vsvillage:huntwolves")
+                    .WithArgs(api.ChatCommands.Parsers.OptionalAll("action"))
+                    .HandleWith(args =>
+                    {
+                        EnsureGui();
+                        if (vsQuestWatcher == null) return TextCommandResult.Error("Tallybook is not ready yet.");
+
+                        string action = (args[0] as string)?.Trim();
+                        if (!string.IsNullOrEmpty(action)
+                            && action.StartsWith("track ", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return TextCommandResult.Success(
+                                vsQuestWatcher.Track(action.Substring("track ".Length)));
+                        }
+                        foreach (var line in vsQuestWatcher.Report()) capi.ShowChatMessage("  " + line);
+                        return TextCommandResult.Success("");
+                    })
+                .EndSubCommand()
                 .BeginSubCommand("spot")
                     .WithDescription("Save where you are standing as a place to revisit (Explore tab): .tallybook spot <name>")
                     .WithExamples(".tallybook spot Old copper mine")
@@ -469,6 +494,10 @@ namespace Tallybook
             hud.OpenHandbook = (stack, name) => dialog.OpenHandbookForStack(stack, name);
             handbookReturn = new HandbookReturnButton(capi, OnOpenListRequested);
             questGlow = new QuestReadyGlow(capi, config, svc, questHistory);
+            vsQuestWatcher = new VsQuestWatcher(capi, config, svc, vsQuests);
+            // VS Quest givers are matched by entity id, not by name: they can share one, and
+            // carrying the goods is only part of being ready when kills are counted too.
+            questGlow.ReadyEntityIds = () => vsQuestWatcher.ReadyGiverIds();
             questWatcher = new QuestWatcher(capi, config, svc, quests, OnQuestTracked);
             questWatcher.History = questHistory;
             questWatcher.OnConversing = npc =>
@@ -484,9 +513,21 @@ namespace Tallybook
             svc.Store.OnPinRemoved += questWaypoints.OnPinRemoved;
         }
 
+        /// <summary>
+        /// Our hotkeys are "always available" (HotkeyType.GUIOrOtherControls), which is what
+        /// lets the list open from inside the inventory — and also what let an L typed into
+        /// another mod's route-name box open the list instead of typing a letter (reported by
+        /// a friend of Mark's, 0.3.16). Whoever owns the window, a mod that acts on a keystroke
+        /// meant for a text field is the one in the wrong, so every hotkey asks first.
+        ///
+        /// Returning FALSE rather than true: the press is not ours, so it is left unhandled
+        /// for whoever it actually belongs to.
+        /// </summary>
+        bool Typing => TypingGuard.AnyTextInputFocused(capi);
+
         bool OnDialogHotkey(KeyCombination comb)
         {
-            if (capi.World?.Player == null) return false;
+            if (capi.World?.Player == null || Typing) return false;
             EnsureGui();
             if (dialog.IsOpened()) dialog.TryClose();
             else dialog.TryOpen();
@@ -495,7 +536,7 @@ namespace Tallybook
 
         bool OnExploreHotkey(KeyCombination comb)
         {
-            if (capi.World?.Player == null) return false;
+            if (capi.World?.Player == null || Typing) return false;
             EnsureGui();
             if (!dialog.ShowcaseView("explore"))
             {
@@ -641,7 +682,7 @@ namespace Tallybook
 
         bool OnHudHotkey(KeyCombination comb)
         {
-            if (capi.World?.Player == null) return false;
+            if (capi.World?.Player == null || Typing) return false;
             EnsureGui();
             hud.UserVisible = !hud.UserVisible;
             hud.Refresh();
@@ -720,6 +761,8 @@ namespace Tallybook
             story.InvalidateWorld();          // and story content with them
             siteQuests.InvalidateWorld();     // locator items and lore likewise
             loreBook.InvalidateWorld();       // lore defs are per-world assets too
+            vsQuests.Invalidate();            // and so do another framework's quest files
+            vsQuestWatcher.NewWorld();        // with what this session had read of them
             SubscribeToCarriedInventories();
             svc.Store.Load(svc.Resolve);
             BackfillQuestText();
@@ -735,6 +778,16 @@ namespace Tallybook
             // because it was reloaded.
             questWaypoints.Ready = true;
             spawnTracker.Ready = true;
+            vsQuestWatcher.Ready = true;
+
+            // The counted marker this integration is pinned by. It cannot live in the compat
+            // matrix — that boots a dedicated server, where Tallybook must stay silent, and
+            // every line of this runs client-side — so the count is logged here and printed by
+            // `.tallybook vsquest`. A framework update that stops the catalogue resolving
+            // changes this number.
+            int vsCount = vsQuests.Catalogue().Count;
+            if (vsCount > 0)
+                capi.Logger.Notification("[tallybook] VS Quest detected: {0} quest(s) in catalogue", vsCount);
         }
 
         /// <summary>
@@ -748,6 +801,8 @@ namespace Tallybook
             foreach (var pin in svc.Store.Pins)
             {
                 if (pin.QuestGiver == null) continue;
+                // Another framework's errands carry their own words, from their own files.
+                if (pin.VsQuestId != null) continue;
 
                 // The dialogue files describe every errand in full and do not care whether we
                 // were watching when this one was accepted — so they, not what happened to be
@@ -798,7 +853,10 @@ namespace Tallybook
         {
             bool changed = false;
             foreach (var group in svc.Store.Pins
-                .Where(p => p.QuestGiver != null)
+                // Another framework's errands are identified by its own quest and giver ids,
+                // never by name — two systems' errands that happen to share a giver name and
+                // an item are unrelated, and merging them would delete one of them.
+                .Where(p => p.QuestGiver != null && p.VsQuestId == null)
                 .GroupBy(p => (p.Code, p.Count))
                 .Where(g => g.Count() > 1)
                 .Select(g => g.ToList())
@@ -863,7 +921,10 @@ namespace Tallybook
                     // not item+count: a count captured wrong by an older build must not
                     // spawn a "corrected" twin beside itself. The offer key stays consumed.
                     string reqCode = req.Stack?.Collectible?.Code?.ToShortString();
-                    if (svc.Store.Pins.Any(p => p.QuestGiver != null && p.Code == reqCode)) continue;
+                    // Another framework's errand for the same item is a different errand, not
+                    // this one already tracked.
+                    if (svc.Store.Pins.Any(p => p.QuestGiver != null && p.VsQuestId == null
+                                                && p.Code == reqCode)) continue;
 
                     var pin = svc.Store.Add(req.Stack, req.Quantity, setCount: true, activate: false,
                                             questGiver: offer.NpcName);
@@ -1052,9 +1113,33 @@ namespace Tallybook
         }
 
 
+        /// <summary>
+        /// The counting row for an errand belonging to another quest framework. Kept here
+        /// rather than in TallyService so that file still knows about no framework at all: it
+        /// asks, and whoever can answer does.
+        /// </summary>
+        Requirement QuestRequirementFor(Pin pin)
+        {
+            try
+            {
+                var def = vsQuests?.Def(pin?.VsQuestId);
+                if (def == null || pin.VsQuestObjective >= def.Gather.Count) return null;
+                return vsQuests.RequirementFor(def.Gather[pin.VsQuestObjective]);
+            }
+            catch (Exception e)
+            {
+                // The pin still counts the item it resolved to — the honest subset — rather
+                // than losing the row over a definition we could not read.
+                capi.Logger.Warning("[tallybook] could not build a VS Quest row: {0}", e.Message);
+                return null;
+            }
+        }
+
         void OnLeaveWorld()
         {
             if (questWaypoints != null) questWaypoints.Ready = false;
+            if (vsQuestWatcher != null) vsQuestWatcher.Ready = false;
+            vsQuests?.Invalidate();
             svc.Store.Save();       // carries the NPC directory with it
             foreach (var inv in subscribed) inv.SlotModified -= OnSlotModified;
             subscribed.Clear();
@@ -1117,6 +1202,7 @@ namespace Tallybook
                 // nothing (found by Mark, two iron pickaxe rows).
                 string reqCode = req.Stack?.Collectible?.Code?.ToShortString();
                 var twin = svc.Store.Pins.FirstOrDefault(p => p.QuestGiver != null
+                    && p.VsQuestId == null           // a different system's errand, not a twin
                     && p.QuestGiver != offer.NpcName
                     && p.Code == reqCode && p.Count == req.Quantity);
                 if (twin != null
@@ -1179,6 +1265,8 @@ namespace Tallybook
             questGlow = null;
             questWatcher?.Dispose();
             questWatcher = null;
+            vsQuestWatcher?.Dispose();
+            vsQuestWatcher = null;
             if (questWaypoints != null && svc != null)
             {
                 svc.OnCountsChanged -= questWaypoints.Sync;

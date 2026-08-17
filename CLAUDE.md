@@ -48,12 +48,21 @@ pool and usually the only place they exist locally. Server data paths are keyed 
 PID, so a hand-run test and a running sweep no longer delete each other's directory mid-boot
 (that collision reports as "server did not start" and looks like a mod failure).
 
-**Companion set: `betterruins`.** A recipe-adding content mod — the category the registry
+**Companion set: `betterruins`, `vsquest`, `boatautopilot`.** `vsquest` is the quest framework
+Tallybook reads (see the VS Quest section); it is the only companion whose presence Tallybook
+branches on, so the silence check now also proves that integration never runs server-side. Its
+own counted marker is client-side and cannot be pinned here — see that section.
+`boatautopilot` is the first companion added for the **GUI** half of the surface rather than
+the registry half: a client-side mod with a text field (a route name) inside the world map
+screen, and the mod that caught our hotkeys firing on letters typed into someone else's box
+(see "Hotkeys must not fire while the player is typing"). A headless server can only prove
+coexistence — the typing check itself is on the manual list, which is the point of pairing the
+two.
+`betterruins` is a recipe-adding content mod — the category the registry
 reads care about. It adds hundreds of grid recipes for items vanilla already crafts, gated
 behind schematics, so it is the mod that proves a server can push a large alternate recipe
 set and Tallybook still says nothing server-side. Grow this set as Tallybook's surface grows —
-add client-side GUI mods that compete for hotkeys, HUD corners, and dialog space, and
-HUD-corner mods (e.g. `statushudcont`) once the §5 overlay ships. Derive additions from
+HUD-corner mods (e.g. `statushudcont`) are the next gap. Derive additions from
 Tallybook's *real* interaction surface; do not copy another project's list wholesale.
 
 ### 2. Game-version sweep — at the end of every version, before the release commit
@@ -64,10 +73,10 @@ Tallybook's *real* interaction surface; do not copy another project's list whole
 
 `modinfo.json` declares `"game": "1.22.0"`, which is a promise to every player on every
 patch release. This keeps it honest: it builds the zip **once**, then runs the whole compat
-matrix against a real dedicated server for **1.22.0 through 1.22.6**, each downloaded from
+matrix against a real dedicated server for **1.22.0 through 1.22.7**, each downloaded from
 `https://cdn.vintagestory.at/gamefiles/stable/vs_server_win-x64_<ver>.zip` and cached
 extracted in `tools/server-cache/` (gitignored). One artifact, N servers — that is the claim
-being tested. `-Versions 1.22.0,1.22.6` checks just the endpoints when iterating;
+being tested. `-Versions 1.22.0,1.22.7` checks just the endpoints when iterating;
 `-KeepGoing` reports every version instead of stopping at the first failure.
 
 When a new patch ships, append it to the `-Versions` default. The CDN 404s on versions that
@@ -389,6 +398,28 @@ directly. One-way flow:
 
 GUI lessons learned the hard way — do not relearn these:
 
+- **Hotkeys must not fire while the player is typing — in ANYONE's window (found by a friend
+  of Mark's, 0.3.16: naming a route in Boat Autopilot's planner, and the L opened the shopping
+  list).** Our hotkeys are `HotkeyType.GUIOrOtherControls`, which the API documents as
+  "controls that are always available" — that is deliberate (it is how L works from inside the
+  inventory) and it is also exactly why the press reaches us with a text field focused. Whether
+  the other dialog *should* have swallowed the key first is beside the point: the mod that
+  reacted is the mod that is wrong, and a guard on our side works whoever owns the window.
+  `TypingGuard.AnyTextInputFocused` walks `capi.Gui.OpenedGuis` (then `LoadedGuis`, since a
+  dialog's presence in either is not something to bet on) and asks each composer for
+  `CurrentTabIndexElement` — documented as "the currently tabbed index element, if there is one
+  currently focused" — testing it for `GuiElementEditableTextBase`, which every editable field
+  in the game derives from. No reflection, nothing mod-named. Every hotkey handler returns
+  **false** in that case, not true: the press is not ours, so it is left unhandled for whoever
+  it belongs to. That the letter still reaches the field is not a hope — it is what
+  `ignoreNextKeyPress` above already proves: the opening hotkey's own char event lands in the
+  first text input *after* the handler ran, so the GUI pass follows the hotkey pass.
+  The reciprocal half is owed and is one line: `GuiDialogTallybook.CaptureAllInputs()` returns
+  true **while one of our own fields has focus** — the API documents that override for exactly
+  this ("should this dialog (e.g. textbox) capture all the keyboard events except for escape"),
+  so other mods' hotkeys stop firing on letters meant for our count and filter boxes. Only
+  while focused, never merely because the window is open: capturing for the whole session is
+  the same rudeness pointing the other way.
 - **Never align a HUD dialog with EnumDialogArea corner alignments.** Vanilla's coordinate
   overlay re-stacks itself below the first other RightTop-aligned composer every 250ms and
   the two chase each other forever. Position absolutely (`EnumDialogArea.None` +
@@ -605,7 +636,8 @@ asset, and collect `player.inventory` conditions.
   live. **The directory fills in conversation ONLY (`RecordNpcPlace`, fired from the
   conversation poll) — no passive radar, villagers and traders alike (Mark, twice: a
   walk-past recorder and then a villagers-on-sight recorder were both built and removed;
-  do not build a third).** Talking is the backfill: position lands on the pin → save →
+  do not build a third).** The one carve-out is VS Quest, whose state has no login path at
+  all — see that section for the test to apply before ever scanning again. Talking is the backfill: position lands on the pin → save →
   recount → signature (carries QuestX) changes → `Sync` places the blue X, all in one chain.
   The deliberate assists: `.tallybook here <name>` (the player asserts the spot) and a map
   waypoint whose title names the giver. Two hard facts underneath: a client-side mod cannot
@@ -776,6 +808,143 @@ asset, and collect `player.inventory` conditions.
   table and persistence are all reused. `Store.Add(..., setCount: true)` raises an existing
   pin to the requested count instead of adding to it — an errand needs exactly 10, and
   pinning it twice must not ask for 20.
+
+## VS Quest errands (`VsQuests` + `VsQuestWatcher`) — a second quest system, read the same way
+
+Built for Mark's ask (0.3.16): support G3rste's **VS Quest** framework (`vsquest`, side
+Both), the library VS Village and others build quests on. Verified by reading its source at
+v3.1.0, not the mod page. Its quests are *data*, so the §1 promise holds again — nothing here
+names a quest, a giver or a content pack.
+
+- **The catalogue is a content file, loaded on both sides.** `QuestSystem.AssetsLoaded` does
+  `api.Assets.GetMany<List<Quest>>(logger, "config/quests", modid)` per mod, so `capi.Assets`
+  hands us the same list the framework parses: `id`, `cooldown`, `perPlayer`, `predecessor`,
+  `gatherObjectives` / `killObjectives` / `blockPlaceObjectives` / `blockBreakObjectives`
+  (each `validCodes[] + demand`), `itemRewards`, `randomItemRewards`, `actionObjectives`,
+  `actionRewards`. The path prefix matches `config/quests.json` **and** `config/quests/*.json`
+  — the example mod still uses the pre-2.0 single file, so read both. Text is Lang
+  `<questid>-title` / `-desc` / `-obj`. Read the ASSETS, not their `QuestRegistry`: assets are
+  the contract, a private dictionary is an implementation.
+- **`validCodes` matches `Collectible.Code.Path` only — domain-blind, `prefix*` wildcards,
+  summed across every non-creative inventory** (`ActiveQuest.gatherObjectiveMatches` /
+  `itemsGathered`). So a gather row is a `Requirement` whose `ExactCodes` are every code in
+  the world matching the objective, with **no `SelfPageCode`** — which is what makes our
+  summed Have identical to the framework's own completability test. Do NOT use
+  `RequirementForStack` for these: its page-exact self-count would report 0 while the player
+  carries a different variant the quest accepts (`TallyService.QuestRequirementOverride` is
+  the seam).
+- **Only gather objectives become pins.** Kill / block-place / block-break counters live in
+  `ActiveQuest`'s trackers in *savegame data* and reach the client only inside
+  `QuestInfoMessage`; action objectives are evaluated by the framework's own
+  `ActionObjectiveRegistry`, which we do not reach into. They therefore affect readiness only,
+  and only in the safe direction — see the glow rule below.
+- **Two read paths, and only two.** There is no "list my quests" request packet: the `vsquest`
+  channel handles exactly `QuestAcceptedMessage` and `QuestCompletedMessage` from the client,
+  and **both write** (they accept or hand in a quest). Sending either to harvest state is out
+  on the same grounds as auto-crafting. So:
+  - **The quest dialog** (`VsQuest.QuestSelectGui`) is authoritative: private fields
+    `questGiverId`, `availableQuestIds`, `activeQuests`, read by reflection while it is open,
+    found by type *name* through `capi.Gui.OpenedGuis` then `LoadedGuis` (both are checked —
+    the handbook taught us that a dialog's presence in either list is not guaranteed). No
+    Harmony patch on their GUI and no second handler on their channel: this is `QuestWatcher`'s
+    poll-while-open pattern, which exists precisely because a mod that can break someone's
+    quest UI can cost progress that cannot be recovered.
+  - **The giver's `WatchedAttributes`**, which sync with the entity: `lastaccepted-<questid>`
+    (`-<uid>` when `perPlayer`, a `TotalDays` double) and `playercompleted-<uid>` (string
+    array). Enumerate the tree for `lastaccepted-…-<ourUID>` keys rather than testing the
+    catalogue per entity — the keys ARE the list of quests this giver has given this player,
+    and the uid suffix is itself the proof that the quest is `perPlayer`.
+- **PROXIMITY RESTORE IS A DELIBERATE CARVE-OUT FROM "no passive radar" (Mark, 0.3.16).**
+  Two walk-past recorders were built and removed before this, and the rule stands for
+  everything vanilla. What makes this the exception is not convenience: vanilla villagers keep
+  quest state in **player-scope** dialogue variables, which sync at login, so a radar bought
+  nothing that was not already arriving — while VS Quest keeps every fact on the giver entity
+  or in a packet, so there is **no login path at all**. That is the test for any future scan:
+  does a path already exist? Then the scan is the third radar. Bounds that keep it this one
+  exception:
+  - Only entities with the `questgiver` behavior; iterate `LoadedEntities` (never
+    `GetEntitiesAround` — the partition query returns empty, reliably). "Loaded" is the range;
+    no invented radius.
+  - Only quest keys, only **our own UID**. The entity carries every player's entries.
+  - **`perPlayer: false` quests are never adopted**: their key is the bare
+    `lastaccepted-<questid>`, so an acceptance by anyone on the server is indistinguishable
+    from ours, and adopting it would mint a pin for someone else's quest.
+  - **Restore only — never offer.** Adoption requires `lastaccepted` for *this* player, which
+    by construction can only describe a quest already accepted. A new quest still needs the
+    conversation. The giver's offerable list (the behavior's `quests[]`, and the catalogue at
+    large) is deliberately never surfaced: half of it is behind predecessors and cooldowns the
+    player has not cleared — the same spoiler rule as `QuestCatalogue`.
+  - Once-ever per giver+quest, in `SaveFile.OfferedQuests` under a `vsquest:` prefix (same
+    contract as every other adoption). Position is captured on that same read, since we are
+    already holding an entity that has already given this player a quest.
+- **Completion has two evidence paths and no guesses.** (a) A dialog read for that giver that
+  no longer lists the quest — authoritative, since `activeQuests` is the player's full list for
+  that giver. (b) A proximity read where the id appears in `playercompleted-<uid>` — but ONLY
+  as a **transition**, never as a state. `playercompleted` is a set that only ever grows, so
+  for a repeatable quest it stays true through every later run and its *value* says nothing;
+  `VsQuestTrack.SeenIncomplete` records that the giver was once seen calling this quest open,
+  and only open→completed is a hand-in. A track whose first look already said completed (a
+  repeat run) can be ended by the dialog alone. A first version compared `lastaccepted` days
+  instead and archived every retaken quest one tick after adopting it — the day is still kept,
+  but only to answer "has this been taken again since we archived it?"
+  (`RetakenSinceArchived`), which is what lets a repeat run be adopted at all: completing also
+  RELEASES the once-ever adoption guard, since a finished-and-retaken quest is a new errand
+  rather than an unpinned one returning. Note `markQuestCompleted`
+  sets `playercompleted-…` **without** `MarkPathDirty` (unlike `lastaccepted`, which marks
+  it), so path (b) may not refresh live within a session — first-sight sync on re-tracking the
+  entity still delivers it, and path (a) does not depend on it at all. Archive is a
+  `QuestRecord` keyed `vsquest:<giverId>:<questId>`; the vanilla sweep ignores it (its records
+  are `errand:`-keyed and `QuestScanner.DefFor` returns null for these), which is why the two
+  systems need no coordination.
+- **The glow gets an exact identity here, which the vanilla path never had.**
+  `QuestReadyGlow` matched by NAME (`ReadyQuestGivers()` → `e.GetName()`), which is right for
+  Beata and wrong for a generic villager: VS Quest givers can share a name, and the errand
+  belongs to one entity id (`ActiveQuest.questGiverId` is what the framework itself routes
+  accept and complete by). So the ready set is now names **or** entity ids, and VS Quest pins
+  are excluded from `ReadyQuestGivers()` so the name half cannot double-glow them. Readiness:
+  every gather objective complete **and** every other objective verifiably satisfied. A
+  tracker known ≥ demand at the last dialog read stays satisfied (counts only rise and
+  completion removes the quest); a tracker last seen short, or an action objective, is
+  *unknown* and blocks the glow. Under-glowing costs a player nothing — the framework's own
+  Complete button is right there; over-glowing sends them across a village for a refusal.
+- **A server-side-only quest pack puts no `config/quests` on this client**: ids and progress
+  still arrive through the dialog, but demands and Lang do not, so rows fall back to the raw
+  id and no pin is built. Say so on the row rather than guessing.
+- **The compat-invariant rule adapts rather than applies.** This is genuinely
+  mod-conditional machinery (it recognises `VsQuest.QuestSelectGui` by name), but it lives
+  entirely in `StartClientSide`, so the counted `Notification` marker CANNOT be pinned by
+  `compat-test.ps1` — that boots a dedicated server, where Tallybook must still contribute
+  exactly one line. So: the count is logged client-side at world join
+  (`[tallybook] VS Quest detected: N quest(s) in catalogue`) and printed by
+  `.tallybook vsquest`, and `vsquest` joins the companion set — where the existing
+  total-silence check now also proves this integration never runs server-side.
+- **Identity is (quest, objective, giver-entity), and the two systems must not touch each
+  other's rows.** `Pin.VsQuestId` + `VsQuestObjective` join `Pin.Key` (`|q:<id>#<n>`), because
+  one giver can be on several quests at once and two of them wanting the same item are two
+  errands; `Pin.VsQuestGiverId` is the exact giver. `SaveFile.VsQuests` (`VsQuestTrack`) holds
+  what a pin cannot: the evidence, the accepted day, the last-known counters. Every vanilla
+  path that matches errands **by giver name and item code** now excludes VS Quest pins —
+  `QuestHistory.CheckErrandCompletion`, `DedupeQuestPins`, `AdoptVillageQuests`'
+  already-tracked test, `OnQuestTracked`'s twin lookup, `BackfillQuestText`, and
+  `QuestWatcher`'s briefing rewrite. Those matchers are name-based by necessity (a dialogue
+  file's errand belongs to whoever speaks it), and a villager who happens to share a name with
+  a quest giver would otherwise archive, merge or overwrite the other system's errand. The
+  general rule: an identity that is exact must never be matched by an identity that is fuzzy.
+- **Verified against the shipped 3.1.0 assembly by reflection** (`MetadataLoadContext`, per the
+  API-caveat rule), not from the source on GitHub: `QuestSelectGui` private fields
+  `questGiverId` (Int64) / `activeQuests` (List), `ActiveQuest` properties `questId`,
+  `questGiverId`, `killTrackers`, `blockPlaceTrackers`, `blockBreakTrackers`, and
+  `EventTracker.count`. Also confirmed from the shipped zip: modinfo `"side": "universal"` (so
+  the client really does have the assets), the asset path `config/quests/quests.json`, and the
+  lang convention `<questid>-title` / `-desc` / `-obj` with the domain carried by the id
+  itself. Its one bundled quest is action-objective-only and so must correctly add nothing —
+  a useful negative test. Note `Lang.GetIfExists`' documentation contradicts itself about
+  whether a miss returns null or the key; `VsQuests.Translated` treats both as a miss.
+- `.tallybook vsquest` is the diagnostic: catalogue size, tracked quests with their evidence,
+  what each nearby giver's attributes say, and whether the dialog has ever been read.
+  `.tallybook vsquest track <questid>` is the manual assertion for the mid-trip machine
+  switch, same spirit as `.tallybook here` — the player says they have it, the catalogue
+  supplies the rest, and the next real read binds the giver.
 
 ## Site quests (`SiteQuests` + `SiteLoreScan`) — map artifacts as side quests
 

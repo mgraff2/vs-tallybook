@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.16 — 2026-08-16
+
+- **Fixed: typing in another mod's window no longer triggers Tallybook's hotkeys.** Naming a
+  route in Boat Autopilot's planner (or typing into any mod's text field) with an **l** or a
+  **k** in it opened the shopping list or toggled the HUD instead of typing the letter.
+  Tallybook's hotkeys are the "always available" kind on purpose — that is how L works from
+  inside the inventory — so they now check whether the keyboard belongs to a text field first
+  and stand down if it does, leaving the keystroke to whoever it was meant for. The courtesy
+  runs both ways: while one of Tallybook's own fields has focus (a count, the world filter, a
+  place's name or notes) other mods' hotkeys stop firing on those letters too. Escape still
+  closes the window from a focused field.
+- New: **VS Quest support** — quests from G3rste's VS Quest framework (the one VS Village
+  and other quest packs build on) are tracked as ordinary errands. Anything a quest asks
+  you to *bring* becomes a pin with its count, giver, map marker and HUD row, and the gold
+  ready-shimmer appears over the giver once you are carrying it all. It is all derived from
+  the framework's own quest files, so a quest pack needs no support of its own — the same
+  promise Tallybook makes about recipes.
+  - Quests that also count kills or blocks placed/broken show their progress **as of the
+    last time you had the quest window open** — that is the only moment those counters are
+    sent to your client. The shimmer waits until every objective it can verify is satisfied
+    and stays off when one is unknown, so it never sends you on a wasted walk.
+  - **Walk into range of a giver and any quest you already accepted from them is restored**,
+    which is how the list rebuilds itself on a machine that has never seen the world. Only
+    quests you have already taken are ever restored; a new one still comes from talking to
+    the giver, so nothing you have not been offered is revealed.
+  - Finished quests move to the History tab with what you handed over and what you received.
+  - `.tallybook vsquest` reports what it can see, layer by layer;
+    `.tallybook vsquest track <quest id>` asserts a quest you accepted on another machine.
+    `TrackVsQuests` in the config file turns the whole thing off.
+- **Verified against Vintage Story 1.22.7**, now part of the version sweep alongside
+  1.22.0–1.22.6.
+
 ## 0.3.15 — 2026-08-15
 
 - New: **Explore tab** (on by default) — save the spot you are standing on with a name and

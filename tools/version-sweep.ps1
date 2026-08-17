@@ -10,8 +10,8 @@
 # commit. Roughly 7 versions x N combos x ~30s boot, so budget several minutes; it is not a
 # per-edit test (that's compat-test.ps1 against the installed server).
 #
-#   .\tools\version-sweep.ps1                    -> build once, sweep 1.22.0 .. 1.22.6
-#   .\tools\version-sweep.ps1 -Versions 1.22.0,1.22.6   -> just the endpoints (quick check)
+#   .\tools\version-sweep.ps1                    -> build once, sweep 1.22.0 .. 1.22.7
+#   .\tools\version-sweep.ps1 -Versions 1.22.0,1.22.7   -> just the endpoints (quick check)
 #   .\tools\version-sweep.ps1 -KeepGoing         -> run all versions even after a failure
 #
 # Server packages (~100MB each) are downloaded from the official CDN and cached, extracted,
@@ -19,7 +19,7 @@
 # Adding a new game version: append it to -Versions' default below and re-run. The CDN 404s
 # for versions that don't exist, which is how you discover the current latest.
 param(
-    [string[]]$Versions = @("1.22.0", "1.22.1", "1.22.2", "1.22.3", "1.22.4", "1.22.5", "1.22.6"),
+    [string[]]$Versions = @("1.22.0", "1.22.1", "1.22.2", "1.22.3", "1.22.4", "1.22.5", "1.22.6", "1.22.7"),
     [switch]$KeepGoing,
     [switch]$SkipBuild
 )

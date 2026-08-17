@@ -5,7 +5,7 @@ Pin any item, and Tallybook tells you what you still need to gather — with liv
 inventory tracking and at-a-glance status. The handbook already answers "how do I make X";
 Tallybook answers "what do I still need, and am I done?"
 
-**Version 0.3.15**, for Vintage Story 1.22.0–1.22.6. Client-side only: it works on any server,
+**Version 0.3.16**, for Vintage Story 1.22.0–1.22.7. Client-side only: it works on any server,
 and nobody else needs it installed. The design is in
 [tallybook-mod-spec.md](tallybook-mod-spec.md).
 
@@ -125,6 +125,25 @@ don't have to open a list to know the walk is worth it. Nothing is guessed from 
 structured conditions, and only requests that are actually live for you are offered, so
 quests you haven't been given stay unspoiled.
 
+### Quests from the VS Quest framework
+
+Servers running the **VS Quest** framework (VS Village and others build on it) get the same
+treatment. Accept a quest at its giver and anything it asks you to *bring* lands on the list
+as an errand — count, giver, map marker, HUD row, and the gold ready-shimmer once you are
+carrying it all. Quests that also count kills or blocks show how far along those are as of the
+last time you had the quest window open, because that is the only place the game sends those
+numbers to your client; the shimmer waits until everything it can verify is satisfied, so it
+under-promises rather than sending you on a wasted walk.
+
+Everything comes from the framework's own quest files, so no per-pack support is needed. Walk
+back into range of a giver and any quest you already accepted from them is restored — which is
+how the list rebuilds itself on a machine that has never seen the world before. Only quests you
+have already taken are ever restored; new ones still come from talking to the giver, so nothing
+is spoiled. Finished quests move to the History tab with what you handed over and what you got
+back. `.tallybook vsquest` explains what it can see, and `.tallybook vsquest track <quest id>`
+lets you assert a quest you accepted on another machine before you get back to its giver.
+`TrackVsQuests` turns the whole thing off.
+
 ### The story, one step at a time
 
 Tallybook also walks you through the vanilla storyline — starting from the very first step, a
@@ -190,6 +209,7 @@ as a maintenance promise, but as a property of where the data lives.
 | `QuestWaypointColor` / `QuestWaypointIcon` / `QuestWaypointPinned` | `#4fc3f7` / `x` / `true` | how that marker looks — light blue, to read differently from your own markers |
 | `QuestReadyGlow` / `QuestReadyGlowColor` | `true` / `#FFBE3C` | gold shimmer over an NPC once you carry everything they asked for |
 | `AutoTrackQuests` | `true` | pick up villager fetch quests automatically when you accept them |
+| `TrackVsQuests` | `true` | track quests from the VS Quest framework (the one VS Village and others build on) as errands |
 | `ColorSatisfied` / `ColorPartial` / `ColorNone` | `#80FF80` / `#FFCC66` / `#FFFFFF` | status colours |
 
 Hotkeys (L, K) are rebindable in Settings → Controls like any other key.
@@ -213,6 +233,12 @@ never what comes next.
 them hide provable writings, and where each tracked site quest stands; `.tallybook sites
 track <name>` brings back a site you dismissed.
 
+`.tallybook vsquest` reports what the VS Quest integration can see, layer by layer: how many
+quests this world's quest files hold, which ones you are tracked on and on what evidence, what
+each nearby giver's own record says about you, and whether the quest window has been read yet.
+`.tallybook vsquest track <quest id>` asserts a quest you accepted on another machine, before
+you are back in range of its giver.
+
 `.tallybook spot <name>` saves where you are standing as an Explore-tab place — the same
 act as the tab's "Save this spot" button, without opening the window.
 
@@ -229,7 +255,7 @@ for and how to stage it is in [docs/moddb-screenshots.md](docs/moddb-screenshots
 
 ## Install
 
-Drop `tallybook_0.3.15.zip` into
+Drop `tallybook_0.3.16.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source
@@ -251,7 +277,9 @@ Two automated gates, both run from PowerShell at the repo root.
 **`.\tools\compat-test.ps1`** — run after any code change and before every commit. Builds
 the zip and boots a headless dedicated server for every mod combination (solo, +each
 companion mod, and all together), failing on any `[Error]`/`[Warning]` in the server log, a wrong mod count
-or load order, or a violated marker. Because Tallybook is client-side only, the pinned
+or load order, or a violated marker. Companions cover both halves of the surface: a
+recipe-adding content mod, the VS Quest framework, and a client-side GUI mod with its own text
+field. Because Tallybook is client-side only, the pinned
 markers are: the server must still *load* the assembly and instantiate its mod systems
 (proves the DLL works against that game version), and the mod must stay completely silent
 otherwise — exactly one `tallybook` mention in `server-main.log` (its load-order entry) in
@@ -260,9 +288,9 @@ the live Mods folder or the mod DB on first use. `-SkipBuild` reuses the package
 
 **`.\tools\version-sweep.ps1`** — run at the end of every version, before the release commit.
 Builds the zip once, then runs that same artifact through the full compat matrix against real
-dedicated servers for **1.22.0 through 1.22.6**, downloaded from the official CDN and cached
+dedicated servers for **1.22.0 through 1.22.7**, downloaded from the official CDN and cached
 in `tools/server-cache/` (gitignored). This is what backs the `"game": "1.22.0"` dependency
-declaration. `-Versions 1.22.0,1.22.6` checks just the endpoints; `-KeepGoing` reports every
+declaration. `-Versions 1.22.0,1.22.7` checks just the endpoints; `-KeepGoing` reports every
 version rather than stopping at the first failure.
 
 Headless boots validate zip packaging, modinfo/dependency declarations, assembly loading
@@ -363,6 +391,13 @@ is most of it. Manual pre-release checklist for what the server can't see:
    the HUD's corner, the HUD must sit below all of them, overlapping nothing (within ~1s of
    any of them toggling) and must stay clear after a window resize or GUI-scale change; with
    the corner empty it rises to the top margin.
+6a. **Typing must never trigger a hotkey** — with another mod that has a text field in its own
+   window (Boat Autopilot's route planner in the map screen is the case this was found on),
+   type a name containing **l** and **k**: the letters must land in the box and neither the
+   Tallybook window nor the HUD may react. Then the reverse: with a Tallybook count field, the
+   world filter, or a place's name focused, type letters bound to other mods' hotkeys and
+   confirm nothing of theirs fires. Escape must still close the Tallybook window from a focused
+   field, and pressing L with *nothing* focused must still open and close it as always.
 7. **Alongside other client GUI mods** — open Tallybook's dialog and HUD with other mods'
    GUIs active: no hotkey collision, no overlapping/hidden GUI, all HUD elements readable,
    and the Tallybook HUD must not fight the vanilla coordinate overlay for its corner.
@@ -412,10 +447,39 @@ is most of it. Manual pre-release checklist for what the server can't see:
     ask Tad to heal your wounds (one gear) and decline — nothing may be added, either way.
     An errand must show only what was asked for: take Agnieszka's 8 iron ingots and the row
     must be the ingots alone, with no ingredient or tool rows underneath.
+13a. **VS Quest errands** (needs `vsquest` plus a quest pack — the framework alone ships one
+    quest, which asks for nothing to be gathered and so must correctly add *nothing*). Accept
+    a quest with a "bring me N of these" objective: it must appear under **Side quests** as a
+    `(for <giver>)` pin at the right count, announced in chat, with the giver's marker.
+    `.tallybook vsquest` must name the quest, the giver's entity id, and where the knowledge
+    came from. Then, in order:
+    - **Counting follows the framework, not us**: for an objective with several valid codes or
+      a `code-*` wildcard, carrying *any* accepted variant must count, and the row must say
+      "any of N". Compare against the framework's own Complete button — the two must agree.
+    - **Unpin mid-window**: it must stay gone while the quest window is open, and come back the
+      next time you open it. Uncheck instead and it must stay unchecked.
+    - **Restore on approach**: unpin the errand, log out, delete the world's Tallybook save
+      (`ModData/tallybook/<world>.json`), log back in — the list must be empty until you walk
+      into range of the giver, then the errand must return by itself with its count and
+      position. Walk past a giver whose quest you have *not* accepted: nothing may be added,
+      ever. That is the whole spoiler rule — no quest may appear that you were not already on.
+    - **Kill/block objectives**: a quest that also counts kills must show its progress with
+      "as of your last talk with them"; before the window has ever been opened it must say the
+      counters are not known rather than showing zero.
+    - **Completion**: hand the quest in at the giver — the pins must leave the list and a
+      record must appear on the History tab naming what you handed over and what you received.
+      A repeatable quest taken again after completing must come *back* onto the list, not stay
+      archived.
+    - **No cross-talk with villager errands**: on a world with both, a vanilla errand and a VS
+      Quest errand for the same item must both exist as separate rows, and finishing one must
+      not remove the other.
 14. **Quest-ready glow** — with a tracked errand incomplete, the NPC looks normal; collect
     the last item and a gold shimmer must appear over them (colour correct, sitting just
     above the head on both a villager and a taller trader), and stop once the items leave
     your inventory. An NPC with two tracked requests must not glow until *both* are met.
+    For a VS Quest giver the glow must follow the *entity*, not the name: with two identically
+    named villagers, only the one holding your quest may shimmer. A quest whose kill counter
+    was last seen short of its demand must not glow even when the items are all carried.
 15. **World tab** — on by default; "Show the World tab" in Options turns it off
     (flipping it on must add the tab on Back without reopening, flipping it off
     while *on* the tab must land you back on Items, and the choice must survive a

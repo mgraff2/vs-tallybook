@@ -204,6 +204,23 @@ calls `Assembly.LoadFrom` and `GetMembers`. Note:
   composer may still be mid-iteration in the event loop that triggered the recompose.
 - **Set `ignoreNextKeyPress = true` in `OnGuiOpened`**, or the opening hotkey's own char event
   lands in the first text input.
+- **A hotkey must not fire while the player is typing — in ANY mod's window.**
+  `HotkeyType.GUIOrOtherControls` means "always available", which is what makes a hotkey work
+  from inside the inventory and equally what delivers the press while a text field somewhere
+  has focus. Someone naming a route in another mod's planner typed an L and got our window.
+  Do not argue about whose dialog should have swallowed it first: the mod that *reacted* is the
+  one in the wrong. Guard every handler with a screen-wide check —
+  walk `capi.Gui.OpenedGuis` (then `LoadedGuis`), ask each composer for `CurrentTabIndexElement`
+  ("the currently tabbed index element, if there is one currently focused") and test it for
+  `GuiElementEditableTextBase`, which every editable field derives from. Return **false**, not
+  true: the press is not yours, so leave it unhandled for whoever it belongs to.
+  Then pay it back the other way: override `CaptureAllInputs()` to return true **while one of
+  your own fields has focus** — the documented purpose of that override, Escape still works —
+  so your text boxes do not fire other mods' hotkeys. Only while focused, never for as long as
+  the window is open, or you have simply reversed the rudeness.
+  Add a client-side GUI mod with a text field to the companion set when this comes up. It will
+  not catch the bug (no headless server can), but it puts the case on the manual list where
+  someone will actually type into it.
 - **A recompose steals focus.** If the dialog rebuilds on live data, defer recomposes briefly
   while a field is being typed in — and guard the `SetValue`→callback feedback loop, or every
   recompose looks like typing and defers the next update forever.
@@ -299,6 +316,53 @@ action and needs different rules from an internal computation.
 - **"Did it work?" must not be answerable trivially.** A check of "does the view contain the
   target" passes instantly on a zoomed-out map, so every retry is skipped. Compare something
   that actually distinguishes success.
+
+---
+
+## 8a. Reading ANOTHER mod without depending on it
+
+Sooner or later you want to see something a second mod owns. You can do it without referencing
+its assembly, without patching it, and without breaking when it updates — if you take its
+sources in this order:
+
+1. **Its content files.** Anything a mod loads out of `assets/**` you can load too, through
+   `capi.Assets`. This is the best source by a distance: it is the mod's own published contract,
+   it survives its internal refactors, and it is there whether or not the player has done
+   anything yet. Prefer `GetLocations(prefix)` + `TryGet(loc)` and filter yourself — the docs
+   confirm prefix matching ("all asset locations that **begins with** given path"), which also
+   means one read covers both `config/x.json` and `config/x/*.json` layouts.
+2. **State the server already syncs.** `WatchedAttributes` on an entity reach every client that
+   tracks it, so a mod storing per-player state there has effectively published it. Enumerate
+   the tree for the keys you want rather than probing for names you guessed; the keys *are* the
+   list. Watch for per-player keys: one without a uid suffix is shared by everyone on the
+   server and cannot be attributed to your player.
+3. **Its GUI, by reflection, while it is open.** Last resort, and the only place a mod names
+   another mod's *type*. Find the dialog by `GetType().FullName` in `capi.Gui.OpenedGuis` **and**
+   `LoadedGuis` (a dialog's presence in either is not guaranteed), then read private fields with
+   `AccessTools`. Distinguish a MISSING field from an EMPTY value: empty is an answer callers
+   may act on, a field that has been renamed is not, and conflating them turns an update into
+   silent data loss.
+
+And two things not to do:
+
+- **Do not send on its network channel.** Check what its handlers actually do first: if the
+  messages a client can send *write* (accept, complete, purchase), sending one to harvest state
+  is acting for the player. There is usually no read-only request to borrow.
+- **Do not patch its UI.** Poll while it is open instead. A patch that breaks someone's quest or
+  trade window can cost progress that cannot be recovered, and polling gets the same data.
+
+Then verify the reflection targets against the **shipped assembly**, not the source on GitHub —
+`MetadataLoadContext` over the DLL out of its release zip lists the real field and property
+names (see §5). And note what this does to your compat gates: an integration living entirely in
+`StartClientSide` cannot have its marker pinned by a headless server test, so log the count at
+world join, print it from a diagnostic command, and add the other mod to the companion set so
+the *silence* check proves the integration never runs server-side.
+
+Finally, a rule that only shows up once two systems describe the same kind of thing:
+**an identity that is exact must never be matched by an identity that is fuzzy.** If your own
+feature matches records by name because that is all it has, exclude the other system's records
+from those matchers explicitly — otherwise an NPC who happens to share a name will archive,
+merge or overwrite rows belonging to something entirely unrelated.
 
 ---
 

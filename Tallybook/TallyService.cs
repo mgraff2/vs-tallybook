@@ -21,6 +21,12 @@ namespace Tallybook
         /// <summary>Raised after every recount whose numbers changed anything visible.</summary>
         public event Action OnCountsChanged;
 
+        /// <summary>Supplies the counting row for an errand belonging to another quest
+        /// framework, whose matching rule is that framework's rather than ours. Set by whoever
+        /// reads that framework; null everywhere else, which is why this file still knows
+        /// nothing about any of them.</summary>
+        public System.Func<Pin, Requirement> QuestRequirementOverride;
+
         public TallyService(ICoreClientAPI capi, TallybookConfig config)
         {
             this.capi = capi;
@@ -86,6 +92,15 @@ namespace Tallybook
             // not decomposed.
             if (pin.QuestGiver != null)
             {
+                // An errand from another quest framework counts by ITS rule, not ours: VS
+                // Quest sums whole stacks across every accepted code, so a page-exact self row
+                // would read 0 while the player carries a variant the quest happily takes.
+                // Supplied by whoever owns that knowledge — with nothing supplied (a quest
+                // whose pack is server-side only, so its demands never reached this client)
+                // the pin still counts the item it resolved to, which is the honest subset.
+                var supplied = pin.VsQuestId == null ? null : QuestRequirementOverride?.Invoke(pin);
+                if (supplied != null) pin.SelfNode = new TallyNode { Req = supplied };
+
                 // An errand's hand-over check inspects slot stacks, so liquid inside a jug
                 // must not count toward it — a container of the goods is not the goods here.
                 // Units stay items too: the requested count came from dialogue, in items.
@@ -500,6 +515,10 @@ namespace Tallybook
             foreach (var pin in Store.Pins)
             {
                 if (!pin.Active || pin.QuestGiver == null) continue;
+                // Errands from another quest framework are judged by entity id instead: their
+                // givers can share a display name, and carrying the goods is only part of
+                // being ready when the quest also counts kills or blocks placed.
+                if (pin.VsQuestId != null) continue;
                 bool wasReady = progress.TryGetValue(pin.QuestGiver, out var r) ? r : true;
                 progress[pin.QuestGiver] = wasReady && pin.Complete;
             }

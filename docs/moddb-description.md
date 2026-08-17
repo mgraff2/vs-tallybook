@@ -23,6 +23,8 @@ Crafting shopping list, quest tracker, story guide, and world/player reference. 
 
 <p><strong>Side quests.</strong> Accept a fetch errand the way the game intends and Tallybook picks it up on its own &mdash; no button, no extra click. The row reads Raw hide (Small) for Gerhardt 3/10 and goes green when you can deliver. What the villager actually said is kept as a transcript under the row, re-readable a week later. Errands you were already on are recovered at login from the game's own dialogue files &mdash; including quests accepted before Tallybook was installed &mdash; and handed-in errands notice they're finished by themselves, moving to History instead of sitting at 0/10 forever because the goods left your bags.</p>
 
+<p><strong>Quests from the VS Quest framework too</strong> &mdash; the one VS Village and other quest packs are built on. Accept a quest at its giver and anything it asks you to <em>bring</em> lands on the list as an errand, with the count, the giver, a map marker, a HUD row and the ready-shimmer once you carry it all. Quests that also count kills or blocks show how far along those are as of the last time you had the quest window open, because that is the only moment the game sends those numbers to your client &mdash; and the shimmer waits until everything it can verify is satisfied, so it never sends you on a wasted walk. It reads the framework's own quest files, so a quest pack needs no support of its own; walk back into range of a giver and any quest you already accepted from them is restored, which is how the list rebuilds itself on a computer that has never seen the world. Only quests you have already taken are ever restored &mdash; new ones still come from talking to the giver.</p>
+
 <p><strong>Story guide.</strong> The vanilla storyline, one step at a time &mdash; starting from the very first one: a few rusty gears and a question for a wandering trader. A "story so far" block at the top of the Side quests tab shows the step you are on and nothing more, advancing by itself as you play: it watches the story's own progress flags, the maps and letters in your hands, and what NPCs tell you in conversation. Steps that need something fetched pin it automatically and retire it when the step is done. No spoilers by construction &mdash; a step only appears once the game itself has told you that much, and what comes next stays hidden everywhere, including in the .tallybook story command. Progress is per world and only moves forward, so a lost map or a handed-over item never un-completes a step.</p>
 
 <p><strong>Places worth walking to become side quests too.</strong> Read a ruin map or treasure map &mdash; Better Ruins' artifacts, vanilla treasure maps, anything using the game's locator-map convention &mdash; and the destination joins the Side quests tab as a place to visit. Standing at the site marks it visited, and where a site hides writings that exist nowhere else in the world, the quest counts them ("5/17") from your journal and your bags, listing what you have found and keeping the rest the site's secret.</p>
@@ -54,26 +56,41 @@ Crafting shopping list, quest tracker, story guide, and world/player reference. 
 <li>Tallybook only ever reads. It never crafts for you, never moves your items, and never writes to your inventory &mdash; the worst bug it can have is a wrong number.</li>
 <li>Errands are counted, never decomposed: a fetch quest is a fetch, and its row won't sprout an anvil because the game technically has a recipe.</li>
 <li>One text-size slider (in Options) governs the HUD and the whole list window.</li>
-<li>Useful commands: .tallybook story (where you are in the storyline &mdash; never what comes next), .tallybook here &lt;name&gt; (set a quest giver's location to where you stand), .tallybook quests (every fetch errand your world's content describes, with your status), .tallybook sites (every locator-map destination and tracked site), .tallybook recipes (every item craftable more than one way), .tallybook spawn (everything the spawn tracker can see, layer by layer), .tallybook version (which build is actually running), .tallybook pages (diagnose a misbehaving Handbook button), .tallybook npcs, .tallybook relearn, .tallybook blankmarkers (finds untitled waypoints, which crash the vanilla map on hover &mdash; whoever made them).</li>
+<li>Useful commands: .tallybook story (where you are in the storyline &mdash; never what comes next), .tallybook here &lt;name&gt; (set a quest giver's location to where you stand), .tallybook quests (every fetch errand your world's content describes, with your status), .tallybook sites (every locator-map destination and tracked site), .tallybook vsquest (what the VS Quest integration can see, and 'track &lt;quest id&gt;' to assert a quest you took on another computer), .tallybook recipes (every item craftable more than one way), .tallybook spawn (everything the spawn tracker can see, layer by layer), .tallybook version (which build is actually running), .tallybook pages (diagnose a misbehaving Handbook button), .tallybook npcs, .tallybook relearn, .tallybook blankmarkers (finds untitled waypoints, which crash the vanilla map on hover &mdash; whoever made them).</li>
 <li>Config at VintagestoryData/ModConfig/tallybook.json; per-world data at VintagestoryData/ModData/tallybook/.</li>
-<li>For Vintage Story 1.22.x (tested against every patch release, 1.22.0 through 1.22.6).</li>
+<li>For Vintage Story 1.22.x (tested against every patch release, 1.22.0 through 1.22.7).</li>
+</ul>
+
+---
+
+## Changelog — 0.3.16 (HTML — paste as-is)
+
+<p><strong>Tallybook 0.3.16 &mdash; for Vintage Story 1.22.x</strong></p>
+
+<ul>
+<li><strong>New: VS Quest support</strong> &mdash; quests from the VS Quest framework (the one VS Village and other quest packs build on) are tracked as ordinary errands. Anything a quest asks you to <em>bring</em> becomes a row with its count, its giver, a map marker and a HUD line, and the gold ready-shimmer appears over the giver once you are carrying it all. It reads the framework's own quest files, so a quest pack needs no support of its own &mdash; the same promise Tallybook makes about recipes.</li>
+<li>Quests that also count kills or blocks show that progress <strong>as of the last time you had the quest window open</strong>, which is the only moment the game sends those counters to your client. The shimmer holds off while any objective is unverifiable, so it under-promises rather than sending you on a wasted walk.</li>
+<li><strong>Walk into range of a giver and any quest you already accepted from them is restored</strong> &mdash; how the list rebuilds itself on a computer that has never seen the world. Only quests you have already taken are ever restored; a new one still comes from talking to the giver, so nothing you have not been offered is revealed. Finished quests move to History with what you handed over and what you received.</li>
+<li><strong>Fixed: typing in another mod's window no longer triggers Tallybook's hotkeys.</strong> Naming a route in Boat Autopilot's planner &mdash; or typing in any mod's text field &mdash; with an L or a K in it opened the shopping list or toggled the HUD instead of typing the letter. Tallybook now checks whether the keyboard belongs to a text field before acting, and stands down if it does. The courtesy runs both ways: while one of Tallybook's own fields has focus, other mods' hotkeys stop firing on those letters too.</li>
+<li>New diagnostic: .tallybook vsquest, and .tallybook vsquest track &lt;quest id&gt; to assert a quest you accepted on another computer. TrackVsQuests in the config file turns the integration off.</li>
+<li>Tested against Vintage Story 1.22.7, now part of the version sweep.</li>
 </ul>
 
 ---
 
 ## Changelog — 0.3.15 (HTML — paste as-is)
 
-<p><strong>Tallybook 0.3.15 &mdash; for Vintage Story 1.22.x</strong></p>
+  <p><strong>Tallybook 0.3.15 &mdash; for Vintage Story 1.22.x</strong></p>
 
-<ul>
-<li><strong>New: Explore tab</strong> (on by default) &mdash; a place journal. Save the spot you are standing on with a name and a one-line "what it is" (or <em>.tallybook spot &lt;name&gt;</em>). Each place gets an orange star map marker, a live distance, a Map button, and the side-quest checkbox contract: checked places show on the HUD with the distance back, unchecked are parked. Longer notes fold under the row &mdash; one text field where "- " lines draw as bullets and "[ ]" lines as checkboxes you tick off with a click straight from the list &mdash; with an Edit window for name, description and notes (renaming moves the marker), hold-to-confirm removal, and an optional go-straight-there hotkey (unbound by default).</li>
-<li><strong>New: boat construction sites are plannable</strong> &mdash; the vanilla sailboat, Shipwright's boats, anything built in stages at a construction site. The stages are data Tallybook reads, so it works with no per-mod code: pin the roller item and press <strong>Construct</strong> to add the whole build as its own pin &mdash; rollers, planks, beams, rope, stage totals summed, the starter item as an expandable first row. The roller craft and the boat materials count at the same time, and holding rollers never marks the boat built.</li>
-<li><strong>Side quests: sorting and hand-arranging now cover every row.</strong> Errands and map-artifact site quests are one ordered list on the tab and the HUD alike &mdash; the Sort dropdown reorders all of it, and under Custom every row moves with ^ / v, the arrangement saved per world.</li>
-<li><strong>HUD rows link to the handbook</strong>: hold Alt to free the cursor and click any item row to open its handbook page.</li>
-<li><strong>History is organized by game year</strong> &mdash; newest year first, still-going quests on top, pre-install finishes collapsed at the bottom, and your folds are remembered.</li>
-<li><strong>The World tab is an accordion</strong> &mdash; it opens on "Changed on this server" with every category folded to a counted heading; the filter still finds everything inside folded sections.</li>
-<li>Tab order is now Items, Side quests, Explore, Player, World, Lore, History.</li>
-</ul>
+  <ul>
+  <li><strong>New: Explore tab</strong> (on by default) &mdash; a place journal. Save the spot you are standing on with a name and a one-line "what it is" (or <em>.tallybook spot &lt;name&gt;</em>). Each place gets an orange star map marker, a live distance, a Map button, and the side-quest checkbox contract: checked places show on the HUD with the distance back, unchecked are parked. Longer notes fold under the row &mdash; one text field where "- " lines draw as bullets and "[ ]" lines as checkboxes you tick off with a click straight from the list &mdash; with an Edit window for name, description and notes (renaming moves the marker), hold-to-confirm removal, and an optional go-straight-there hotkey (unbound by default).</li>
+  <li><strong>New: boat construction sites are plannable</strong> &mdash; the vanilla sailboat, Shipwright's boats, anything built in stages at a construction site. The stages are data Tallybook reads, so it works with no per-mod code: pin the roller item and press <strong>Construct</strong> to add the whole build as its own pin &mdash; rollers, planks, beams, rope, stage totals summed, the starter item as an expandable first row. The roller craft and the boat materials count at the same time, and holding rollers never marks the boat built.</li>
+  <li><strong>Side quests: sorting and hand-arranging now cover every row.</strong> Errands and map-artifact site quests are one ordered list on the tab and the HUD alike &mdash; the Sort dropdown reorders all of it, and under Custom every row moves with ^ / v, the arrangement saved per world.</li>
+  <li><strong>HUD rows link to the handbook</strong>: hold Alt to free the cursor and click any item row to open its handbook page.</li>
+  <li><strong>History is organized by game year</strong> &mdash; newest year first, still-going quests on top, pre-install finishes collapsed at the bottom, and your folds are remembered.</li>
+  <li><strong>The World tab is an accordion</strong> &mdash; it opens on "Changed on this server" with every category folded to a counted heading; the filter still finds everything inside folded sections.</li>
+  <li>Tab order is now Items, Side quests, Explore, Player, World, Lore, History.</li>
+  </ul>
 
 ---
 

@@ -287,6 +287,19 @@ namespace Tallybook
         public override bool PrefersUngrabbedMouse => true;
         public override double DrawOrder => 0.2;
 
+        /// <summary>
+        /// The other half of the typing courtesy: while one of THIS window's fields has the
+        /// keyboard — a count, the world filter, a place's name or notes — take the keys, so
+        /// another mod's always-available hotkey does not fire on a letter that was meant for
+        /// the box. Exactly what the API documents this for ("should this dialog (e.g. textbox)
+        /// capture all the keyboard events except for escape"), and Escape still closes.
+        ///
+        /// Only WHILE a field is focused, never merely because the window is open: capturing
+        /// the keyboard for the whole session would be the same rudeness pointing the other
+        /// way, and the player would lose every hotkey they have while reading their list.
+        /// </summary>
+        public override bool CaptureAllInputs() => TypingGuard.TextInputFocusedIn(SingleComposer);
+
         public override void OnGuiOpened()
         {
             base.OnGuiOpened();

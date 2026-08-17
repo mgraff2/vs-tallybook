@@ -219,6 +219,12 @@ namespace Tallybook
                 foreach (var pin in store.Pins.ToList())
                 {
                     if (pin.QuestGiver == null) continue;
+                    // Another framework's errand is finished by that framework's own record,
+                    // never by a dialogue variable. Without this, a villager and a quest giver
+                    // who happen to share a name and want the same item would archive each
+                    // other's errands — the identities are unrelated and must not be matched
+                    // by name and code alone.
+                    if (pin.VsQuestId != null) continue;
 
                     // The once-guard is ChainStates, not the record: chain-owned errands add
                     // no record of their own, and guarding on the record would redo those

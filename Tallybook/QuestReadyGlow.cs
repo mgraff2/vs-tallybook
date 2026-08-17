@@ -34,6 +34,15 @@ namespace Tallybook
         readonly QuestHistory history;
         long tickId;
 
+        /// <summary>
+        /// Givers that are ready by ENTITY ID rather than by name. Villager errands are matched
+        /// by name because a dialogue file's errand belongs to whoever speaks it — but another
+        /// quest framework's giver is one specific entity, and its givers can share a display
+        /// name, so glowing every villager called "Villager" would be worse than not glowing at
+        /// all. Supplied by whoever tracks that framework; null when nothing does.
+        /// </summary>
+        public Func<HashSet<long>> ReadyEntityIds;
+
         public QuestReadyGlow(ICoreClientAPI capi, TallybookConfig config, TallyService svc,
                               QuestHistory history)
         {
@@ -78,7 +87,8 @@ namespace Tallybook
                         if (waiting.Giver != null) ready.Add(waiting.Giver);
                     }
                 }
-                if (ready.Count == 0) return;
+                var ids = ReadyIds();
+                if (ready.Count == 0 && ids.Count == 0) return;
 
                 var eye = capi.World?.Player?.Entity?.Pos?.XYZ;
                 if (eye == null) return;
@@ -97,7 +107,7 @@ namespace Tallybook
 
                     var pos = npc.Pos?.XYZ;
                     if (pos == null || pos.SquareDistanceTo(eye) > Range * Range) continue;
-                    if (!IsNamed(npc, ready)) continue;
+                    if (!IsReady(npc, ready, ids)) continue;
 
                     Emit(npc);
                 }
@@ -128,6 +138,9 @@ namespace Tallybook
             var ready = new HashSet<string>(svc.ReadyQuestGivers(), StringComparer.OrdinalIgnoreCase);
             lines.Add("ready hand-ins: " + (ready.Count == 0 ? "none" : string.Join(", ", ready)));
 
+            var ids = ReadyIds();
+            lines.Add("ready by entity id: " + (ids.Count == 0 ? "none" : string.Join(", ", ids)));
+
             var waiting = history?.AwaitingRewards() ?? new List<(string, string, string)>();
             if (waiting.Count == 0) lines.Add("awaiting reward: none");
             foreach (var w in waiting)
@@ -146,15 +159,21 @@ namespace Tallybook
                     if (e == null || !e.Alive) continue;
                     var pos = e.Pos?.XYZ;
                     if (pos == null || pos.SquareDistanceTo(eye) > Range * Range) continue;
-                    if (e.GetBehavior<EntityBehaviorConversable>() == null) continue;
+                    // Quest givers are not always conversable: another framework's giver can be
+                    // a sneak-and-click entity with no dialogue at all, and filtering it out
+                    // here made the diagnostic report "nobody nearby" while one stood in front
+                    // of the player.
+                    if (e.GetBehavior<EntityBehaviorConversable>() == null && !VsQuests.IsQuestGiver(e))
+                        continue;
 
                     string name = null;
                     try { name = e.GetName(); } catch { }
                     if (string.IsNullOrEmpty(name)) continue;
 
                     seen++;
-                    lines.Add($"nearby: \"{name}\" {Math.Sqrt(pos.SquareDistanceTo(eye)):0}m away — "
-                        + (ready.Contains(name) ? "should be glowing" : "no quest ready"));
+                    lines.Add($"nearby: \"{name}\" (#{e.EntityId}) {Math.Sqrt(pos.SquareDistanceTo(eye)):0}m away — "
+                        + (ready.Contains(name) || ids.Contains(e.EntityId)
+                            ? "should be glowing" : "no quest ready"));
                 }
             }
             if (seen == 0) lines.Add("nearby: no conversable NPC within " + (int)Range + " blocks");
@@ -181,7 +200,8 @@ namespace Tallybook
                 {
                     if (waiting.Item3 != null) ready.Add(waiting.Item3);
                 }
-                if (ready.Count == 0) return glowing;
+                var ids = ReadyIds();
+                if (ready.Count == 0 && ids.Count == 0) return glowing;
 
                 var eye = capi.World?.Player?.Entity?.Pos?.XYZ;
                 var entities = capi.World?.LoadedEntities;
@@ -192,7 +212,7 @@ namespace Tallybook
                     if (npc == null || !npc.Alive) continue;
                     var pos = npc.Pos?.XYZ;
                     if (pos == null || pos.SquareDistanceTo(eye) > Range * Range) continue;
-                    if (!IsNamed(npc, ready)) continue;
+                    if (!IsReady(npc, ready, ids)) continue;
 
                     try { glowing.Add(npc.GetName()); } catch { }
                 }
@@ -209,10 +229,19 @@ namespace Tallybook
             if (me != null) Emit(me);
         }
 
-        static bool IsNamed(Entity e, HashSet<string> names)
+        static bool IsReady(Entity e, HashSet<string> names, HashSet<long> ids)
         {
+            if (ids.Contains(e.EntityId)) return true;
             try { return names.Contains(e.GetName()); }
             catch { return false; }
+        }
+
+        /// <summary>Never throws and never null: a cosmetic query that fails is "nobody is
+        /// ready", not an error the caller has to handle.</summary>
+        HashSet<long> ReadyIds()
+        {
+            try { return ReadyEntityIds?.Invoke() ?? new HashSet<long>(); }
+            catch { return new HashSet<long>(); }
         }
 
         void Emit(Entity npc)

@@ -145,6 +145,12 @@ namespace Tallybook
         /// remembered, so unpinning one is a decision that sticks.</summary>
         public bool AutoTrackQuests { get; set; } = true;
 
+        /// <summary>Track quests from the VS Quest framework (the one VS Village and others
+        /// build on) as ordinary errands. Only quests you have already accepted are ever
+        /// shown, and only their "bring me N of these" objectives become rows. Off means
+        /// Tallybook ignores that framework entirely.</summary>
+        public bool TrackVsQuests { get; set; } = true;
+
         /// <summary>Shimmer above a quest giver once you are carrying everything they asked
         /// for, so a completed errand is visible in the world rather than only in the list.
         /// Shown only when *all* of that NPC's tracked requests are satisfied.</summary>

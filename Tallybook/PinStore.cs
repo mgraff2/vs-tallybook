@@ -62,6 +62,21 @@ namespace Tallybook
         /// forever (it did).</summary>
         public bool WaypointPlaced;
 
+        /// <summary>The VS Quest quest this errand belongs to, or null. Set means the errand
+        /// is the framework's, not the dialogue files': its counting rule is the framework's
+        /// own (every accepted code, summed), its completion comes from the giver rather than
+        /// from a dialogue variable, and the vanilla history sweep leaves it alone.</summary>
+        public string VsQuestId;
+
+        /// <summary>Which of that quest's gather objectives this pin is. A quest asking for
+        /// two different things is two rows, and they must not collapse into one.</summary>
+        public int VsQuestObjective;
+
+        /// <summary>The giver's entity id — the framework's own identity for a quest giver,
+        /// and the only exact one: quest givers can share a display name, so the glow and the
+        /// completion check both key on this rather than on who they are called.</summary>
+        public long VsQuestGiverId;
+
         /// <summary>
         /// Count this item, do not break it down — "I am going to go and find these". The
         /// difference matters whenever a recipe exists but is not how anyone would actually
@@ -155,13 +170,20 @@ namespace Tallybook
         /// them would let her request quietly rewrite your own goal's count.</summary>
         [JsonIgnore]
         public string Key => Stack == null
-            ? MakeKey(Code, QuestGiver) + (BuildSite ? "|build" : "")
+            ? MakeKey(Code, QuestGiver) + Suffix(BuildSite, VsQuestId, VsQuestObjective)
             : key ??= MakeKey(RecipeProbe.PageCode(Stack) ?? Code, QuestGiver)
-                      + (BuildSite ? "|build" : "");
+                      + Suffix(BuildSite, VsQuestId, VsQuestObjective);
         string key;
 
         public static string MakeKey(string pageCode, string questGiver)
             => questGiver == null ? pageCode : $"{pageCode}|for:{questGiver}";
+
+        /// <summary>What distinguishes rows that share an item and a giver. A VS Quest errand
+        /// carries its quest and objective: one giver can be on several quests at once, and two
+        /// of them wanting the same item are two errands, not one doubled.</summary>
+        public static string Suffix(bool buildSite, string vsQuestId, int vsObjective)
+            => (buildSite ? "|build" : "")
+               + (vsQuestId == null ? "" : $"|q:{vsQuestId}#{vsObjective}");
 
         /// <summary>All direct rows satisfied and every tool present (spec §4's rollup).</summary>
         [JsonIgnore]
@@ -259,6 +281,11 @@ namespace Tallybook
         /// list: rearranging must cover every row, not just the pin rows (Mark).</summary>
         public List<string> QuestOrder = new List<string>();
 
+        /// <summary>VS Quest errands being tracked: what evidence they rest on, and what the
+        /// framework's own counters read the last time it told us. The pins carry the
+        /// shopping list; this carries what a pin cannot know.</summary>
+        public List<VsQuestTrack> VsQuests = new List<VsQuestTrack>();
+
         /// <summary>Locations the player saved to revisit (the Explore tab).</summary>
         public List<SavedPlace> Places = new List<SavedPlace>();
 
@@ -327,6 +354,7 @@ namespace Tallybook
         public List<string> QuestOrder { get; private set; } = new List<string>();
         public List<SavedPlace> Places { get; private set; } = new List<SavedPlace>();
         public List<string> PlaceRemovals { get; private set; } = new List<string>();
+        public List<VsQuestTrack> VsQuests { get; private set; } = new List<VsQuestTrack>();
         public event Action OnChanged;
 
         public PinStore(ICoreClientAPI capi)
@@ -444,13 +472,14 @@ namespace Tallybook
         /// time they talk to that villager would override them.
         /// </param>
         public Pin Add(ItemStack stack, int amount = 1, bool setCount = false, bool activate = true,
-                       string questGiver = null, bool buildSite = false)
+                       string questGiver = null, bool buildSite = false,
+                       string vsQuestId = null, int vsObjective = 0)
         {
             var code = stack?.Collectible?.Code?.ToShortString();
             if (code == null) return null;
 
             string key = Pin.MakeKey(RecipeProbe.PageCode(stack) ?? code, questGiver)
-                         + (buildSite ? "|build" : "");
+                         + Pin.Suffix(buildSite, vsQuestId, vsObjective);
             var pin = pins.FirstOrDefault(p => p.Key == key);
             if (pin == null)
             {
@@ -461,6 +490,8 @@ namespace Tallybook
                     Attributes = RecipeProbe.AttributesJson(stack),
                     QuestGiver = questGiver,
                     BuildSite = buildSite,
+                    VsQuestId = vsQuestId,
+                    VsQuestObjective = vsObjective,
                     Count = Math.Max(1, amount),
                     Stack = stack.Clone()
                 };
@@ -607,7 +638,8 @@ namespace Tallybook
                     QuestSort = QuestSort,
                     QuestOrder = QuestOrder,
                     Places = Places,
-                    PlaceRemovals = PlaceRemovals
+                    PlaceRemovals = PlaceRemovals,
+                    VsQuests = VsQuests
                 };
                 File.WriteAllText(path, JsonConvert.SerializeObject(file, Formatting.Indented));
             }
@@ -658,6 +690,7 @@ namespace Tallybook
             QuestOrder = new List<string>();
             Places = new List<SavedPlace>();
             PlaceRemovals = new List<string>();
+            VsQuests = new List<VsQuestTrack>();
             try
             {
                 string path = SavePath;
@@ -699,6 +732,8 @@ namespace Tallybook
                         }
                     }
                     if (loaded?.PlaceRemovals != null) PlaceRemovals = loaded.PlaceRemovals;
+                    if (loaded?.VsQuests != null)
+                        VsQuests = loaded.VsQuests.Where(q => q?.QuestId != null).ToList();
                 }
             }
             catch (Exception e)

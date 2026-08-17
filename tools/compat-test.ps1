@@ -132,6 +132,18 @@ function Get-CompatMod([string]$modid, [string]$filePattern) {
 Write-Host "Collecting companion mods..."
 $mods = [ordered]@{}
 $mods.betterruins = Get-CompatMod "betterruins" "BetterRuins*.zip"
+# vsquest: the quest framework Tallybook now reads (VS Village and others build on it). It is
+# the only companion whose presence Tallybook *branches* on, which makes the silence check
+# below load-bearing in a new way: every line of that integration lives in StartClientSide, so
+# a dedicated server running vsquest must STILL see exactly one mention of tallybook. The
+# counted marker for the integration itself cannot live here — it is client-side — so it is
+# logged at world join and printed by `.tallybook vsquest` instead.
+$mods.vsquest = Get-CompatMod "vsquest" "vsquest*.zip"
+# boatautopilot: a CLIENT-side GUI mod that puts a text field (a route name) inside the world
+# map screen. It is here for the half of the surface this script cannot reach — it is the mod
+# that caught Tallybook's hotkeys firing on letters typed into someone else's box — so the
+# headless run only proves it coexists; the typing check itself is on the manual list.
+$mods.boatautopilot = Get-CompatMod "boatautopilot" "boatautopilot*.zip"
 $mods.GetEnumerator() | ForEach-Object { Write-Host "  $($_.Key): $(Split-Path $_.Value -Leaf)" }
 
 # combos: solo, +each companion, all together. 'expect' = companion modids that must show
