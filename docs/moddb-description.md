@@ -3,6 +3,53 @@
 ModDB renders HTML, not Markdown. Every section below that gets pasted into ModDB is raw
 HTML; the short summary is plain text (it is a plain field).
 
+## What the ModDB page actually supports (verified against the live site, 0.3.17)
+
+Checked by fetching real mod pages and the site's own CSS/JS rather than guessing — the
+failure mode of guessing here is a mangled *public* page, so re-verify rather than trust
+this list if the site is redesigned.
+
+- **Collapsible sections are the site's own widget**, not `<details>`. Its editor is TinyMCE
+  with the `spoiler` plugin, and the markup it emits is exactly:
+
+  ```html
+  <div class="spoiler">
+    <div class="spoiler-toggle">Caption</div>
+    <div class="spoiler-text">…anything…</div>
+  </div>
+  ```
+
+  `style.css` carries `.spoiler-toggle:not(.expanded) ~ * { display: none }`, so it is
+  **collapsed by default with no attribute needed**, and `script.js` attaches the click
+  handler page-wide at DOM ready (`attachSpoilerToggle($(".spoiler-toggle"))` — it only
+  toggles the `expanded` class). `spoiler.css` supplies the ► / ▼ markers, the border and the
+  bold caption; the caption is 12px, so bump it inline when using these as section headers.
+  Plain `<details>`/`<summary>` does survive the sanitizer (the Extra Info mod page uses one),
+  but the spoiler widget is the one that matches the site's own look and is guaranteed
+  supported.
+- **`class="stdtable"` is the site's table style** — 1px gray borders, a translucent header
+  row, and parchment striping (`#e6dfd0` / `#fff8ea`) with a hover row. Use it; there is **no
+  Bootstrap** on the site, so the `table-bordered table-hover` classes other mod pages carry
+  are TinyMCE leftovers that do nothing.
+- **`class` and `style` attributes both survive**, including CSS custom properties. That means
+  inline styles can reference the site's own palette and stay right if it is retuned:
+  `var(--color-text)` `#333`, `--color-text-weak` `#6f6f6f`, `--color-border` `#aaa`,
+  `--color-link` `#3d6594`, `--color-highlight` `hsl(45 51% 54%)`,
+  `--color-content-bg` `hsl(42 100% 98%)`.
+- **`<style>` and `<script>` blocks are stripped** — no description on the site has one. All
+  styling must therefore be inline; there are no hover states or media queries available.
+- **`<h3>` is already styled as a section header** (120%, bottom rule, 40px top margin), so
+  use it bare rather than faking headings with bold paragraphs.
+- Also confirmed present in live description bodies: `table/thead/tbody/tr/th/td`, `dl/dt/dd`,
+  `p ul li strong em code pre br hr a img iframe blockquote small span div abbr`.
+- **The site is light-theme only** — no dark mode, no `prefers-color-scheme` anywhere in its
+  CSS — so light backgrounds with dark text are safe.
+
+Structure of the description below: a lead paragraph and two tables stay **open** (a page
+whose every section is collapsed reads as an empty page), and the long feature prose lives in
+spoilers, each captioned with a bold title plus a normal-weight teaser so the collapsed state
+still says what is inside.
+
 ## Short summary (under 100 characters)
 
 Crafting shopping list, quest tracker, story guide, and world/player reference. Fully client-side.
@@ -13,52 +60,182 @@ Crafting shopping list, quest tracker, story guide, and world/player reference. 
 
 ## Description (HTML — paste as-is)
 
-<p>Tallybook is five trackers and a reference book in one: a Satisfactory-style crafting shopping list &mdash; pin any item, see exactly what you still need to gather, with counts that update the instant your inventory changes &mdash; a side quest tracker that picks up villager and trader errands by itself, counts them the same way, and keeps a map marker on whoever is waiting for the goods &mdash; a spoiler-free story guide that walks you through the vanilla storyline one step at a time, advancing entirely from your own play &mdash; a lore collection tracker that counts your journal against everything the world hides and exports what you found as a printable book &mdash; a place journal for the mines, ruins and caves you mean to come back to, with notes, map markers and HUD distances &mdash; and World and Player tabs that answer "what are this world's rules" and "where do I respawn, and how many times". Fully client-side: works on any server, no server-side install needed.</p>
+<p style="font-size: 1.1em;"><strong>Tallybook is a shopping list, a quest tracker, a story guide and a reference book &mdash; one window, seven tabs, all of it live off your own inventory.</strong> Pin what you mean to build and it tells you exactly what you still need; accept an errand and it picks it up by itself; play the story and it walks a step behind you, never a step ahead. Fully client-side: install it on your client and it works on any server, modded or not.</p>
 
-<p><strong>Shopping list.</strong> Pin an item from its handbook page &mdash; one click, and it's exactly the variant you were looking at, not a sibling that shares its name. Every pin tracks its own acquisition (Low-quality soil 12/64 fills in as you dig), so loot-only and gather-only items are first-class goals, not just craftables. Expand any craftable row to unfold its recipe beneath it, sized to what you still lack: need 4, carry 1, and the children ask for materials for 3. Nested as deep as you like, one deliberate click per level &mdash; never automatic, so recipe cycles and wrong guesses can't lie to you.</p>
+<table class="stdtable" style="width: 100%;">
+<tbody>
+<tr><td style="width: 26%;"><strong>Where it installs</strong></td><td>Your client only. Nothing goes on the server, and nobody else needs it.</td></tr>
+<tr><td><strong>Game version</strong></td><td>Vintage Story 1.22.x &mdash; tested against every patch release, 1.22.0 through 1.22.7.</td></tr>
+<tr><td><strong>Content mods</strong></td><td>All of them, with no compat list to be on. Servers push their recipes and dialogue to connecting clients, and Tallybook reads those.</td></tr>
+<tr><td><strong>What it writes</strong></td><td>Nothing, ever. It never crafts for you and never touches your inventory &mdash; the worst bug it can have is a wrong number.</td></tr>
+<tr><td><strong>Opening it</strong></td><td><strong>L</strong> for the list, <strong>K</strong> for the HUD, and an <em>Add to Tallybook</em> button on every handbook page. All rebindable.</td></tr>
+</tbody>
+</table>
 
+<h3>Seven tabs, seven questions</h3>
+
+<table class="stdtable" style="width: 100%;">
+<thead>
+<tr><th style="width: 22%;">Tab</th><th>The question it answers</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Items</strong></td><td>What do I still need to gather before I can build this?</td></tr>
+<tr><td><strong>Side quests</strong></td><td>Who is waiting for what &mdash; and where are they?</td></tr>
+<tr><td><strong>Explore</strong></td><td>Which places did I mean to come back to?</td></tr>
+<tr><td><strong>Player</strong></td><td>Where do I respawn, and how many times can I still do it?</td></tr>
+<tr><td><strong>World</strong></td><td>What rules is this server actually running?</td></tr>
+<tr><td><strong>Lore</strong></td><td>What have I read, and how much is still out there?</td></tr>
+<tr><td><strong>History</strong></td><td>What have I already finished &mdash; and what was said?</td></tr>
+</tbody>
+</table>
+
+<p><small>Explore, Player, World and Lore can each be switched off in Options if you would rather have a shorter book.</small></p>
+
+<h3>What each part does</h3>
+
+<p><small>Click a heading to open it.</small></p>
+
+<div class="spoiler">
+<div class="spoiler-toggle" style="font-size: 15px;">The shopping list <span style="font-weight: normal; color: var(--color-text-weak);">&mdash; pin it, expand it, watch it fill in as you dig</span></div>
+<div class="spoiler-text">
+<p><strong>Pin an item from its handbook page.</strong> One click, and it is exactly the variant you were looking at, not a sibling that shares its name. Every pin tracks its own acquisition (Low-quality soil 12/64 fills in as you dig), so loot-only and gather-only items are first-class goals, not just craftables.</p>
+<p><strong>Expand any craftable row</strong> to unfold its recipe beneath it, sized to what you still lack: need 4, carry 1, and the children ask for materials for 3. Nested as deep as you like, one deliberate click per level &mdash; never automatic, so recipe cycles and wrong guesses can't lie to you.</p>
 <p><strong>Alternative recipes are found automatically, whatever mod added them.</strong> When an item has more than one genuinely different recipe &mdash; vanilla's way versus a mod's blueprint-gated way &mdash; Expand asks which you mean, listing each option by what it takes and what you'd have to be holding. No per-mod compat code: whether two recipes are a real choice is decided by what they consume, so it works for content mods that haven't been written yet.</p>
+<p><strong>And the crafting grid is not the whole story.</strong> Tallybook follows every way the game actually makes things:</p>
+<ul>
+<li>cooking-pot products &mdash; acids, glue, potash</li>
+<li>barrel recipes, distilling and fruit pressing</li>
+<li>grinding, crushing and smelting</li>
+<li>crucible alloying, counted in nuggets and bits &mdash; the units a crucible really accepts, at the ratios you'd pour</li>
+<li>anvil smithing, so iron ingots finally decompose honestly: nuggets to bloom to hammered ingot</li>
+</ul>
+<p>Liquids are tracked as litres in whatever container the recipe accepts, an empty bowl never counts as a bowl of water, and pinned liquids get a volume calculator for "how many buckets is that".</p>
+<p><strong>Boat construction sites are plannable too.</strong> The vanilla sailboat, Shipwright's Drakkar and friends are built in stages at a construction site &mdash; and those stages are data Tallybook reads, so no per-mod code. Pin the roller item and press <strong>Construct</strong>: the whole build joins your list as its own pin &mdash; rollers, planks, beams, rope, stone ballast, stage totals summed &mdash; with the starter item as an expandable first row, so the roller craft and the boat materials count at the same time. Holding rollers never marks the boat built.</p>
+</div>
+</div>
 
-<p><strong>And the grid is not the whole story.</strong> Tallybook follows every way the game actually makes things: cooking-pot products (acids, glue, potash), barrel recipes, distilling, fruit pressing, grinding, crushing, smelting, crucible alloying (counted in nuggets and bits &mdash; the units a crucible really accepts, at the ratios you'd pour), and anvil smithing &mdash; so iron ingots finally decompose honestly: nuggets to bloom to hammered ingot. Liquids are tracked as litres in whatever container the recipe accepts, an empty bowl never counts as a bowl of water, and pinned liquids get a volume calculator for "how many buckets is that".</p>
-
-<p><strong>Side quests.</strong> Accept a fetch errand the way the game intends and Tallybook picks it up on its own &mdash; no button, no extra click. The row reads Raw hide (Small) for Gerhardt 3/10 and goes green when you can deliver. What the villager actually said is kept as a transcript under the row, re-readable a week later. Errands you were already on are recovered at login from the game's own dialogue files &mdash; including quests accepted before Tallybook was installed &mdash; and handed-in errands notice they're finished by themselves, moving to History instead of sitting at 0/10 forever because the goods left your bags.</p>
-
+<div class="spoiler">
+<div class="spoiler-toggle" style="font-size: 15px;">Side quests <span style="font-weight: normal; color: var(--color-text-weak);">&mdash; errands picked up by themselves, counted, mapped and remembered</span></div>
+<div class="spoiler-text">
+<p><strong>Accept a fetch errand the way the game intends and Tallybook picks it up on its own</strong> &mdash; no button, no extra click. The row reads <em>Raw hide (Small) for Gerhardt 3/10</em> and goes green when you can deliver. What the villager actually said is kept as a transcript under the row, re-readable a week later.</p>
+<p>Errands you were already on are recovered at login from the game's own dialogue files &mdash; <strong>including quests accepted before Tallybook was installed</strong> &mdash; and handed-in errands notice they're finished by themselves, moving to History instead of sitting at 0/10 forever because the goods left your bags.</p>
 <p><strong>Quests from the VS Quest framework too</strong> &mdash; the one VS Village and other quest packs are built on. Accept a quest at its giver and anything it asks you to <em>bring</em> lands on the list as an errand, with the count, the giver, a map marker, a HUD row and the ready-shimmer once you carry it all. Quests that also count kills or blocks show how far along those are as of the last time you had the quest window open, because that is the only moment the game sends those numbers to your client &mdash; and the shimmer waits until everything it can verify is satisfied, so it never sends you on a wasted walk. It reads the framework's own quest files, so a quest pack needs no support of its own; walk back into range of a giver and any quest you already accepted from them is restored, which is how the list rebuilds itself on a computer that has never seen the world. Only quests you have already taken are ever restored &mdash; new ones still come from talking to the giver.</p>
+<p><strong>Places worth walking to become side quests as well.</strong> Read a ruin map or treasure map &mdash; Better Ruins' artifacts, vanilla treasure maps, anything using the game's locator-map convention &mdash; and the destination joins the tab as a place to visit. Standing at the site marks it visited, and where a site hides writings that exist nowhere else in the world, the quest counts them ("5/17") from your journal and your bags, listing what you have found and keeping the rest the site's secret.</p>
+</div>
+</div>
 
-<p><strong>Story guide.</strong> The vanilla storyline, one step at a time &mdash; starting from the very first one: a few rusty gears and a question for a wandering trader. A "story so far" block at the top of the Side quests tab shows the step you are on and nothing more, advancing by itself as you play: it watches the story's own progress flags, the maps and letters in your hands, and what NPCs tell you in conversation. Steps that need something fetched pin it automatically and retire it when the step is done. No spoilers by construction &mdash; a step only appears once the game itself has told you that much, and what comes next stays hidden everywhere, including in the .tallybook story command. Progress is per world and only moves forward, so a lost map or a handed-over item never un-completes a step.</p>
+<div class="spoiler">
+<div class="spoiler-toggle" style="font-size: 15px;">The story guide <span style="font-weight: normal; color: var(--color-text-weak);">&mdash; one step at a time, and never one step ahead</span></div>
+<div class="spoiler-text">
+<p>The vanilla storyline, one step at a time &mdash; starting from the very first one: a few rusty gears and a question for a wandering trader. A <em>story so far</em> block at the top of the Side quests tab shows the step you are on and nothing more, advancing by itself as you play: it watches the story's own progress flags, the maps and letters in your hands, and what NPCs tell you in conversation. Steps that need something fetched pin it automatically and retire it when the step is done.</p>
+<p><strong>No spoilers by construction</strong> &mdash; a step only appears once the game itself has told you that much, and what comes next stays hidden everywhere, including in the <code>.tallybook story</code> command. Progress is per world and only moves forward, so a lost map or a handed-over item never un-completes a step.</p>
+</div>
+</div>
 
-<p><strong>Places worth walking to become side quests too.</strong> Read a ruin map or treasure map &mdash; Better Ruins' artifacts, vanilla treasure maps, anything using the game's locator-map convention &mdash; and the destination joins the Side quests tab as a place to visit. Standing at the site marks it visited, and where a site hides writings that exist nowhere else in the world, the quest counts them ("5/17") from your journal and your bags, listing what you have found and keeping the rest the site's secret.</p>
+<div class="spoiler">
+<div class="spoiler-toggle" style="font-size: 15px;">Explore &mdash; a place journal <span style="font-weight: normal; color: var(--color-text-weak);">&mdash; the mine you half-dug, the ruin you spotted at dusk</span></div>
+<div class="spoiler-text">
+<p>Standing somewhere worth coming back to, save it with a name and a one-line "what it is" (or <code>.tallybook spot &lt;name&gt;</code> from chat). Each place gets an orange star on your map, a live distance, a Map button, and the side-quest checkbox contract: checked places ride the HUD (<em>Old copper mine &mdash; mine, half dug (1,240m)</em>), unchecked are parked.</p>
+<p>Longer notes fold under the row &mdash; one free-text field where "- " lines draw as bullets and "[ ]" lines as checkboxes you tick off with a single click straight from the list. An Edit window changes everything (renaming moves the marker), removing takes the same hold-to-confirm as unpinning, and an optional hotkey opens straight to the tab.</p>
+</div>
+</div>
 
-<p><strong>Explore tab.</strong> A place journal: standing somewhere worth coming back to &mdash; a mine half-dug, a ruin spotted at dusk &mdash; save it with a name and a one-line "what it is" (or <em>.tallybook spot &lt;name&gt;</em> from chat). Each place gets an orange star on your map, a live distance, a Map button, and the side-quest checkbox contract: checked places ride the HUD ("Old copper mine &mdash; mine, half dug (1,240m)"), unchecked are parked. Longer notes fold under the row &mdash; one free-text field where "- " lines draw as bullets and "[ ]" lines as checkboxes you tick off with a single click straight from the list. An Edit window changes everything (renaming moves the marker), removing takes the same hold-to-confirm as unpinning, and an optional hotkey opens straight to the tab.</p>
+<div class="spoiler">
+<div class="spoiler-toggle" style="font-size: 15px;">Lore <span style="font-weight: normal; color: var(--color-text-weak);">&mdash; count what you've read, and print it as a book</span></div>
+<div class="spoiler-text">
+<p>The books, scrolls and tapestries you read land in your journal; this tab counts them against everything this world's content defines &mdash; volumes discovered, chapters collected, and how many volumes are still hidden, <strong>as counts only</strong>: unfound titles stay the world's secret.</p>
+<p>Found volumes cluster by source (Vanilla first, then each lore-adding mod), filterable by status, by mod, and by story lore &mdash; writings only the story's own places can hold, recognised from the world's files, never a hand-kept list &mdash; versus world lore. Every volume has a Read button that opens the game's journal directly on that entry, side by side with the list.</p>
+<p><strong>Export book</strong> writes your found lore as one printable HTML book &mdash; cover, contents, a section per volume &mdash; ready for your browser's print-to-PDF. All of it reads from the server-synced journal, so progress follows you between computers, and modded lore counts with zero compat work.</p>
+</div>
+</div>
 
-<p><strong>Boat construction sites are plannable.</strong> The vanilla sailboat, Shipwright's Drakkar and friends are built in stages at a construction site &mdash; and those stages are data Tallybook reads, so no per-mod code. Pin the roller item and press <strong>Construct</strong>: the whole build joins your list as its own pin &mdash; rollers, planks, beams, rope, stone ballast, stage totals summed &mdash; with the starter item as an expandable first row, so the roller craft and the boat materials count at the same time. Holding rollers never marks the boat built.</p>
+<div class="spoiler">
+<div class="spoiler-toggle" style="font-size: 15px;">World and Player <span style="font-weight: normal; color: var(--color-text-weak);">&mdash; this server's rules, and your own numbers</span></div>
+<div class="spoiler-text">
+<p><strong>World tab.</strong> A reference card of this world's rules: every world-config setting the installed mods declare &mdash; world generation, survival challenges, temporal stability, all of it &mdash; grouped under the create-world screen's own headings, resolved to the labels that screen uses. Values the server changed from the game's defaults draw in colour with the default named on hover; a filter box finds settings by name, value, or description ("mobs" finds the grace timer). Below the settings: every mod this world runs, with versions &mdash; <strong>including server-side mods your client never loads</strong>. Handy on a server whose settings you didn't write.</p>
+<p><strong>Player tab.</strong> Your spawn points, tracked: the world spawn and your temporal-gear returning point, each with coordinates, live distance, a Map button, and a maintained map marker that follows the point and leaves when it is used up or moved. <em>Respawns left there</em> counts your returning point's remaining uses against the server's budget &mdash; and drops as you die. Below that: your deaths in this world, lives left where the server grants a fixed number, character class, and temporal stability. A checkbox puts a <em>Spawn distance</em> line in the HUD &mdash; how far you are from wherever you would respawn right now &mdash; with an optional warning distance past which the line turns a colour you pick.</p>
+</div>
+</div>
 
-<p><strong>Lore tab.</strong> The books, scrolls and tapestries you read land in your journal; this tab counts them against everything this world's content defines &mdash; volumes discovered, chapters collected, and how many volumes are still hidden, as counts only: unfound titles stay the world's secret. Found volumes cluster by source (Vanilla first, then each lore-adding mod), filterable by status, by mod, and by story lore &mdash; writings only the story's own places can hold, recognised from the world's files, never a hand-kept list &mdash; versus world lore. Every volume has a Read button that opens the game's journal directly on that entry, side by side with the list; Export book writes your found lore as one printable HTML book &mdash; cover, contents, a section per volume &mdash; ready for your browser's print-to-PDF. All of it reads from the server-synced journal, so progress follows you between computers, and modded lore counts with zero compat work.</p>
+<div class="spoiler">
+<div class="spoiler-toggle" style="font-size: 15px;">The HUD and the map <span style="font-weight: normal; color: var(--color-text-weak);">&mdash; pooled totals in the corner, markers on whoever is waiting</span></div>
+<div class="spoiler-text">
+<p><strong>HUD.</strong> A corner overlay in the minimap's style: side quests with distances, then pooled gathering totals &mdash; one <em>Boards 12/48</em> line even when three builds want boards &mdash; then required tools with carried/missing checks. Item icons on every line, with "any wood"-style rows cycling their icon through the accepted variants, handbook-style. It slots in directly under the minimap and coordinates like one more panel in the stack &mdash; sitting under compact corner elements, beside tall ones &mdash; and disappears when your list is empty. Hold <strong>Alt</strong> to free the cursor and click any row through to its handbook page.</p>
+<p><strong>Map.</strong> Quest givers get a light-blue X for as long as their errand is live, and every errand row has a Map button that opens the world map centred on them. An errand that came with a locator map points at the map's destination while you're still fetching &mdash; the lens is in the Devastation, and that's the walk you're making &mdash; then back at the giver once you have the goods. Locations are learned by talking to the NPC (never by proximity scanning), from your own waypoints when one names them, or told directly: stand at the forge and type <code>.tallybook here Agnieszka</code>.</p>
+</div>
+</div>
 
-<p><strong>World tab (on by default, switchable off in Options).</strong> A reference card of this world's rules: every world-config setting the installed mods declare &mdash; world generation, survival challenges, temporal stability, all of it &mdash; grouped under the create-world screen's own headings, resolved to the labels that screen uses. Values the server changed from the game's defaults draw in colour with the default named on hover; a filter box finds settings by name, value, or description ("mobs" finds the grace timer). Below the settings: every mod this world runs, with versions &mdash; including server-side mods your client never loads. Handy on a server whose settings you didn't write.</p>
+<div class="spoiler">
+<div class="spoiler-toggle" style="font-size: 15px;">History <span style="font-weight: normal; color: var(--color-text-weak);">&mdash; everything finished, with what was said</span></div>
+<div class="spoiler-text">
+<p>Everything you've finished, including quests completed before Tallybook was installed, with the conversation transcripts preserved and story milestones (villages found, lore heard) recorded alongside. Undated finishes are ordered by story prerequisites rather than guessed dates. One click away from your journal for the lore you collected en route.</p>
+</div>
+</div>
 
-<p><strong>Player tab (on by default too).</strong> Your spawn points, tracked: the world spawn and your temporal-gear returning point, each with coordinates, live distance, a Map button, and a maintained map marker that follows the point and leaves when it is used up or moved. "Respawns left there" counts your returning point's remaining uses against the server's budget &mdash; and drops as you die. Below that: your deaths in this world, lives left where the server grants a fixed number, character class, and temporal stability. A checkbox on the tab puts a "Spawn distance" line in the HUD &mdash; how far you are from wherever you would respawn right now &mdash; with an optional warning distance past which the line turns a colour you pick.</p>
+<h3>Keys</h3>
 
-<p><strong>Map integration.</strong> Quest givers get a light-blue X on your map for as long as their errand is live, and every errand row has a Map button that opens the world map centred on them. An errand that came with a locator map points at the map's destination while you're still fetching &mdash; the lens is in the Devastation, and that's the walk you're making &mdash; then back at the giver once you have the goods. Locations are learned by talking to the NPC (never by proximity scanning), from your own waypoints when one names them, or told directly: stand at the forge and type .tallybook here Agnieszka.</p>
+<table class="stdtable" style="width: 100%;">
+<thead>
+<tr><th style="width: 22%;">Key</th><th>Does</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>L</strong></td><td>Open the list</td></tr>
+<tr><td><strong>K</strong></td><td>Toggle the HUD</td></tr>
+<tr><td><strong>Alt</strong> + click</td><td>Free the cursor and click a HUD row through to its handbook page</td></tr>
+<tr><td><em>unbound</em></td><td>Optional: open straight to the Explore tab</td></tr>
+</tbody>
+</table>
 
-<p><strong>HUD.</strong> A corner overlay in the minimap's style: side quests with distances, then pooled gathering totals &mdash; one Boards 12/48 line even when three builds want boards &mdash; then required tools with carried/missing checks. Item icons on every line, with "any wood"-style rows cycling their icon through the accepted variants, handbook-style. It slots in directly under the minimap and coordinates like one more panel in the stack &mdash; sitting under compact corner elements, beside tall ones &mdash; and disappears when your list is empty.</p>
+<p><small>All rebindable under Settings &rarr; Controls. Tallybook's hotkeys stand down while you are typing in any mod's text field, and its own fields return the courtesy.</small></p>
 
-<p><strong>History.</strong> Everything you've finished, including quests completed before Tallybook was installed, with the conversation transcripts preserved and story milestones (villages found, lore heard) recorded alongside. Undated finishes are ordered by story prerequisites rather than guessed dates. One click away from your journal for the lore you collected en route.</p>
+<h3>Commands</h3>
 
-<p><strong>Everything updates live.</strong> Counting is event-driven off your carried inventory &mdash; hotbar and backpacks, with an opt-in for saddlebags on animals you own. No polling, no nearby-chest scanning: the question is "what do I have on me", answered honestly.</p>
+<p>Client commands, so they start with a dot.</p>
 
-<p><strong>How to open it:</strong> press L for the list (Items, Side quests, Explore, Player, World, Lore and History tabs &mdash; the middle four switchable off in Options), K to toggle the HUD, and pin from any handbook page via its "Add to Tallybook" button. With Alt held, HUD rows click through to their handbook pages. All keys rebindable under Settings &rarr; Controls.</p>
+<table class="stdtable" style="width: 100%;">
+<thead>
+<tr><th style="width: 34%;">Everyday</th><th>Prints</th></tr>
+</thead>
+<tbody>
+<tr><td><code>.tallybook story</code></td><td>Where you are in the storyline &mdash; never what comes next</td></tr>
+<tr><td><code>.tallybook quests</code></td><td>Every fetch errand your world's content describes, with your status</td></tr>
+<tr><td><code>.tallybook sites</code></td><td>Every locator-map destination and tracked site</td></tr>
+<tr><td><code>.tallybook recipes</code></td><td>Every item craftable more than one way</td></tr>
+<tr><td><code>.tallybook spot &lt;name&gt;</code></td><td>Save the place you are standing on to Explore</td></tr>
+<tr><td><code>.tallybook here &lt;name&gt;</code></td><td>Set a quest giver's location to where you stand</td></tr>
+</tbody>
+</table>
 
-<p><strong>Good to know</strong></p>
+<table class="stdtable" style="width: 100%;">
+<thead>
+<tr><th style="width: 34%;">If something looks wrong</th><th>Prints</th></tr>
+</thead>
+<tbody>
+<tr><td><code>.tallybook version</code></td><td>Which build is actually running &mdash; start here</td></tr>
+<tr><td><code>.tallybook spawn</code></td><td>Everything the spawn tracker can see, layer by layer</td></tr>
+<tr><td><code>.tallybook vsquest</code></td><td>What the VS Quest integration can see. <code>track &lt;quest id&gt;</code> asserts a quest you took on another computer</td></tr>
+<tr><td><code>.tallybook pages</code></td><td>Diagnose a misbehaving Handbook button</td></tr>
+<tr><td><code>.tallybook npcs</code></td><td>Who Tallybook knows about, and where</td></tr>
+<tr><td><code>.tallybook relearn</code></td><td>Forget learned positions and relearn them</td></tr>
+<tr><td><code>.tallybook blankmarkers</code></td><td>Finds untitled waypoints &mdash; which crash the vanilla map on hover, whoever made them</td></tr>
+</tbody>
+</table>
+
+<h3>What Tallybook will never do</h3>
 
 <ul>
-<li>Works with every content mod's recipes and trader errands for free: servers push their recipes and dialogue to connecting clients, and Tallybook reads those &mdash; there is no compat list to be on.</li>
-<li>Tallybook only ever reads. It never crafts for you, never moves your items, and never writes to your inventory &mdash; the worst bug it can have is a wrong number.</li>
-<li>Errands are counted, never decomposed: a fetch quest is a fetch, and its row won't sprout an anvil because the game technically has a recipe.</li>
-<li>One text-size slider (in Options) governs the HUD and the whole list window.</li>
-<li>Useful commands: .tallybook story (where you are in the storyline &mdash; never what comes next), .tallybook here &lt;name&gt; (set a quest giver's location to where you stand), .tallybook quests (every fetch errand your world's content describes, with your status), .tallybook sites (every locator-map destination and tracked site), .tallybook vsquest (what the VS Quest integration can see, and 'track &lt;quest id&gt;' to assert a quest you took on another computer), .tallybook recipes (every item craftable more than one way), .tallybook spawn (everything the spawn tracker can see, layer by layer), .tallybook version (which build is actually running), .tallybook pages (diagnose a misbehaving Handbook button), .tallybook npcs, .tallybook relearn, .tallybook blankmarkers (finds untitled waypoints, which crash the vanilla map on hover &mdash; whoever made them).</li>
-<li>Config at VintagestoryData/ModConfig/tallybook.json; per-world data at VintagestoryData/ModData/tallybook/.</li>
-<li>For Vintage Story 1.22.x (tested against every patch release, 1.22.0 through 1.22.7).</li>
+<li><strong>Craft for you, or move a single item.</strong> Everything here only ever reads. That is a decision, not a limitation &mdash; automating the game into boringness is not the point, and a mod that only reads can never scatter your inventory.</li>
+<li><strong>Count chests you are standing next to.</strong> The question is "what do I have on me", and answering a different one dishonestly is worse than not answering. The one opt-in extension is saddlebags on animals you own.</li>
+<li><strong>Decompose an errand.</strong> A fetch quest is a fetch. Its row won't sprout an anvil because the game technically has a recipe that consumes one.</li>
+<li><strong>Show you a step you haven't reached.</strong> Story steps, unfound lore titles and un-offered quests all stay hidden. Where Tallybook cannot tell, it says nothing rather than guessing.</li>
+</ul>
+
+<h3>Good to know</h3>
+
+<ul>
+<li>Counting is event-driven off your carried inventory &mdash; hotbar and backpacks &mdash; so rows flip the instant you pick something up. No polling.</li>
+<li>One text-size slider, in Options, governs the HUD and the whole list window.</li>
+<li>Config at <code>VintagestoryData/ModConfig/tallybook.json</code>; per-world data at <code>VintagestoryData/ModData/tallybook/</code>.</li>
 </ul>
 
 ---
