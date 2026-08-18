@@ -76,6 +76,20 @@ namespace Tallybook
         /// </summary>
         public string SelfPageCode;
 
+        /// <summary>
+        /// An errand's self row: the stack the NPC's dialogue actually asked for, matched by
+        /// the game's own hand-over rule instead of by handbook page.
+        ///
+        /// The two answers usually agree, and where they part the dialogue's is the one the
+        /// player lives with — it decides whether the turn-in line appears at all. It is
+        /// looser about attributes in one direction (a globe carrying only its type still
+        /// satisfies a request for a *collected* globe: the game asks whether what you hold
+        /// is a subset of what was asked for) and stricter in another (a tool below 95%
+        /// durability, or food past fresh, is refused outright). Counting goods the trader
+        /// will turn away is the same lie as counting an empty bowl as a bowl of water.
+        /// </summary>
+        public ItemStack QuestWantStack;
+
         /// <summary>The variants this row accepts must all be ONE material (a construction
         /// site binds its wood at the first delivery): the count is the best single
         /// material carried, never a mixed sum — twelve oak and twelve birch planks are
@@ -228,7 +242,10 @@ namespace Tallybook
             get
             {
                 if (key != null) return key;
-                if (SelfPageCode != null) return key = $"S|{SelfPageCode}";
+                // An errand row counts the same page by a different rule, so it must not
+                // pool with a personal goal for the same item — same reason uniform rows
+                // stay apart from ordinary ones below.
+                if (SelfPageCode != null) return key = $"S|{SelfPageCode}{(QuestWantStack != null ? "|Q" : "")}";
 
                 var codes = string.Join(",", ExactCodes.OrderBy(c => c, StringComparer.Ordinal));
                 var others = string.Join(",", OtherMatchers
@@ -326,6 +343,10 @@ namespace Tallybook
 
         public int Count(Requirement req)
         {
+            // An errand counts by the dialogue's rule — the same rule the hand-over line
+            // will apply a moment later, when it decides whether to appear at all.
+            if (req.QuestWantStack != null) return CountQuestMatches(req.QuestWantStack);
+
             // Self requirements name one exact page — a single lookup, and no chance of
             // another variant of the same code counting toward it.
             if (req.SelfPageCode != null)
@@ -406,6 +427,49 @@ namespace Tallybook
             }
             return total;
         }
+
+        /// <summary>
+        /// The dialogue's own hand-over test, applied to everything carried.
+        ///
+        /// Lifted from <c>DialogueComponent.matches</c> (decompile-verified 1.22.7), which is
+        /// what the turn-in line is gated on: the wanted stack equals what is carried once a
+        /// fixed set of attributes is ignored, OR what is carried is an attribute *subset* of
+        /// what was asked for — plus a freshness gate that quietly refuses worn tools and
+        /// spoiled food. Delegating to the game's own comparisons is the same discipline the
+        /// crafting rows follow with SatisfiesAsIngredient: it is the only way the count can
+        /// never disagree with the mechanism it is predicting.
+        ///
+        /// The one deliberate divergence, unchanged: the game wants the whole quantity in a
+        /// SINGLE slot, and we sum across slots. Splitting ten gears 5+5 is the player's to
+        /// notice; telling them they own nothing would be worse.
+        /// </summary>
+        int CountQuestMatches(ItemStack want)
+        {
+            int total = 0;
+            foreach (var entry in byPage)
+            {
+                var carried = entry.Value.Sample;
+                if (carried?.Collectible == null) continue;
+                bool ok;
+                try
+                {
+                    ok = (want.Equals(world, carried, QuestIgnoredAttributes) || carried.Satisfies(want))
+                         && carried.Collectible.IsReasonablyFresh(world, carried);
+                }
+                catch { ok = false; }
+                if (ok) total += entry.Value.Total;
+            }
+            return total;
+        }
+
+        /// <summary>What the dialogue runner ignores when comparing a carried stack to a
+        /// requested one — the engine's own ignored set plus the five it appends itself
+        /// (backpack, condition, durability, randomX, randomZ). Its own list is a private
+        /// method, so this mirrors it rather than calling it; re-check it against
+        /// <c>DialogueComponent.getIgnoreAttrs</c> when the game version moves.</summary>
+        static readonly string[] QuestIgnoredAttributes = GlobalConstants.IgnoredStackAttributes
+            .Concat(new[] { "backpack", "condition", "durability", "randomX", "randomZ" })
+            .ToArray();
 
         // ---- uniform-material counting (construction builds) --------------------------
 
@@ -1979,6 +2043,47 @@ namespace Tallybook
             }
             catch { /* a modded provider throwing must not cost the button */ }
             return PageCode(stack);
+        }
+
+        /// <summary>
+        /// Page codes the handbook may actually hold for this stack, most specific first —
+        /// the last resort before giving up and searching by name.
+        ///
+        /// The handbook builds one stack page per entry of
+        /// <c>collectible.GetHandBookStacks(capi)</c> (decompile-verified:
+        /// ModSystemSurvivalHandbook.SetupBehaviorAndGetItemStacks), and that list is not
+        /// always made of the stacks players carry. Clutter is the case that found it: its
+        /// handbook stack for a globe is <c>{ type: "globe1" }</c> — built as a bare
+        /// JsonItemStack in BlockClutter.LoadTypes — while a globe you salvaged carries
+        /// <c>{ type: "globe1", collected: true }</c>, because BlockBehaviorReparable stamps
+        /// that on the drop. Two attributes against one, so the page code differs, the index
+        /// has never held it, and the Handbook button fell through to a name search that
+        /// found the page anyway — visibly the long way round (found by Mark).
+        ///
+        /// Asked of the game's own list rather than by dropping attributes until something
+        /// matches: a candidate qualifies when what it carries is a subset of what we carry
+        /// (<c>Satisfies</c>, the same direction the game uses everywhere else), and the most
+        /// specific qualifying stack comes first — so a collectible whose pages genuinely DO
+        /// differ by attribute still lands on the right one rather than its blandest sibling.
+        /// Only ever consulted once an exact lookup has already missed, so a well-indexed
+        /// stack can never be talked down to a coarser page.
+        /// </summary>
+        public static IEnumerable<string> RepresentativePageCodes(ItemStack stack, ICoreClientAPI capi)
+        {
+            if (stack?.Collectible == null || capi == null) return Enumerable.Empty<string>();
+            try
+            {
+                var stacks = stack.Collectible.GetHandBookStacks(capi);
+                if (stacks == null) return Enumerable.Empty<string>();
+                return stacks
+                    .Where(hs => hs != null && hs.Satisfies(stack))
+                    .OrderByDescending(hs => hs.Attributes?.Count ?? 0)
+                    .Select(PageCode)
+                    .Where(c => c != null)
+                    .Distinct()
+                    .ToList();
+            }
+            catch { return Enumerable.Empty<string>(); }
         }
 
         /// <summary>

@@ -3407,6 +3407,18 @@ namespace Tallybook
 
             if (basePage != null && basePage != page && handbook.OpenDetailPageFor(basePage)) return;
 
+            // Neither code is indexed, so ask the collectible which pages the handbook built
+            // FROM it and try those, most specific first. Clutter is why: the handbook's page
+            // for a globe is built from a bare { type } stack while the one in your bag also
+            // carries { collected }, so the exact code misses and the bare block code — which
+            // names no page at all for a shape-from-attributes block — misses too. The
+            // handbook itself confirms each candidate; nothing here assumes a page exists.
+            foreach (var candidate in RecipeProbe.RepresentativePageCodes(stack, capi))
+            {
+                if (candidate == page || candidate == basePage) continue;
+                if (handbook.OpenDetailPageFor(candidate)) return;
+            }
+
             // No code we can derive names an indexed page. Searching by display name lands
             // the player on a list with the right entry in it — self-explanatory on screen —
             // where stopping at the root reads as the button doing nothing at all.

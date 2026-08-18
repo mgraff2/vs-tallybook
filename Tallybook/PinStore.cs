@@ -175,6 +175,12 @@ namespace Tallybook
                       + Suffix(BuildSite, VsQuestId, VsQuestObjective);
         string key;
 
+        /// <summary>Forget the cached identity, for the one case that changes it: a repair
+        /// that fills in attributes the pin was written without. Identity moving under a pin
+        /// is otherwise exactly what the cache is there to prevent, so nothing else may call
+        /// this.</summary>
+        public void ResetKey() => key = null;
+
         public static string MakeKey(string pageCode, string questGiver)
             => questGiver == null ? pageCode : $"{pageCode}|for:{questGiver}";
 

@@ -2,7 +2,7 @@
   "type": "code",
   "name": "Tallybook",
   "modid": "tallybook",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "description": "Crafting shopping list, villager quest tracker, spoiler-free story guide, lore collection tracker, place journal, and world reference. Pin any item for live inventory-tracked counts — boat construction sites included, stage materials and all — have fetch errands picked up and mapped automatically — villager dialogue quests and VS Quest framework quests alike — and follow the vanilla story one revealed step at a time. The Explore tab saves places to revisit with notes, map markers and HUD distances. The Lore tab counts your journal against everything this world's content hides and exports your found lore as a printable book. The World tab shows every world-config rule this world runs with (and every mod, with versions); the Player tab tracks your spawn points with map markers, respawns left, and an optional distance-to-spawn HUD line. Fully client-side, works on any server, supports every content mod's recipes, errands, lore and constructions with zero compat patches.",
   "authors": [ "Kaminion" ],
   "side": "Client",

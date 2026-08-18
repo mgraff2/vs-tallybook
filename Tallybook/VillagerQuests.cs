@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;
-using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
@@ -37,6 +37,13 @@ namespace Tallybook
         public string NpcName;
         public string ItemCode;
         public int Quantity;
+
+        /// <summary>The requested stack's attributes, as JSON, or null when it has none.
+        /// The code alone does not identify a shape-from-attributes block — "clutter" is a
+        /// globe, a vase and a broken chair — so this is the other half of what the errand
+        /// asked for, and what repairs a pin written before the attributes were read.
+        /// </summary>
+        public string ItemAttributes;
         public List<string> Maps = new List<string>();
         internal List<QuestScanner.DlgCond> Gates = new List<QuestScanner.DlgCond>();
         public List<string> Briefing = new List<string>();
@@ -150,18 +157,18 @@ namespace Tallybook
             public string trigger;
 
             /// <summary>What the step hands over — including the locator maps that quests
-            /// come with, which is how an errand knows there is a place attached to it.</summary>
-            public StackSpec triggerdata;
+            /// come with, which is how an errand knows there is a place attached to it.
+            /// Kept as a raw token rather than a typed shape: it is a JsonItemStack for the
+            /// give/take triggers and something else entirely for the rest (an animation
+            /// name, a door code), and the game's own parser is what reads the item form.
+            /// </summary>
+            public JToken triggerdata;
         }
         class DlgText { public string value; public string jumpTo; public DlgCond condition; public DlgCond[] conditions; }
         // Internal rather than private: QuestDef carries a quest's gates so they can be
         // evaluated later, when the answer can have changed. The rest of the dialogue shape
         // stays private — it is a parsing detail and nothing outside needs it.
         internal class DlgCond { public string variable; public string isValue; public string isNotValue; }
-        // quantity is a documented ALIAS of stacksize on the game's JsonItemStack — Better
-        // Ruins writes `quantity: 10` where vanilla writes `stacksize`, and reading only one
-        // key captured the Luxuries trader's ten-gear price as a single gear (found by Mark).
-        class StackSpec { public string type; public string code; public int stacksize = 1; public int quantity = 1; }
 #pragma warning restore 0649
 
         /// <summary>The NPC whose conversation window is open, or null.</summary>
@@ -472,20 +479,12 @@ namespace Tallybook
                 if (idx < 0) break;
                 var comp = file.components[idx];
 
-                if (comp.trigger == "giveitemstack" && comp.triggerdata?.code != null)
+                if (comp.trigger == "giveitemstack" && TriggerCode(comp) != null)
                 {
-                    var loc = new AssetLocation(comp.triggerdata.code);
-                    ItemStack stack = null;
-                    if (comp.triggerdata.type == "block")
-                    {
-                        var block = capi.World.GetBlock(loc);
-                        if (block != null) stack = new ItemStack(block);
-                    }
-                    else
-                    {
-                        var item = capi.World.GetItem(loc);
-                        if (item != null) stack = new ItemStack(item);
-                    }
+                    // Same parser as the errand's own item, for the same reason: what comes
+                    // back can be an attribute-carried thing too, and "Received: game:clutter"
+                    // names nothing.
+                    var stack = ResolveDialogueStack(comp.triggerdata.ToString(), out _);
                     string name = stack?.GetName();
                     if (!string.IsNullOrEmpty(name) && !names.Contains(name)) names.Add(name);
 
@@ -534,7 +533,7 @@ namespace Tallybook
 
             foreach (var comp in file.components)
             {
-                string code = comp?.triggerdata?.code;
+                string code = TriggerCode(comp);
                 if (code == null || !code.Contains("locatormap")) continue;
 
                 bool tied = file.components.Any(other =>
@@ -1155,6 +1154,7 @@ namespace Tallybook
                             {
                                 NpcName = npc,
                                 ItemCode = code,
+                                ItemAttributes = RecipeProbe.AttributesJson(req.Stack),
                                 Quantity = req.Quantity,
                                 File = loc.ToString(),
                                 // This errand's maps, tied by shared gate variable — never
@@ -1419,32 +1419,75 @@ namespace Tallybook
 
         QuestRequirement ToRequirement(DlgCond cond)
         {
-            StackSpec spec;
-            try { spec = JsonConvert.DeserializeObject<StackSpec>(cond.isValue); }
+            var stack = ResolveDialogueStack(cond.isValue, out int quantity);
+            return stack == null ? null : new QuestRequirement { Stack = stack, Quantity = quantity };
+        }
+
+        /// <summary>
+        /// Turn a dialogue file's item spec into the stack it names, using the game's own
+        /// parser rather than one of ours.
+        ///
+        /// The spec IS a <see cref="JsonItemStack" />, written inline —
+        /// <c>{ type: 'block', code: 'game:clutter', attributes: { type: 'globe1',
+        /// collected: true } }</c> — and <c>attributes</c> is identity, not decoration.
+        /// Clutter, banners and every other shape-from-attributes block wear their whole
+        /// identity there: the block code is just "clutter", and the attribute <c>type</c>
+        /// is what makes it a globe (verified by decompile — BlockShapeFromAttributes reads
+        /// its name from <c>Lang.GetMatching("clutter-" + type)</c> and its shape from the
+        /// same key). Reading code and stacksize by hand dropped that, so Better Ruins'
+        /// globe errand resolved to a bare clutter block: no name, no shape, a row reading
+        /// "game:clutter" under a question mark, and a count that took any scrap of clutter
+        /// for the globe (found by Mark).
+        ///
+        /// <c>JsonItemStack.FromString</c> + <c>Resolve</c> is exactly the pair
+        /// <c>DialogueComponent.IsConditionMet</c> calls on this same string, so what we
+        /// resolve is what the hand-over will test — the <c>quantity</c>/<c>stacksize</c>
+        /// alias included, which no longer needs reading twice to catch both spellings.
+        ///
+        /// The one thing added on top: a spec whose <c>type</c> names the wrong item class
+        /// is retried the other way rather than dropped. <c>type</c> is optional in the
+        /// format and defaults to block, and an errand is worth more than a strict read.
+        /// </summary>
+        ItemStack ResolveDialogueStack(string json, out int quantity)
+        {
+            quantity = 1;
+            if (string.IsNullOrEmpty(json)) return null;
+
+            JsonItemStack spec;
+            try { spec = JsonItemStack.FromString(json); }
             catch { return null; }
-            if (spec?.code == null) return null;
+            if (spec?.Code == null) return null;
 
-            var loc = new AssetLocation(spec.code);
-            ItemStack stack = null;
-            if (spec.type == "block")
-            {
-                var block = capi.World.GetBlock(loc);
-                if (block != null) stack = new ItemStack(block);
-            }
-            else
-            {
-                var item = capi.World.GetItem(loc);
-                if (item != null) stack = new ItemStack(item);
-                else
-                {
-                    // Some requests name a block without saying so.
-                    var block = capi.World.GetBlock(loc);
-                    if (block != null) stack = new ItemStack(block);
-                }
-            }
-            if (stack == null) return null;
+            quantity = Math.Max(1, spec.StackSize);
 
-            return new QuestRequirement { Stack = stack, Quantity = Math.Max(1, Math.Max(spec.stacksize, spec.quantity)) };
+            // printWarningOnError: false — a dialogue file may well name an item this world
+            // does not have, and a mod that cannot read someone else's quest has no business
+            // writing warnings into the player's log about it.
+            if (!Resolved(spec))
+            {
+                spec.Type = spec.Type == EnumItemClass.Block ? EnumItemClass.Item : EnumItemClass.Block;
+                if (!Resolved(spec)) return null;
+            }
+
+            var stack = spec.ResolvedItemstack;
+            if (stack != null) stack.StackSize = 1;   // the count is the requirement's, not the stack's
+            return stack;
+
+            bool Resolved(JsonItemStack s)
+            {
+                try { return s.Resolve(capi.World, "tallybook dialogue item", false); }
+                catch { return false; }
+            }
+        }
+
+        /// <summary>The item code a step hands over, or null when its triggerdata is not an
+        /// item spec at all — the same field carries an animation name, a door code and a
+        /// damage amount for the other triggers, so it is read as a raw token and asked.
+        /// </summary>
+        static string TriggerCode(DlgComp comp)
+        {
+            string code = (comp?.triggerdata as JObject)?["code"]?.ToString();
+            return string.IsNullOrEmpty(code) ? null : code;
         }
 
         /// <summary>

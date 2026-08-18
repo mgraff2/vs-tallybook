@@ -108,6 +108,14 @@ namespace Tallybook
                 {
                     pin.SelfNode.Req.CountContainerContents = false;
                     pin.SelfNode.Req.ShowLitres = false;
+
+                    // And the match itself is the dialogue's, not the handbook's: an errand
+                    // is answered by whether the turn-in line will appear, which the game
+                    // decides from this exact stack. Only where the row still IS the pinned
+                    // item — a framework that counts by its own rule has already replaced
+                    // the requirement above, and must keep its answer.
+                    if (supplied == null && pin.Stack != null)
+                        pin.SelfNode.Req.QuestWantStack = pin.Stack;
                 }
                 pin.Groups = new List<RecipeVariantGroup>();
                 SetGroup(pin, null, rememberPref: false);

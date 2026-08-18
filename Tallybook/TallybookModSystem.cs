@@ -811,6 +811,23 @@ namespace Tallybook
                 // is recorded from a live entity and is the part most likely to be missing.
                 var def = quests.DefFor(pin.QuestGiver, pin.Code, pin.Count);
 
+                // A pin written before the dialogue's `attributes` field was read carries
+                // only the bare code — "clutter" for what is really a globe, with no name
+                // and no picture. The def knows the difference, so it repairs the pin in
+                // place: the alternative is the player left with a nameless row sitting
+                // beside the corrected one the next conversation mints. Skipped if the
+                // repaired identity would collide with a pin that already has it.
+                if (def?.ItemAttributes != null && pin.Attributes == null
+                    && !svc.Store.Pins.Any(o => o != pin && o.Attributes == def.ItemAttributes
+                                                && o.Code == pin.Code && o.QuestGiver == pin.QuestGiver))
+                {
+                    pin.Attributes = def.ItemAttributes;
+                    pin.Stack = null;              // rebuilt from code + attributes below
+                    pin.ResetKey();
+                    svc.Resolve(pin);
+                    filled = true;
+                }
+
                 if (!QuestScanner.IsTranscript(pin.QuestText))
                 {
                     var said = quests.BriefingFor(pin.QuestGiver, pin.Code, pin.Count);
@@ -989,6 +1006,15 @@ namespace Tallybook
                 string known = index == null ? ""
                     : index.ContainsKey(page) ? " — in index"
                     : " — NOT IN INDEX";
+                // A miss is only half the answer: the button then asks the collectible which
+                // pages the handbook built from it, and lands on the best of those. Say which,
+                // so "not in index" reads as "opens elsewhere" rather than "broken".
+                if (index != null && !index.ContainsKey(page))
+                {
+                    string rep = RecipeProbe.RepresentativePageCodes(pin.Stack, capi)
+                        .FirstOrDefault(index.ContainsKey);
+                    known += rep == null ? ", no representative page either" : $", opens {rep}";
+                }
                 lines.Add($"· {pin.DisplayName}: {page}{known}{suffix}");
             }
 

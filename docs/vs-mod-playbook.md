@@ -140,6 +140,28 @@ calls `Assembly.LoadFrom` and `GetMembers`. Note:
 - Use `BindingFlags.Public | Instance` **without** `DeclaredOnly` when you care about
   inherited members; a base class often holds the property you are looking for.
 
+### Never hand-roll a DTO over the game's own JSON format
+
+If the game ships a class that parses a piece of JSON, use that class. A hand-written DTO
+reads exactly the fields you thought of, and the field you did not model does not raise an
+error — it silently stops existing.
+
+The case that taught it: a quest condition's item spec is a `JsonItemStack` written inline,
+and a four-field DTO over it (`type`, `code`, `stacksize`, `quantity`) dropped `attributes`.
+For any shape-from-attributes block that field is the entire identity — the block code is
+just `clutter` and the attribute `type` is what makes it a globe — so the item resolved to a
+nameless, shapeless block, displayed as a raw code under a question-mark icon, and matched
+every other variant of the same code. `JsonItemStack.FromString` + `Resolve` is one line,
+handles the format's relaxed syntax and documented aliases, and — the real point — is the
+same call the game makes on the same string, so what you resolve is what the game will test.
+
+The general rule extends past parsing: **when you are predicting a mechanism's answer,
+delegate to the mechanism's own comparison.** `SatisfiesAsIngredient` for crafting,
+`DialogueComponent.matches` semantics for a quest hand-over, the collectible's own matcher
+for contents. Reimplementing gets you a number that is right until it is embarrassingly
+wrong, and every divergence is a lie told confidently. Where you must diverge, know exactly
+where and write down why.
+
 ### Durable API facts (re-verify, but these held across 1.22.0–1.22.6)
 
 - **Client commands are invoked with a leading `.`, not `/`.** Register the name with no

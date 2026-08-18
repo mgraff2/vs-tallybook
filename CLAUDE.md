@@ -660,15 +660,59 @@ asset, and collect `player.inventory` conditions.
   lore asset's `code` (`config/lore/*.json` — a vanilla convention, client-readable via
   `capi.Assets`, where `category` defaults to the code when omitted). A read item also
   carries `discoveryCode` naming its code directly.
+- **The item spec in a dialogue condition IS a `JsonItemStack` — parse it with the game's
+  parser, never a hand-rolled shape (found by Mark, 0.3.17: Better Ruins' Luxuries trader
+  asks for a large intact globe and the row read "game:clutter" under a question mark).**
+  Three fields were being read by hand (`type`, `code`, `stacksize`/`quantity`) and the
+  fourth, `attributes`, was silently dropped. For a shape-from-attributes block that field
+  is the whole identity: the block code is just `clutter`, and
+  `{ attributes: { type: 'globe1', collected: true } }` is what makes it a globe.
+  Decompile-verified: `BlockShapeFromAttributes.GetHeldItemName` is
+  `Lang.GetMatching(domain + ":" + ClassType + "-" + attributes.type)`, so with no `type`
+  there is no name, no shape and no icon — and the resulting page code was the bare
+  `clutter`, which counted any scrap of clutter toward the errand. `collected: true` is not
+  decoration either: `BlockBehaviorReparable.GetDrops` stamps it on clutter you salvaged,
+  so the condition means "one you took off a wall", not one spawned in.
+  `QuestScanner.ResolveDialogueStack` now calls `JsonItemStack.FromString` + `Resolve` —
+  literally the pair `DialogueComponent.IsConditionMet` calls on the same string — so what
+  we resolve is what the hand-over will test, `quantity`/`stacksize` alias included for
+  free. Two things kept on top of it: the item↔block retry (`type` is optional and defaults
+  to Block), and `printWarningOnError: false`, since a dialogue file may name an item this
+  world does not have and that is not our warning to write. The same parser reads
+  `triggerdata`, so a reward can be an attribute-carried thing too.
+  **The general shape of this mistake:** a hand-written DTO over someone else's format
+  reads exactly the fields you thought of, and its failure mode is silence — the field you
+  did not model does not error, it just stops existing.
+  Pins written by the old parser carry the bare code, so `QuestDef.ItemAttributes` is the
+  other half of the errand's identity and `BackfillQuestText` repairs those pins in place
+  (guarded against colliding with an already-correct pin) — a parser fix that leaves the
+  player's list stale is half a fix, and the corrected pin would otherwise arrive *beside*
+  the nameless one rather than instead of it. Note `Pin.Key` memoizes once the stack
+  exists, so any repair that changes identity must call `ResetKey()`.
 - **`quantity` is a documented ALIAS of `stacksize` on `JsonItemStack` (decompile-verified;
   found via Mark's Forlorn Hope map purchase, 0.3.11).** Better Ruins writes
   `{ code: 'gear-rusty', quantity: 10 }` where vanilla writes `stacksize: 10`; the game
   accepts both, so the parser must too — reading only one captured a ten-gear price as one
   gear, and the wrong count then strands the pin (DefFor deliberately has no code-only
-  fallback). Related decompile fact: the game's inventory-condition check
-  (`DialogueComponent.FindDesiredItem` → `matches`) wants the whole quantity in a SINGLE
-  slot (`itemstack.StackSize >= wantStack.StackSize`) — ten gears split 5+5 do not satisfy
-  the dialogue line even though our summed Have says 10/10.
+  fallback). Delegating to `JsonItemStack` retired that hazard, since `Quantity` is
+  genuinely a property over `StackSize` there.
+- **An errand counts by the DIALOGUE's rule, not by handbook page (0.3.17, alongside the
+  globe).** `Requirement.QuestWantStack` carries the stack the condition asked for, and
+  `InventorySnapshot.CountQuestMatches` mirrors `DialogueComponent.matches`
+  (decompile-verified 1.22.7): `wantStack.Equals(world, carried, ignoredAttrs) ||
+  carried.Satisfies(wantStack)`, then `IsReasonablyFresh`. The ignored set is the engine's
+  own plus five the dialogue runner appends (backpack, condition, durability, randomX,
+  randomZ) — its list is a private method, so ours mirrors it and is worth re-checking on a
+  game update. Both halves matter and pull opposite ways: `Satisfies` is a **subset** test
+  in the direction `carried ⊆ wanted`, so a globe carrying only its `type` still answers a
+  request for a *collected* globe (page-exact said 0/1); and `IsReasonablyFresh` refuses a
+  tool under 95% durability or food past fresh, so the iron-pickaxe barter honestly reads
+  0/1 for a worn pickaxe the trader will turn away. Counting goods the mechanism refuses is
+  the same lie as counting an empty bowl as a bowl of water. The row's `Key` gains a `|Q`
+  so an errand never pools with a personal pin for the same page, which counts by the
+  stricter rule. Unchanged and still deliberate: the game wants the whole quantity in a
+  SINGLE slot (`itemstack.StackSize >= wantStack.StackSize`) — ten gears split 5+5 do not
+  satisfy the dialogue line even though our summed Have says 10/10.
 - **A giver has two names, and player-scope errands must merge across them (found by Mark,
   0.3.11 — two iron-pickaxe rows for one quest).** The login scan names errands after the
   dialogue FILE ("Luxuries"); the live conversation names the ENTITY ("Trader"); `Pin.Key`
@@ -1364,6 +1408,25 @@ types), and a throwaway net10.0 console app referencing `VintagestoryAPI.dll` /
   for those names a page the index never held and the handbook sits at its root.
   `RecipeProbe.HandbookPageCode` is the open-with code; `PageCode` stays pin identity — the
   provider maps many stacks to one page, and keying pins on it would merge distinct variants.
+- **The handbook's stack pages are built from `collectible.GetHandBookStacks(capi)`, which
+  is NOT the set of stacks players carry (found by Mark, 0.3.17 — the globe errand's Handbook
+  button opened a name search that then found the page anyway).** Decompile-verified:
+  `ModSystemSurvivalHandbook.SetupBehaviorAndGetItemStacks` walks every collectible's
+  handbook stacks and `PageCodeForStack`s each one. For clutter those come from
+  `CreativeInventoryStacks`, which `BlockClutter.LoadTypes` builds as bare
+  `{ "type": "<code>" }` JsonItemStacks — while a salvaged globe also carries
+  `{ "collected": true }` (stamped by `BlockBehaviorReparable.GetDrops`). Two attributes
+  against one, so the page code differs and the index has never held ours.
+  `RecipeProbe.RepresentativePageCodes` is the answer, and it is asked of the game's own
+  list rather than by dropping attributes until something matches: candidates are the
+  collectible's handbook stacks that our stack **satisfies** (`hs.Satisfies(stack)` — the
+  subset direction `hs ⊆ stack`, verified against `TreeAttribute.IsSubSetOf`), most
+  attributes first so a collectible whose pages genuinely differ by attribute still lands on
+  the right one. It sits at the END of the ladder in `WaitForPagesThenShow` — exact code,
+  then bare collectible, then this, then search — so a well-indexed stack can never be
+  talked down to a coarser page, and each candidate is confirmed by `OpenDetailPageFor`'s
+  own bool rather than assumed. `.tallybook pages` now prints which page a pin will actually
+  open when its own code is not indexed.
 - **`GuiDialogCommandHandbook` derives from `GuiDialogHandbook`** (the vanilla Command
   Handbook), so `LoadedGuis.OfType<GuiDialogHandbook>().FirstOrDefault()` returns whichever
   book the player opened first — and an item page sent to the command handbook opens the

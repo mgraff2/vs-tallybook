@@ -5,7 +5,7 @@ Pin any item, and Tallybook tells you what you still need to gather — with liv
 inventory tracking and at-a-glance status. The handbook already answers "how do I make X";
 Tallybook answers "what do I still need, and am I done?"
 
-**Version 0.3.16**, for Vintage Story 1.22.0–1.22.7. Client-side only: it works on any server,
+**Version 0.3.17**, for Vintage Story 1.22.0–1.22.7. Client-side only: it works on any server,
 and nobody else needs it installed. The design is in
 [tallybook-mod-spec.md](tallybook-mod-spec.md).
 
@@ -255,7 +255,7 @@ for and how to stage it is in [docs/moddb-screenshots.md](docs/moddb-screenshots
 
 ## Install
 
-Drop `tallybook_0.3.16.zip` into
+Drop `tallybook_0.3.17.zip` into
 `%APPDATA%\VintagestoryData\Mods\`.
 
 ## Building from source
@@ -447,6 +447,16 @@ is most of it. Manual pre-release checklist for what the server can't see:
     ask Tad to heal your wounds (one gear) and decline — nothing may be added, either way.
     An errand must show only what was asked for: take Agnieszka's 8 iron ingots and the row
     must be the ingots alone, with no ingredient or tool rows underneath.
+13b. **Errands for attribute-carried items** (needs a mod that asks for one — Better Ruins'
+    Luxuries trader wants a large intact globe). The row must show the item's real name and
+    picture, never a raw code under a question mark: blocks like clutter share one block code
+    and keep their identity in stack attributes, so this is the check that the dialogue's
+    `attributes` field survives all the way to the row. Carrying a *different* variant of the
+    same code must count nothing. Its **Handbook** button must land on the page directly — if
+    chat says it searched by name instead, run `.tallybook pages`: the row will name the page
+    it opened, and a candidate list that came back empty is the real failure. Also confirm the
+    have-count agrees with the NPC: a worn tool or spoiled food must read as not-had, because
+    the turn-in line will not appear for it either.
 13a. **VS Quest errands** (needs `vsquest` plus a quest pack — the framework alone ships one
     quest, which asks for nothing to be gathered and so must correctly add *nothing*). Accept
     a quest with a "bring me N of these" objective: it must appear under **Side quests** as a

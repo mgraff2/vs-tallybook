@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.17 — 2026-08-17
+
+- **Fixed: quest items that carry attributes now show their real name and picture.** Better
+  Ruins' Luxuries trader asks for a large intact globe, and the errand appeared as
+  "game:clutter" under a question-mark icon (found by Mark). Blocks like clutter, banners and
+  wall decorations all share one block code and keep their identity in attributes — the code
+  really is just "clutter", and an attribute is what makes it a globe — and Tallybook was
+  reading the code and the count out of the dialogue while dropping the rest. It now hands the
+  whole request to the game's own reader, so the row reads "Large Intact Globe" with the
+  globe's picture, and only an actual globe counts toward it rather than any scrap of clutter.
+  Anything a quest hands *back* is read the same way. An errand already on your list from
+  an older version repairs itself at the next world load rather than being left behind
+  beside a corrected copy.
+- **Fixed: the Handbook button on those errands opens the page directly instead of searching
+  for it.** The handbook builds a globe's page from a plain globe, while the one in your bag
+  is marked as salvaged — close enough to look identical, different enough that the exact
+  lookup missed and the button fell back to searching by name (found by Mark). It now asks
+  the item which pages the handbook built from it and opens the closest one, so the detour is
+  gone. `.tallybook pages` reports which page each pin will actually open.
+- **Fetch errands now count exactly what the villager will accept.** The have-count follows
+  the game's own hand-over test instead of an approximation of it, which cuts both ways: a
+  globe of the right kind counts even if it reached you by an unusual route, and a worn tool
+  or spoiled food reads as not-had, because the turn-in option will not appear for it either.
+  A trip saved is worth more than a green number.
+
 ## 0.3.16 — 2026-08-16
 
 - **Fixed: typing in another mod's window no longer triggers Tallybook's hotkeys.** Naming a

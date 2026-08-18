@@ -63,6 +63,19 @@ Crafting shopping list, quest tracker, story guide, and world/player reference. 
 
 ---
 
+## Changelog — 0.3.17 (HTML — paste as-is)
+
+<p><strong>Tallybook 0.3.17 &mdash; for Vintage Story 1.22.x</strong></p>
+
+<ul>
+<li><strong>Fixed: quest items that carry attributes now show their real name and picture.</strong> Better Ruins' Luxuries trader asks for a large intact globe, and the errand appeared as "game:clutter" under a question-mark icon. Blocks like clutter, banners and wall decorations all share one block code and keep their identity in attributes &mdash; the code really is just "clutter", and an attribute is what makes it a globe &mdash; and Tallybook was reading the code and the count out of the dialogue while dropping the rest. It now hands the whole request to the game's own reader, so the row reads "Large Intact Globe" with the globe's picture, and only an actual globe counts toward it rather than any scrap of clutter. Anything a quest hands <em>back</em> is read the same way. An errand already on your list from an older version repairs itself at the next world load.</li>
+<li><strong>Fixed: the Handbook button on those errands opens the page directly instead of searching for it.</strong> The handbook builds a globe's page from a plain globe, while the one in your bag is marked as salvaged &mdash; close enough to look identical, different enough that the exact lookup missed and the button fell back to searching by name. It now asks the item which pages the handbook built from it and opens the closest one.</li>
+<li><strong>Fetch errands now count exactly what the villager will accept.</strong> The have-count follows the game's own hand-over test instead of an approximation of it, which cuts both ways: an item of the right kind counts even if it reached you by an unusual route, and a worn tool or spoiled food reads as not-had, because the turn-in option will not appear for it either. A trip saved is worth more than a green number.</li>
+<li>Tested against Vintage Story 1.22.0 through 1.22.7.</li>
+</ul>
+
+---
+
 ## Changelog — 0.3.16 (HTML — paste as-is)
 
 <p><strong>Tallybook 0.3.16 &mdash; for Vintage Story 1.22.x</strong></p>
